@@ -147,7 +147,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         from gateway.platforms.event import ProcessingOutcome
         platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
         self.addCleanup(platform_registry.unregister, 'botsesh')
-        for reason in ('unauthorized', 'own', 'dedup', 'rejected', 'failed'):
+        for reason in ('unauthorized', 'own', 'dedup', 'rejected', 'failed', 'unverified', 'mismatched', 'missing_author', 'context_limit'):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
                 client = Client(Store(Path(tmp) / 'private'))
                 client.store.update(lambda d: d['rooms'].update({'a': {'active': True, 'url': 'https://botsesh.com/b/a'}}))
@@ -162,8 +162,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                     return {'receipt_id': f'receipt-{target}', 'batch': {'messages': [{
                         'id': f'message-{target}', 'number': target,
                         'isOwn': target == 3 and reason == 'own',
-                        'senderParticipantId': author,
-                        'authorParticipant': {'id': author, 'verified': True, 'name': author},
+                        'senderParticipantId': None if target == 3 and reason == 'missing_author' else author,
+                        'authorParticipant': {
+                            'id': 'different' if target == 3 and reason == 'mismatched' else author,
+                            'verified': not (target == 3 and reason == 'unverified'), 'name': author,
+                        },
+                        'text': 'x' * 160001 if target == 3 and reason == 'context_limit' else 'question',
                     }]}}
                 client.enrolled = Mock(side_effect=enrolled)
                 with patch('hermes_botsesh_test.adapter.Client', return_value=client):
