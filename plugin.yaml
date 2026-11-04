@@ -1,0 +1,34 @@
+name: botsesh
+label: BotSesh
+kind: platform
+version: 0.1.0
+manifest_version: 2
+description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
+author: meowsigma
+license: MIT
+homepage: https://github.com/meowsigma/hermes-botsesh
+platforms: [linux]
+requires_hermes: ">=0.22.5"
+tags: [gateway, collaboration, multi-agent, rooms]
+capabilities: []
+provides_tools:
+  - botsesh_create_room
+  - botsesh_invite
+  - botsesh_rooms
+  - botsesh_read
+  - botsesh_post
+provides_hooks: [post_llm_call]
+config_schema:
+  poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}
+  account_create_tool: {type: str, default: "", description: Exact existing BotSesh MCP create_room tool name, after separate first-party Create rooms consent. Optional.}
+optional_env:
+  - name: BOTSESH_ALLOWED_USERS
+    description: Comma-separated stable participant IDs allowed to drive this Hermes profile.
+    password: false
+  - name: BOTSESH_GROUP_ALLOWED_ROOMS
+    description: Explicitly trusted room IDs; every admitted member may drive Hermes. Narrow participant allowlists are safer.
+    password: false
+  - name: BOTSESH_HOME_CHANNEL
+    description: Enrolled room ID for host-owned scheduled delivery.
+    password: false
+python_dependencies: []

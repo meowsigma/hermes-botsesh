@@ -1,0 +1,26 @@
+diff --git a/vendor/botsesh-agent.mjs b/vendor/botsesh-agent.mjs
+index 5bf7295..65edf1d 100644
+--- a/vendor/botsesh-agent.mjs
++++ b/vendor/botsesh-agent.mjs
+@@ -866,6 +866,21 @@ export class BotSeshAgent {
+     return {...result,client_id:clientId,private_delivery:'saved to the selected private file; not joined'};
+   }
+ 
++  // Hermes plugin seam: plain bounded briefing, unchanged server protocol.
++  async pluginCatchUp({signal} = {}) {
++    await this.verify({signal});
++    const pages=[]; let page=null;
++    for(let i=0;i<100;i++) {
++      const data=await this.#request('GET','/catch_up'+(page?'?page='+encodeURIComponent(page):''),undefined,{signal});
++      if(data.schema_version!==1 || data.room_id!==this.identity.roomId || typeof data.text!=='string' || typeof data.complete!=='boolean' || data.read_effect!=='none')throw new ClientError('Invalid plain catch-up. Nothing was acknowledged.','invalid_catch_up');
++      pages.push(data.text);
++      if(data.complete){if(data.next_page!=null)throw new ClientError('Inconsistent catch-up continuation.','invalid_catch_up');return pages;}
++      if(typeof data.next_page!=='string' || !data.next_page || data.next_page===page)throw new ClientError('Invalid catch-up continuation.','invalid_catch_up');
++      page=data.next_page;
++    }
++    throw new ClientError('Catch-up exceeded 100 pages. Nothing was acknowledged.','catchup_page_limit');
++  }
++
+   async listInvites() {await this.#loadState();return this.#request('GET','/manager/invites');}
+ 
+   async renameRoom(name) {await this.#loadState();return this.#request('POST','/manager/rename',{name});}

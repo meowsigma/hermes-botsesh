@@ -1,0 +1,145 @@
+{
+  "fixture_expires_at": 1795041537550,
+  "first": {
+    "stage": "first",
+    "request_number": 5,
+    "reply_number": 6,
+    "reply": "A named human with authority over the action must explicitly approve it, and none is identified in this room yet.",
+    "reply_seconds": 5.678,
+    "reply_sender": "de588a7e-c6b8-4767-998c-0b84ca501a53",
+    "context_receipt": {
+      "id": "d7ed4b5b-0dcf-4e3e-8ecb-88c10a310e4a",
+      "messageNumber": 6,
+      "answerVersion": 0,
+      "coverage": "fetched-versions",
+      "assurance": "server-observed acknowledgment; not proof of comprehension or model input",
+      "at": 1793832479518,
+      "messageRanges": [
+        {
+          "from": 0,
+          "through": 5
+        }
+      ],
+      "rangeCount": 1,
+      "briefRevision": 1,
+      "decisionCount": 0,
+      "fileCount": 0,
+      "files": [],
+      "missingCount": 0,
+      "hasMissingContext": false
+    },
+    "read_receipts": [
+      {
+        "id": "de588a7e-c6b8-4767-998c-0b84ca501a53",
+        "name": "Hermes Hack1",
+        "verified": true,
+        "active": true,
+        "kind": "bot",
+        "platform": null,
+        "readCheckpoint": 2235,
+        "acknowledgedAt": 1793832479518
+      }
+    ]
+  },
+  "later_peer": {
+    "stage": "handoff",
+    "request_number": 7,
+    "reply_number": 9,
+    "reply": "Draft-ready means the agent has completed its work for review, not that it is accepted; acceptance requires explicit approval from a named human with authority over the decision.",
+    "reply_seconds": 5.508,
+    "reply_sender": "de588a7e-c6b8-4767-998c-0b84ca501a53",
+    "context_receipt": {
+      "id": "39eb6d5e-41fe-4ac5-96f7-d29c3720a339",
+      "messageNumber": 9,
+      "answerVersion": 0,
+      "coverage": "fetched-versions",
+      "assurance": "server-observed acknowledgment; not proof of comprehension or model input",
+      "at": 1793832546958,
+      "messageRanges": [
+        {
+          "from": 0,
+          "through": 7
+        }
+      ],
+      "rangeCount": 1,
+      "briefRevision": 1,
+      "decisionCount": 0,
+      "fileCount": 0,
+      "files": [],
+      "missingCount": 0,
+      "hasMissingContext": false
+    },
+    "read_receipts": [
+      {
+        "id": "de588a7e-c6b8-4767-998c-0b84ca501a53",
+        "name": "Hermes Hack1",
+        "verified": true,
+        "active": true,
+        "kind": "bot",
+        "platform": null,
+        "readCheckpoint": 2237,
+        "acknowledgedAt": 1793832546958
+      }
+    ]
+  },
+  "final_source_reply": {
+    "request_number": 11,
+    "reply_number": 12,
+    "text": "No, a draft-ready receipt only marks work ready for review; external action requires explicit approval from a named human with authority over that action.",
+    "created_at": "2026-11-04T23:07:08.129Z",
+    "context_receipt": {
+      "id": "23ebd372-7763-412a-b111-8e7bd96b5ef3",
+      "messageNumber": 12,
+      "answerVersion": 0,
+      "coverage": "fetched-versions",
+      "assurance": "server-observed acknowledgment; not proof of comprehension or model input",
+      "at": 1793833628129,
+      "messageRanges": [
+        {
+          "from": 0,
+          "through": 11
+        }
+      ],
+      "rangeCount": 1,
+      "briefRevision": 1,
+      "decisionCount": 0,
+      "fileCount": 0,
+      "files": [],
+      "missingCount": 0,
+      "hasMissingContext": false
+    },
+    "seconds_after_adapter_connected": 5.239,
+    "seconds_after_original_request_including_failed_harness_start": 169.284
+  },
+  "draft_ready": {
+    "id": "ad621552-4100-4478-a0a5-d75cf1c4c77f",
+    "ready": true,
+    "result_refs": [
+      {
+        "kind": "message",
+        "number": 10,
+        "version": 0,
+        "digest": "09bd989dcc8647533cfb8114f387ad8dd859263819c8068a1345ceb466bcb7ef"
+      }
+    ]
+  },
+  "native_tools": {
+    "botsesh_rooms": true,
+    "botsesh_read": true,
+    "read_effect": "none"
+  },
+  "protocol": {
+    "passive_read_no_ack": true,
+    "ordinary_agent_invite_denied": true,
+    "foreign_receipt_denied": true,
+    "unassigned_routine_rejected": true,
+    "draft_ready_result": {
+      "client_id": "4cb2cd50-458d-460b-bb48-58784f2533d6",
+      "number": 10,
+      "read_effect": "processed_frozen_receipt"
+    },
+    "exact_retry_single_message": true,
+    "changed_retry_denied": true
+  },
+  "gateway_pending_final": false
+}
