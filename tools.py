@@ -9,13 +9,18 @@ from .storage import StorageError
 
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
 
-def calling_scope():
+def calling_scope(ctx):
+    platform = ctx.session_surface()
+    if platform != 'botsesh':
+        return platform, ''
+    # Hermes exposes the platform publicly, but not the chat ID yet. Retain the documented
+    # task-local chat helper only; missing/empty identity must never unlock another room.
     from gateway.session_context import get_session_env
-    return get_session_env('HERMES_SESSION_PLATFORM', ''), get_session_env('HERMES_SESSION_CHAT_ID', '')
+    return platform, get_session_env('HERMES_SESSION_CHAT_ID', '')
 
-def scoped_room(args):
+def scoped_room(args, ctx):
     room = args.get('room_id', '')
-    platform, chat = calling_scope()
+    platform, chat = calling_scope(ctx)
     if platform == 'botsesh' and room != chat:
         raise BotSeshError('cross_room_denied')
     return room
@@ -32,7 +37,7 @@ def guarded(fn):
 
 
 def create_room(args, ctx):
-    platform, _ = calling_scope()
+    platform, _ = calling_scope(ctx)
     if platform == 'botsesh':
         raise BotSeshError('local_creation_only')
     if args.get('mode', 'guest') == 'account':
@@ -44,8 +49,8 @@ def create_room(args, ctx):
     return Client().create(args.get('name', 'BotSesh room'), args.get('purpose'), args.get('client_id'))
 
 
-def invite(args):
-    room = scoped_room(args)
+def invite(args, ctx):
+    room = scoped_room(args, ctx)
     client = Client()
     return client.enrolled(room, 'invite', app=args['app'], display_name=args.get('display_name'), task=args.get('task'), client_id=args.get('client_id') or client.logical_id('invite', args))
 
@@ -54,22 +59,22 @@ def public_room(binding):
     return {k: binding[k] for k in ('room_id', 'url', 'name', 'participant_id', 'active', 'state', 'manager', 'expires_at') if k in binding}
 
 
-def rooms(args):
+def rooms(args, ctx):
     bindings = [public_room(r) for r in Client().store.read()['rooms'].values()]
-    platform, chat = calling_scope()
+    platform, chat = calling_scope(ctx)
     if platform == 'botsesh':
         bindings = [r for r in bindings if r['room_id'] == chat]
     return {'rooms': bindings, 'scope': 'Only this profile’s enrolled/created rooms; not an account-wide directory.'}
 
 
-def read(args):
-    return Client().enrolled(scoped_room(args), 'read')
+def read(args, ctx):
+    return Client().enrolled(scoped_room(args, ctx), 'read')
 
 
-def post(args):
+def post(args, ctx):
     options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report') if key in args}
     client = Client()
-    return client.enrolled(scoped_room(args), 'post', text=args['text'], client_id=args.get('client_id') or client.logical_id('post', args), **options)
+    return client.enrolled(scoped_room(args, ctx), 'post', text=args['text'], client_id=args.get('client_id') or client.logical_id('post', args), **options)
 
 
 def command(raw_args, *, platform='', source=None, **kwargs):
@@ -127,7 +132,7 @@ SCHEMAS = [
 
 
 def register_tools(ctx):
-    handlers = [lambda args, **kw: create_room(args, ctx), lambda args, **kw: invite(args), lambda args, **kw: rooms(args), lambda args, **kw: read(args), lambda args, **kw: post(args)]
+    handlers = [lambda args, **kw: create_room(args, ctx), lambda args, **kw: invite(args, ctx), lambda args, **kw: rooms(args, ctx), lambda args, **kw: read(args, ctx), lambda args, **kw: post(args, ctx)]
     for spec, handler in zip(SCHEMAS, handlers):
         ctx.register_tool(name=spec['name'], toolset='botsesh', schema=spec, handler=guarded(handler))
     # Deferred platform discovery loads tools.py, so commands and skills register here too.

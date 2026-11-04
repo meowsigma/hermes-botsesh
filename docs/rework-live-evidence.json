@@ -1,0 +1,13 @@
+{
+  "kind": "live SDK + real native admission, no model inference",
+  "denied_target": 13,
+  "later_admitted_target": 14,
+  "admitted": [14],
+  "reads": [13, 14],
+  "checks": 4,
+  "first_check_seconds": 2.753,
+  "checkpoint_before": 2241,
+  "checkpoint_after": 2241,
+  "adapter_posts": 0,
+  "skip_handled": false
+}

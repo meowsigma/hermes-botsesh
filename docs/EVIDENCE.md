@@ -2,7 +2,7 @@
 
 Recorded 2026-11-04 against **LIVE botsesh.com**, in an owned synthetic guest room. This is **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE**, not exhaustive certification or a production release.
 
-## Native execution
+## Initial native execution (reviewed predecessor `4851f1bb`)
 
 Hermes 0.22.5 / `openai-codex/gpt-6.1-sol` ran inside an isolated Docker runtime with a scratch `HERMES_HOME`, narrowly authorized task-owned participant IDs and the installed BotSesh plugin. The owner's default profile and host gateway were not modified. Existing authorized sign-in was used; no paid API, new account or provider installation was added.
 
@@ -35,14 +35,22 @@ Live bridge checks, using the same SDK path as the tools:
 
 Credential-free retained values are in [live-evidence.json](live-evidence.json). Raw invitations, credentials, signing material and provider snapshots are deliberately excluded.
 
-## Focused offline checks
+## Review rework: skipped targets must not starve later questions
 
-- **16 Python unit tests** passed: profile-private storage, room boundaries, local-only command controls, consented account dispatch, UUID retry binding, successful-model attestation gate, failed-turn behavior, durable final replay and cron execution identity.
+The first independent review reproduced an actual bug in `_check_room`: selecting only the earliest unhandled target let an unauthorized/own/duplicate/rejected or failed turn block all later questions. The fix keeps room-and-target-keyed process-local skips, continues to the next target in the same check, and preserves one admitted event per room. Skips do not update `handled` or POST their read receipts. Saved generated finals still replay before new admission, even if their failed turn is in the skip set.
+
+The focused Python regression went **RED for all five cases**, then GREEN after the correction. Each case reads targets `[3,5]` only once, dispatches #5 (after failing #3 where applicable), and performs no acknowledgment/handled write through four further checks.
+
+A focused **LIVE SDK + real BasePlatformAdapter admission** check then used the existing synthetic room and task-owned identities: deliberately non-allowlisted SDK peer #13 preceded the allowlisted creator #14. The same check dispatched **only #14 in 2.753 s**; four checks total read `[13,14]` once each, posted nothing, and left the server checkpoint **2241 → 2241**. The native handler deliberately returned silence. This is an admission regression, **not a new model reply/E2E trial or proof of comprehension**. [rework-live-evidence.json](rework-live-evidence.json) retains the credential-free result. The original detached local binding was restored afterward; no gateway/model was launched or provider snapshot copied for this recheck.
+
+## Focused offline checks (after review rework)
+
+- **18 Python unit tests** passed: profile-private storage, room boundaries, local-only command controls, consented account dispatch, UUID retry binding, successful-model attestation gate, five skipped-target progress cases, public platform lookup/missing-chat denial, durable final replay and cron execution identity.
 - **4 Node protocol tests** passed: complete non-acknowledging paging; malformed/foreign/inconsistent paging rejection; draft/routine output schema with no approval action; and canonical 401/403-revoked/410 error classification. These are offline doubles/schema checks, not live revocation proof.
 - `hermes plugins validate <repo> --install-deps --json`: all checks pass, security scan `safe`, no core overrides.
 - `hermes plugins doctor <repo> --ci`: passes; **5 tools / 1 hook** registered. The isolated CLI also emitted an optional `pm-runtime` preparation diagnostic because lazy installation was disabled; PM functionality is not used by the plugin, and no unrelated installation/guard was changed.
 
-**Remaining validator warning:** `tools.py` imports `gateway.session_context.get_session_env`. Hermes's slash-command documentation explicitly documents this helper, but the current validator's public-import allowlist does not include it. It is not monkey-patched. Independent review must resolve/accept that documented seam before catalog submission; no warning-free or catalog-admitted claim is made.
+**Remaining validator warning:** tool platform checks now use public `ctx.session_surface()`. The only remaining `gateway.session_context.get_session_env` use is for `HERMES_SESSION_CHAT_ID`, with an empty chat ID denying room access. Hermes's slash-command documentation explicitly documents this helper, but the current validator's public-import allowlist does not include it and the tested public context exposes no chat-ID accessor. It is not monkey-patched. The catalog PR must disclose/accept this chat-only seam or replace it with an upstream public accessor before submission; no warning-free or catalog-admitted claim is made.
 
 ## Actual UI evidence and cleanup
 

@@ -78,9 +78,17 @@ class Boundaries(unittest.TestCase):
             self.assertIn('local Hermes', tools.command(verb, platform='botsesh', source=Mock(chat_id='x')))
         self.assertIn('local Hermes', tools.command('status'))
     def test_cross_room_tool_denied(self):
+        ctx = Mock()
         with patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
-            with self.assertRaises(BotSeshError): tools.scoped_room({'room_id': 'b'})
-            self.assertEqual(tools.scoped_room({'room_id': 'a'}), 'a')
+            with self.assertRaises(BotSeshError): tools.scoped_room({'room_id': 'b'}, ctx)
+            self.assertEqual(tools.scoped_room({'room_id': 'a'}, ctx), 'a')
+    def test_public_session_surface_and_missing_chat_fail_closed(self):
+        ctx = Mock()
+        ctx.session_surface.return_value = 'botsesh'
+        with patch('gateway.session_context.get_session_env', return_value='') as get_env:
+            with self.assertRaises(BotSeshError): tools.scoped_room({'room_id': 'a'}, ctx)
+            get_env.assert_called_once_with('HERMES_SESSION_CHAT_ID', '')
+        ctx.session_surface.assert_called_once_with()
     def test_account_path_requires_existing_consent_and_public_dispatch(self):
         ctx = Mock()
         ctx.get_config.return_value = ''
@@ -132,6 +140,57 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await adapter.on_processing_complete(Mock(source=Mock(chat_id='a')), ProcessingOutcome.FAILURE)
             self.assertNotIn('handled', client.store.room('a'))
 
+    async def test_skipped_targets_do_not_starve_later_mentions(self):
+        from hermes_botsesh_test.adapter import BotSeshAdapter
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        from gateway.platforms.event import ProcessingOutcome
+        platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
+        self.addCleanup(platform_registry.unregister, 'botsesh')
+        for reason in ('unauthorized', 'own', 'dedup', 'rejected', 'failed'):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                client = Client(Store(Path(tmp) / 'private'))
+                client.store.update(lambda d: d['rooms'].update({'a': {'active': True, 'url': 'https://botsesh.com/b/a'}}))
+                reads, dispatched = [], []
+                def enrolled(room_id, operation, **kwargs):
+                    if operation == 'check':
+                        return {'mentions': [3, 5], 'replies': [3]}
+                    self.assertEqual(operation, 'read')  # Skipping/completion must not POST an acknowledgment.
+                    target = kwargs['target_number']
+                    reads.append(target)
+                    author = 'stranger' if target == 3 and reason == 'unauthorized' else 'owner'
+                    return {'receipt_id': f'receipt-{target}', 'batch': {'messages': [{
+                        'id': f'message-{target}', 'number': target,
+                        'isOwn': target == 3 and reason == 'own',
+                        'senderParticipantId': author,
+                        'authorParticipant': {'id': author, 'verified': True, 'name': author},
+                    }]}}
+                client.enrolled = Mock(side_effect=enrolled)
+                with patch('hermes_botsesh_test.adapter.Client', return_value=client):
+                    adapter = BotSeshAdapter(PlatformConfig())
+                adapter._is_sender_authorized = lambda author, *args: author == 'owner'
+                async def handle(event):
+                    event._gateway_accepted = not (reason == 'rejected' and event.message_id == '3')
+                    if event._gateway_accepted:
+                        dispatched.append(event)
+                adapter.handle_message = AsyncMock(side_effect=handle)
+                if reason == 'dedup':
+                    adapter._dedup.is_duplicate('a:message-3:0')
+                await adapter._check_room('a')
+                if reason == 'failed':
+                    self.assertEqual([e.message_id for e in dispatched], ['3'])
+                    await adapter.on_processing_complete(dispatched[-1], ProcessingOutcome.FAILURE)
+                    await adapter._check_room('a')
+                self.assertEqual([e.message_id for e in dispatched], ['3', '5'] if reason == 'failed' else ['5'])
+                # Both failed turns and skips remain unhandled, with no automatic inference retry.
+                await adapter.on_processing_complete(dispatched[-1], ProcessingOutcome.FAILURE)
+                for _ in range(4):
+                    await adapter._check_room('a')
+                self.assertEqual(reads, [3, 5])
+                self.assertNotIn('handled', client.store.room('a'))
+                self.assertNotIn('pending_final', client.store.room('a'))
+                self.assertNotIn('a', adapter._current)
+
     async def test_durable_generated_final_replays_without_inference(self):
         from hermes_botsesh_test.adapter import BotSeshAdapter
         from gateway.config import PlatformConfig
@@ -145,6 +204,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             client.enrolled = Mock(side_effect=[{'number': 8}, {'mentions': [], 'replies': []}])
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
+            adapter._skipped_targets.add(('a', 3))  # A failed turn must not suppress its saved final.
             adapter.handle_message = AsyncMock()
             await adapter._check_room('a')
             self.assertEqual(client.enrolled.call_args_list[0].kwargs, payload)
