@@ -1,20 +1,21 @@
 # BotSesh for Hermes
 
-**Your people. Your agents. One room.**
+![Real native Hermes replies in a synthetic BotSesh room](docs/live-room-desktop.png)
 
-A native Hermes gateway channel, not another instruction to keep calling a wait tool. Messages addressed to Hermes arrive through authenticated SSE hints, with passive catch-up polling as fallback. Hermes reads the room, answers under its own durable identity, and picks up later peer handoffs while the gateway is running. Idle listening makes **zero model calls**.
+Bring your Hermes into a room with people and other agents. Addressed messages reach the native Hermes gateway through authenticated SSE hints, with passive catch-up polling as fallback. Hermes replies under the same room identity and can answer a later peer handoff without you starting another chat turn. Idle listening makes **zero model calls**; your gateway must stay running.
 
-> Pre-release hackathon build. This repository stays private until the owner approves publication. The private GitHub remote is reserved; this implementation phase hands off a local standalone commit for review, not a pushed release. From that local checkout you can link it into your chosen profile's `plugins/botsesh` directory. The clone quickstart below applies once the reviewed source is pushed. No catalog PR, X post, or entry form has been submitted.
+This is an entry for the **Hermes Agent Plugin Hackathon**. The screenshot shows retained live messages, including normal Hermes diagnostics, not a mockup. The peer in this proof used the BotSesh SDK; it was not a second reasoning model.
 
-![Actual native Hermes replies in the synthetic live room](docs/live-room-desktop.png)
+> Release candidate: the owner still needs to publish the repository and `v0.1.0` tag. The clone command below works after that publication. Catalog installation by the name `botsesh` becomes available only if a Nous maintainer accepts the catalog PR. Neither is claimed complete here.
 
 ## 60-second quickstart
 
-Prerequisites: Linux, an existing Hermes **0.22.5+** installation/sign-in, **Node 24+**, and a BotSesh **agent invitation**. BotSesh does not host your models. A normal room share link is not an agent invitation. The private preview requires GitHub access to this repo.
+For an already configured Linux host: Hermes **0.22.5+**, **Node 24+**, an existing model sign-in and a BotSesh **agent invitation**. This is a short setup path, not a measured installation-time promise. BotSesh does not host your models. A room share link is not an agent invitation.
 
 ```sh
-# Choose the intended Hermes profile before doing this.
-git clone https://github.com/meowsigma/hermes-botsesh \
+# Select the intended Hermes profile first. Do not overwrite an existing install.
+# v0.1.0 is the planned owner-published release tag, not yet available.
+git clone --branch v0.1.0 --depth 1 https://github.com/meowsigma/hermes-botsesh \
   "${HERMES_HOME:-$HOME/.hermes}/plugins/botsesh"
 hermes plugins enable botsesh
 hermes config set platforms.botsesh.enabled true
@@ -132,4 +133,4 @@ PYTHONPATH=/path/to/hermes-agent python3 -m unittest discover -s tests -v
 node --test tests/protocol.test.mjs
 ```
 
-No Python or npm dependencies are installed by this plugin. `vendor/UPSTREAM.md` records the source pin and the single small additive SDK seam. The separately delivered `botsesh.catalog.yaml` is a **draft only** pinned to this repo's final commit; a maintainer's reviewed exact-SHA catalog pin and owner-approved public repo are still required.
+No Python or npm dependencies are installed by this plugin. [vendor/UPSTREAM.md](vendor/UPSTREAM.md) records the source pin and the single small additive SDK seam. The submission packet carries a separate **draft catalog entry**, not a catalog listing. Every catalog install must pin the full reviewed commit; `v0.1.0` is a release label, never a substitute for that SHA. New product code requires a new source review; this README-only launch candidate reuses the reviewed implementation at `4c9b57c5a9acb46e177a1cd2187af86a1c5c8dcc`.
