@@ -9,7 +9,9 @@ import uuid
 from urllib.parse import urlsplit
 from .storage import Store
 
-BRIDGE = Path(__file__).parent / 'bridge.mjs'
+# Node canonicalizes import.meta.url; use the same path when the plugin install is
+# a symlink, otherwise bridge.mjs's CLI guard exits silently without running main.
+BRIDGE = (Path(__file__).parent / 'bridge.mjs').resolve()
 TERMINAL_CODES = {'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
