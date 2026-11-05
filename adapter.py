@@ -10,6 +10,14 @@ import weakref
 _ADAPTERS = weakref.WeakSet()
 logger = logging.getLogger(__name__)
 
+# Compatibility hints for Hermes's ledger wire text, NOT new room-message content.
+# The regression invokes the installed core dispatcher with its own exact markers.
+_GATEWAY_RECOVERY_MARKERS = (
+    '♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n',
+    '♻️ Recovered reply — the messaging platform reconnected after the original delivery failed, so this may be a duplicate:\n\n',
+    "♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of it may already have arrived above:\n\n",
+)
+
 def processed_turn(*, user_message='', platform='', **kwargs):
     """A successful model turn, not native admission or error delivery, arms attestation."""
     if platform != 'botsesh':
@@ -151,6 +159,7 @@ class BotSeshAdapter(BasePlatformAdapter):
             if completion and completion['client_id'] != pending['payload']['client_id']:
                 await asyncio.to_thread(self.client.enrolled, room_id, 'check')
                 return  # Keep both journals; never replace the earlier tool intent.
+            self._journal_gateway_delivery(room_id, pending['payload'], pending['target'])
             await asyncio.to_thread(self.client.enrolled, room_id, 'post', **pending['payload'])
             self._mark_handled(room_id, pending['target'])
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
@@ -197,9 +206,60 @@ class BotSeshAdapter(BasePlatformAdapter):
             self._current.pop(room_id, None)
             self._skipped_targets.add((room_id, target))
 
+    def _gateway_replay(self, chat_id, content, metadata):
+        """Core retries omit turn metadata and may add a transport marker, not new room text.
+
+        A marker is only a lookup hint: replay needs one exact, room-bound saved payload.
+        Never strip arbitrary prose and send it under a freshly generated identity.
+        """
+        if (metadata or {}).get('notify'):
+            return None
+        marker = next((m for m in _GATEWAY_RECOVERY_MARKERS if content.startswith(m)), None)
+        if not marker and content.startswith('♻️ Recovered reply'):
+            raise BotSeshError('gateway_replay_unrecognized_marker')
+        if not marker and chat_id in self._current:
+            return None
+        original = content[len(marker):] if marker else content
+        room = self.client.store.room(chat_id)
+        records = dict(room.get('gateway_deliveries', {}))
+        # Retain recovery for a pre-upgrade final which is still explicitly pending.
+        pending = room.get('pending_final')
+        if pending:
+            records.setdefault(pending['payload']['client_id'], pending)
+        matches = [r for r in records.values() if r['payload']['text'] == original]
+        if len(matches) == 1:
+            return matches[0]
+        if marker or matches:
+            raise BotSeshError('gateway_replay_unbound_or_ambiguous')
+        return None
+
+    def _journal_gateway_delivery(self, chat_id, payload, target=None):
+        def journal(data):
+            records = data['rooms'][chat_id].setdefault('gateway_deliveries', {})
+            record = {'payload': payload, 'target': target}
+            saved = records.get(payload['client_id'])
+            if saved and saved != record:
+                raise BotSeshError('pending_send_mismatch')
+            # Never evict uncertain/replay identities to make space for a new send.
+            if not saved and len(records) >= 1000:
+                raise BotSeshError('gateway_delivery_journal_full')
+            records[payload['client_id']] = record
+        self.client.store.update(journal)
+
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         current = self._current.get(chat_id)
         try:
+            replay = self._gateway_replay(chat_id, content, metadata)
+            if replay:
+                result = await asyncio.to_thread(self.client.enrolled, chat_id, 'post', **replay['payload'])
+                if replay['payload'].get('processed') is True:
+                    # Do not clear a newer turn's journal or mark its context handled.
+                    pending = self.client.store.room(chat_id).get('pending_final')
+                    if pending and pending['payload'] == replay['payload']:
+                        self._mark_handled(chat_id, replay['target'])
+                    if current and current['client_id'] == replay['payload']['client_id']:
+                        current['delivered'] = True
+                return SendResult(success=True, message_id=str(result['number']))
             final = current and current.get('model_processed') is True and bool((metadata or {}).get('notify'))
             pending = self.client.store.room(chat_id).get('pending_completion')
             if final and not pending:
@@ -220,6 +280,8 @@ class BotSeshAdapter(BasePlatformAdapter):
                 self.client.store.update(journal)
             else:
                 options = {'client_id': self.client.logical_id('gateway-notice', {'chat_id': chat_id, 'target': current.get('target') if current else reply_to, 'text': content})}
+            if (metadata or {}).get('notify'):
+                self._journal_gateway_delivery(chat_id, {'text': content, **options}, current['target'] if final else None)
             result = await asyncio.to_thread(self.client.enrolled, chat_id, 'post', text=content, **options)
             if final:
                 current['delivered'] = True
