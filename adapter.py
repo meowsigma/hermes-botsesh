@@ -233,17 +233,23 @@ class BotSeshAdapter(BasePlatformAdapter):
             raise BotSeshError('gateway_replay_unbound_or_ambiguous')
         return None
 
-    def _journal_gateway_delivery(self, chat_id, payload, target=None):
+    def _journal_gateway_delivery(self, chat_id, payload, target=None, *, pending_final=False):
         def journal(data):
-            records = data['rooms'][chat_id].setdefault('gateway_deliveries', {})
+            room = data['rooms'][chat_id]
+            records = room.setdefault('gateway_deliveries', {})
             record = {'payload': payload, 'target': target}
             saved = records.get(payload['client_id'])
             if saved and saved != record:
                 raise BotSeshError('pending_send_mismatch')
-            # Never evict uncertain/replay identities to make space for a new send.
-            if not saved and len(records) >= 1000:
-                raise BotSeshError('gateway_delivery_journal_full')
+            pending = room.get('pending_final')
+            if pending_final and pending and pending['payload'] != payload:
+                raise BotSeshError('pending_send_mismatch')
             records[payload['client_id']] = record
+            # JSON preserves insertion order; evicted marked retries fail closed.
+            while len(records) > 1000:
+                records.pop(next(iter(records)))
+            if pending_final:
+                room['pending_final'] = record  # One atomic write, only after validation.
         self.client.store.update(journal)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
@@ -271,17 +277,10 @@ class BotSeshAdapter(BasePlatformAdapter):
             # Gateway marks only final notifications. Interim/progress/control output cannot attest.
             if final and not current['delivered']:
                 options = {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id']}
-                payload = {'text': content, **options}
-                def journal(data):
-                    saved = data['rooms'][chat_id].get('pending_final')
-                    if saved and saved['payload'] != payload:
-                        raise BotSeshError('pending_send_mismatch')
-                    data['rooms'][chat_id]['pending_final'] = {'target': current['target'], 'payload': payload}
-                self.client.store.update(journal)
             else:
                 options = {'client_id': self.client.logical_id('gateway-notice', {'chat_id': chat_id, 'target': current.get('target') if current else reply_to, 'text': content})}
             if (metadata or {}).get('notify'):
-                self._journal_gateway_delivery(chat_id, {'text': content, **options}, current['target'] if final else None)
+                self._journal_gateway_delivery(chat_id, {'text': content, **options}, current['target'] if final else None, pending_final=bool(final and not current['delivered']))
             result = await asyncio.to_thread(self.client.enrolled, chat_id, 'post', text=content, **options)
             if final:
                 current['delivered'] = True

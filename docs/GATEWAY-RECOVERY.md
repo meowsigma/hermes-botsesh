@@ -16,13 +16,15 @@ Unknown/modified or ambiguous recovery text fails closed. If two distinct turns 
 
 No production import of private delivery-ledger constants is needed. A small compatibility tuple mirrors the three current wire prefixes; the regression passes the **actual installed core dispatcher and its own constants** through the adapter. An unfamiliar English recovered-reply marker is refused. A public stable replay-operation ID/metadata seam in Hermes would remove this compatibility constraint; core is unchanged here.
 
-The private registry retains up to 1,000 delivery identities per room and refuses a new entry when full rather than silently evicting uncertain identities. No automatic migration/discard is implemented. Completed operations, receipt-expiry behavior and membership checks remain canonical SDK-owned. This journal is private plugin data, not a room or model-visible text cache.
+The private registry retains the latest 1,000 delivery identities per room in insertion order, evicting the oldest entry so long-lived rooms can keep sending. A marked replay whose entry was evicted is refused without posting; it never receives a fresh UUID. A still-pending final remains separately recoverable. Delivery and pending-final journals are validated and saved in one atomic registry update, so a pre-post journal refusal cannot strand a newly written pending final. Existing uncertain operations are not discarded on a transport failure. Completed operations, receipt-expiry behavior and membership checks remain canonical SDK-owned. This journal is private plugin data, not a room or model-visible text cache.
 
 ## Focused execution
 
 `tests/test_gateway_recovery.py` uses a real Python client, Node bridge, vendored SDK and the installed Hermes ledger dispatcher, with the existing explicitly **offline synthetic HTTP fixture**. It is not live-server, model or automatic-return evidence.
 
 The identical regression on approved predecessor `17a91d73` makes four retained messages from one original plus the three recovery markers. The fixed path keeps **one exact reply and one original acknowledgment**, including after a fresh adapter instance. The test verifies changed content, ambiguous identical answers and revoked membership are denied; a completed SDK replay does not issue another message POST.
+
+The journal-cap regression seeds 1,000 insertion-ordered records, sends the 1,001st final through the real bridge/SDK offline fixture, and checks that the oldest entry is evicted, one reply/ack exists, and a marked replay of the evicted entry is refused with no extra post. A separate conflicting-envelope refusal leaves no newly created pending final and preserves the original record.
 
 Run with a workspace-only `TMPDIR` and scratch `HERMES_HOME`:
 

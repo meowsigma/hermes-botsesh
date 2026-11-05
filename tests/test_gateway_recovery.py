@@ -75,6 +75,71 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(client.store.read()['rooms']['offline']['active'])
             print('HACK5 recovery: real core dispatcher + SDK replay retained one exact reply/ack through reconnect, restart and flood markers; changed text and revoked access denied')
 
+    async def test_full_journal_posts_new_final_and_refuses_evicted_replay(self):
+        from hermes_botsesh_test.adapter import BotSeshAdapter
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        from gateway.platforms.event import ProcessingOutcome
+        from gateway.delivery_ledger import RECONNECTED_MARKER
+        platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
+        self.addCleanup(platform_registry.unregister, 'botsesh')
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Client(Store(Path(tmp) / 'private'))
+            fixture = ROOT / 'tests' / 'partial-fixture.mjs'
+            client.command = lambda: [node_binary(), str(fixture), str(client.store.credentials)]
+            subprocess.run([*client.command(), 'seed'], check=True, capture_output=True, env=child_env(client.store))
+            # Descending IDs prove FIFO is insertion order, not lexical UUID order.
+            records = {f'{1000-n:08x}-6386-4cfb-9a8e-6be797733cdd': {'payload': {'client_id': f'{1000-n:08x}-6386-4cfb-9a8e-6be797733cdd', 'text': f'Archived answer {n}'}, 'target': None} for n in range(1000)}
+            oldest_id, second_id = list(records)[:2]
+            oldest_text = records[oldest_id]['payload']['text']
+            client.store.update(lambda d: d['rooms'].update({'offline': {'active': True, 'url': 'https://botsesh.com/b/offline', 'gateway_deliveries': records}}))
+            read = client.enrolled('offline', 'read', target_number=7)
+            current_id = '41fe858d-6386-4cfb-9a8e-6be797733cdd'
+            with patch('hermes_botsesh_test.adapter.Client', return_value=client):
+                adapter = BotSeshAdapter(PlatformConfig())
+            adapter._current['offline'] = {'receipt_id': read['receipt_id'], 'target': 7, 'client_id': current_id, 'delivered': False, 'model_processed': True}
+            sent = await adapter.send('offline', 'The 1001st final.', metadata={'notify': True})
+            self.assertTrue(sent.success, sent.error)
+            room = client.store.room('offline')
+            self.assertEqual(len(room['gateway_deliveries']), 1000)
+            self.assertNotIn(oldest_id, room['gateway_deliveries'])
+            self.assertIn(second_id, room['gateway_deliveries'])
+            self.assertEqual(room['gateway_deliveries'][current_id], room['pending_final'])
+            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline')), ProcessingOutcome.SUCCESS)
+            with patch('hermes_botsesh_test.adapter.Client', return_value=client):
+                restarted = BotSeshAdapter(PlatformConfig())
+            refused = await restarted.send('offline', RECONNECTED_MARKER + oldest_text)
+            self.assertFalse(refused.success)
+            self.assertIn('gateway_replay_unbound_or_ambiguous', refused.error)
+            self.assertNotIn('pending_final', client.store.room('offline'))
+            state = json.loads((client.store.credentials / 'fixture.json').read_text())
+            self.assertEqual([m['text'] for m in state['messages']], ['The 1001st final.'])
+            self.assertEqual(len([r for r in state['requests'] if r['path'] == '/messages' and r['method'] == 'POST']), 1)
+            self.assertEqual(len(state['acks']), 1)
+
+    async def test_journal_refusal_does_not_create_pending_final(self):
+        from hermes_botsesh_test.adapter import BotSeshAdapter
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
+        self.addCleanup(platform_registry.unregister, 'botsesh')
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Client(Store(Path(tmp) / 'private'))
+            saved = {'payload': {'client_id': 'same-id', 'text': 'Original content'}, 'target': 3}
+            client.store.update(lambda d: d['rooms'].update({'a': {'active': True, 'url': 'https://botsesh.com/b/a', 'gateway_deliveries': {'same-id': saved}}}))
+            client.enrolled = Mock(return_value={})
+            with patch('hermes_botsesh_test.adapter.Client', return_value=client):
+                adapter = BotSeshAdapter(PlatformConfig())
+            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 7, 'client_id': 'same-id', 'delivered': False, 'model_processed': True}
+            refused = await adapter.send('a', 'Changed content', metadata={'notify': True})
+            self.assertFalse(refused.success)
+            self.assertIn('pending_send_mismatch', refused.error)
+            room = client.store.room('a')
+            self.assertNotIn('pending_final', room)
+            self.assertEqual(room['gateway_deliveries'], {'same-id': saved})
+            self.assertFalse(adapter._current['a']['delivered'])
+            client.enrolled.assert_called_once_with('a', 'pending')  # No post.
+
     async def test_duplicate_text_across_distinct_turns_is_ambiguous(self):
         from hermes_botsesh_test.adapter import BotSeshAdapter
         from gateway.config import PlatformConfig
