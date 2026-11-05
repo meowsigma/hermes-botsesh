@@ -13,13 +13,22 @@ BRIDGE = Path(__file__).parent / 'bridge.mjs'
 TERMINAL_CODES = {'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
-    def __init__(self, code, status=None, retry_after_ms=0):
+    def __init__(self, code, status=None, retry_after_ms=0, pending=None):
         self.code, self.status, self.retry_after_ms = code, status, retry_after_ms
-        super().__init__(f'BotSesh: {code}' + (f' (HTTP {status})' if status else ''))
+        self.pending = pending
+        super().__init__(f'BotSesh: {code}' + (f' (HTTP {status})' if status else '') + (f'; {pending_notice(pending)}' if pending else ''))
 
     @property
     def terminal(self):
         return self.status in (401, 410) or self.code in TERMINAL_CODES
+
+
+def pending_notice(pending):
+    number = pending.get('number')
+    posted = f'Reply #{number} posted.' if isinstance(number, int) else 'Reply posting unconfirmed.'
+    draft = pending.get('draft_ready')
+    declaration = f' Draft declaration {draft}.' if draft in ('denied', 'unfinished', 'confirmed') else ''
+    return posted + declaration + ' Completion pending; retry the original operation locally after authorization. Later work remains unacknowledged.'
 
 
 def node_binary():
@@ -79,14 +88,26 @@ class Client:
             raise BotSeshError('invalid_bridge_response') from None
         if not result.get('ok'):
             e = result.get('error') or {}
-            raise BotSeshError(e.get('code', 'bridge_failed'), e.get('status'), e.get('retry_after_ms', 0))
+            raise BotSeshError(e.get('code', 'bridge_failed'), e.get('status'), e.get('retry_after_ms', 0), pending=result.get('pending'))
         return result['result']
 
     def enrolled(self, room_id, op, **args):
         binding = self.store.room(room_id)
         try:
-            return self.call(op, room=binding['url'], **args)
+            result = self.call(op, room=binding['url'], **args)
+            def progress(data):
+                room = data['rooms'][room_id]
+                if result.get('pending'):
+                    room['pending_completion'] = result['pending']
+                elif op in ('check', 'pending'):
+                    room.pop('pending_completion', None)  # Verified SDK journal, not a discard.
+                elif result.get('client_id') == room.get('pending_completion', {}).get('client_id') and result.get('read_effect') == 'processed_frozen_receipt':
+                    room.pop('pending_completion', None)
+            self.store.update(progress)
+            return result
         except BotSeshError as e:
+            if e.pending:
+                self.store.update(lambda d: d['rooms'][room_id].update(pending_completion=e.pending))
             if e.terminal:
                 self.store.update(lambda d: d['rooms'][room_id].update(active=False, state=e.code))
             raise

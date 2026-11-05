@@ -1,0 +1,82 @@
+// Focused real bridge + vendored SDK path over a synthetic HTTP double, not live evidence.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {BotSeshAgent} from '../vendor/botsesh-agent.mjs';
+import {room,participant,originalId,request,text,seed,load,save,invoke} from './partial-fixture.mjs';
+
+test('post8 -> declaration403 -> newer10 held -> exact claimed retry, without duplicate or new ack',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'hack5-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  await seed(directory);
+  const read=await invoke({op:'read',room,target_number:7},directory);
+  assert.equal(read.ok,true,JSON.stringify(read));assert.equal(read.result.read_effect,'none');
+  const original={...request,receipt_id:read.result.receipt_id};
+  let state=await load(directory);assert.equal(state.checkpoint,0);assert.equal(state.acks.length,0);
+  const first=await invoke(original,directory);
+  assert.equal(first.ok,false);assert.equal(first.error.status,403,JSON.stringify(first));assert.equal(first.error.operation,'draft_ready');
+  assert.equal(first.pending.number,8);assert.equal(first.pending.draft_ready,'denied');
+  assert.equal(first.pending.read_effect,'processed_frozen_receipt');
+  assert.equal(first.pending.client_id,originalId);
+  assert.doesNotMatch(JSON.stringify(first),/nothing (?:was )?posted|bsa_|Exact final/);
+  const inspect=new BotSeshAgent({storeDirectory:directory,roomUrl:room});
+  const journal=await inspect.store.read('https://botsesh.com','offline');
+  const frozen=structuredClone(journal.localJob);
+  assert.equal(frozen.replyNumber,8);assert.equal(frozen.reply,text);
+  state=await load(directory);assert.equal(state.messages.length,1);assert.equal(state.checkpoint,70);
+  const sendId=state.messages[0].clientId;
+  assert.equal(state.acks.length,1);assert.equal(state.acks[0].through,70);
+  assert.deepEqual(state.acks[0].contextAck.messageVersions,[{number:7,version:0}]);
+  assert.equal(state.acks[0].contextAck.briefRevision,1);
+  state.newer=true;await save(directory,state);
+  const held=await invoke({op:'check',room},directory);
+  assert.equal(held.result.pending.number,8);assert.equal(held.result.pending.draft_ready,'denied');
+  const notice=await invoke({op:'post',room,client_id:'d2a73a14-541d-433e-8278-1b165ab0f844',text:'Nothing posted; start over.'},directory);
+  assert.equal(notice.error.code,'pending_turn');assert.equal(notice.pending.number,8);
+  const newer=await invoke({op:'read',room,target_number:10},directory);
+  assert.equal(newer.ok,true); // Fetching is permitted but does not mutate the frozen original job.
+  const blocked=await invoke({...original,client_id:'17d60a21-0061-4c22-b8aa-9f9790beacbc',receipt_id:newer.result.receipt_id,reply_to:10,text:'New final'},directory);
+  assert.equal(blocked.error.code,'pending_turn');
+  const mismatch=await invoke({...original,text:text+'changed'},directory);
+  assert.equal(mismatch.error.code,'pending_send_mismatch');
+  const foreign='9b3a93fb-8380-44a4-9da4-6fc56aa9a987';
+  await inspect.store.write({version:1,origin:'https://botsesh.com',roomId:'plugin-receipt-'+foreign,boundRoom:'foreign',participantId:participant,createdAt:Date.now(),batch:read.result.batch});
+  const denied=await invoke({...original,client_id:'96e5f83c-ea60-4a74-a2e3-552d9015d4df',receipt_id:foreign},directory);
+  assert.equal(denied.error.code,'receipt_scope');
+  const beforeRetry=await inspect.store.read('https://botsesh.com','offline');
+  assert.deepEqual(beforeRetry.localJob,frozen);
+  state=await load(directory);assert.equal(state.checkpoint,70);assert.equal(state.messages.length,1);assert.equal(state.commands.length,1);
+  // Only the fixture's legitimate actor grants its current claim. Plugin never calls claim.
+  state.claim=true;await save(directory,state);
+  const retry=await invoke({op:'retry',room,client_id:originalId},directory);
+  assert.equal(retry.ok,true,JSON.stringify(retry));assert.equal(retry.result.number,8);
+  const duplicate=await invoke(original,directory);assert.deepEqual(duplicate,retry);
+  state=await load(directory);
+  assert.equal(state.messages.length,1);assert.equal(state.messages[0].text,text);assert.equal(state.messages[0].clientId,sendId);
+  assert.deepEqual(state.commands[1],state.commands[0]);assert.equal(state.commands.length,2);
+  assert.equal(state.checkpoint,70);assert.equal(state.acks.length,1);
+  const completed=await inspect.store.read('https://botsesh.com','offline');
+  assert.equal(completed.localJob.pluginComplete,true);
+  assert.equal(completed.localJob.reply,text);assert.equal(completed.localJob.eventId,originalId);
+  assert.deepEqual(completed.localJob.readBoundary,frozen.readBoundary);
+  assert.deepEqual(completed.localJob.purposeCommands,frozen.purposeCommands);
+  assert.equal((await invoke({op:'check',room},directory)).result.mentions.includes(10),true);
+  state=await load(directory);state.revoked=true;await save(directory,state);
+  const revoked=await invoke({op:'retry',room,client_id:originalId},directory);
+  assert.equal(revoked.error.code,'membership_revoked');assert.equal(revoked.error.status,403);
+  console.log('HACK5 timeline: read7(no ack) -> post8+ack70 -> draft403 -> newer10 held/unacked -> mismatch/foreign denied -> fixture claim -> exact command replay; 1 reply, 1 original ack, revoked403');
+});
+
+test('post before unconfirmed ack does not invent reply/declaration/attestation success',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'hack5-unknown-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  await seed(directory);
+  const read=await invoke({op:'read',room,target_number:7},directory);
+  const state=await load(directory);state.denyAck=true;await save(directory,state);
+  const failed=await invoke({...request,receipt_id:read.result.receipt_id},directory);
+  assert.equal(failed.ok,false);assert.equal(failed.error.status,403);
+  assert.equal(failed.pending.number,null);assert.equal(failed.pending.draft_ready,'unfinished');
+  assert.equal(failed.pending.read_effect,'unconfirmed');
+  assert.doesNotMatch(JSON.stringify(failed),/nothing (?:was )?posted/);
+  const after=await load(directory);assert.equal(after.messages.length,1);assert.equal(after.checkpoint,0);assert.equal(after.acks.length,0);assert.equal(after.commands.length,0);
+});

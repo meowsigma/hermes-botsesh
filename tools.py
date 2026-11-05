@@ -30,7 +30,8 @@ def guarded(fn):
         try:
             return json.dumps({'ok': True, 'result': fn(args, **kwargs)}, ensure_ascii=False)
         except (BotSeshError, StorageError) as e:
-            return json.dumps({'ok': False, 'error': getattr(e, 'code', 'private_storage_error'), 'status': getattr(e, 'status', None), 'retry_after_ms': getattr(e, 'retry_after_ms', 0)})
+            pending = getattr(e, 'pending', None)
+            return json.dumps({'ok': False, 'error': getattr(e, 'code', 'private_storage_error'), 'status': getattr(e, 'status', None), 'retry_after_ms': getattr(e, 'retry_after_ms', 0), **({'pending': pending, 'notice': str(e)} if pending else {})})
         except Exception:
             return json.dumps({'ok': False, 'error': 'invalid_request_or_operation_failed'})
     return call
@@ -56,7 +57,7 @@ def invite(args, ctx):
 
 
 def public_room(binding):
-    return {k: binding[k] for k in ('room_id', 'url', 'name', 'participant_id', 'active', 'state', 'manager', 'expires_at') if k in binding}
+    return {k: binding[k] for k in ('room_id', 'url', 'name', 'participant_id', 'active', 'state', 'manager', 'expires_at', 'pending_completion') if k in binding}
 
 
 def rooms(args, ctx):
@@ -87,7 +88,7 @@ def command(raw_args, *, platform='', source=None, **kwargs):
             if verb != 'status' or platform != 'botsesh' or source is None:
                 return 'Run /botsesh management in your local Hermes CLI, TUI or Desktop.'
             room = Client().store.room(source.chat_id)
-            return json.dumps({'room_id': room['room_id'], 'state': room['state']})
+            return json.dumps({'room_id': room['room_id'], 'state': 'completion_pending' if room.get('pending_completion') else room['state'], **({'pending_completion': room['pending_completion']} if room.get('pending_completion') else {})})
         client = Client()
         if verb == 'join' and len(args) == 1:
             link = args[0]
@@ -105,6 +106,8 @@ def command(raw_args, *, platform='', source=None, **kwargs):
             return json.dumps(client.join(link))
         if verb == 'rooms' and not args:
             return json.dumps({'rooms': [public_room(r) for r in client.store.read()['rooms'].values()]})
+        if verb == 'retry' and len(args) == 2:
+            return json.dumps(client.enrolled(args[0], 'retry', client_id=args[1]))
         if verb == 'leave' and len(args) == 1:
             client.store.room(args[0])
             client.store.update(lambda d: d['rooms'][args[0]].update(active=False, state='detached'))
@@ -112,9 +115,9 @@ def command(raw_args, *, platform='', source=None, **kwargs):
         if verb == 'status' and not args:
             data = client.store.read()
             return json.dumps({'platform': 'botsesh', 'rooms': [public_room(r) for r in data['rooms'].values()], 'node_required': '24+', 'idle_model_calls': False})
-        return 'Usage: /botsesh join <private-invite-link> | rooms | leave <room-id> | status'
+        return 'Usage: /botsesh join <private-invite-link> | rooms | retry <room-id> <original-client-id> | leave <room-id> | status'
     except (BotSeshError, StorageError, ValueError) as e:
-        return f'BotSesh: {getattr(e, "code", "invalid_command_or_private_storage")} (no credentials shown).'
+        return str(e) if isinstance(e, BotSeshError) else 'BotSesh: invalid_command_or_private_storage (no credentials shown).'
 
 
 def schema(name, description, properties, required=()):

@@ -23,7 +23,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
-from .client import Client, BotSeshError, child_env
+from .client import Client, BotSeshError, child_env, pending_notice
 
 HINT = (
     'You are Hermes in a BotSesh room with people and their own agents. '
@@ -147,9 +147,15 @@ class BotSeshAdapter(BasePlatformAdapter):
         # without another model call or a fresh UUID/context boundary.
         pending = self.client.store.room(room_id).get('pending_final')
         if pending:
+            completion = self.client.store.room(room_id).get('pending_completion')
+            if completion and completion['client_id'] != pending['payload']['client_id']:
+                await asyncio.to_thread(self.client.enrolled, room_id, 'check')
+                return  # Keep both journals; never replace the earlier tool intent.
             await asyncio.to_thread(self.client.enrolled, room_id, 'post', **pending['payload'])
             self._mark_handled(room_id, pending['target'])
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
+        if check.get('pending'):
+            return  # Visible local status; no new model final or later read acknowledgment.
         binding = self.client.store.room(room_id)
         handled = binding.get('handled', [])
         targets = sorted(set(check.get('mentions', []) + check.get('replies', [])))
@@ -194,9 +200,15 @@ class BotSeshAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         current = self._current.get(chat_id)
         try:
+            final = current and current.get('model_processed') is True and bool((metadata or {}).get('notify'))
+            pending = self.client.store.room(chat_id).get('pending_completion')
+            if final and not pending:
+                status = await asyncio.to_thread(self.client.enrolled, chat_id, 'pending')
+                pending = status.get('pending')  # Rediscover an SDK commit after lost tool output/restart.
+            if pending and not (current and current['client_id'] == pending['client_id']):
+                return SendResult(success=False, error=pending_notice(pending), raw_response={'pending': pending})
             options = {}
             # Gateway marks only final notifications. Interim/progress/control output cannot attest.
-            final = current and current.get('model_processed') is True and bool((metadata or {}).get('notify'))
             if final and not current['delivered']:
                 options = {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id']}
                 payload = {'text': content, **options}
@@ -213,7 +225,7 @@ class BotSeshAdapter(BasePlatformAdapter):
                 current['delivered'] = True
             return SendResult(success=True, message_id=str(result['number']))
         except (BotSeshError, Exception) as e:
-            return SendResult(success=False, error=str(e) if isinstance(e, BotSeshError) else 'BotSesh delivery failed; retry the same saved operation.')
+            return SendResult(success=False, error=str(e) if isinstance(e, BotSeshError) else 'BotSesh delivery unconfirmed; retry the same saved operation.', raw_response={'pending': e.pending} if isinstance(e, BotSeshError) and e.pending else None)
 
     def _mark_handled(self, room_id, target):
         def mark(data):
