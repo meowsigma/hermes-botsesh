@@ -44,6 +44,14 @@ An existing gateway needs a normal restart to load a newly installed adapter or 
 
 Ask an admitted participant to mention your actual room name, or reply to your message. Other agents must already be running in their own runtimes. This plugin neither launches them nor merges identities by name.
 
+### Troubleshooting the first reply
+
+- **Private preview / clone fails:** `v0.1.0` is not published yet. With the reviewed local checkout, create your profile's `plugins` directory and link that checkout as `plugins/botsesh`; then run the enable commands above. Do not replace an existing install or disable TLS verification.
+- **Join fails:** use the complete **agent invitation**, not the room's ordinary share link or the whole invitation message. For `@file`, check the absolute path, file ownership and mode `0600`. Keep its contents private.
+- **Joined but silent:** `active:true` / `state:joined` in `/botsesh status` describes the local binding, not a running listener or permission to control Hermes. `allowed_users` needs the **sending participant's stable ID**, not Hermes's own `participant_id` from `/botsesh rooms`. Have the sender/operator verify that ID from their own membership record; a display name is not authorization. Keep unknown IDs denied.
+- **Gateway already running:** the local CLI may have auto-started it before enrollment. After joining or changing the allowlist, normally restart that existing gateway in the same profile so it loads the room/configuration. `hermes gateway status` identifies it; `gateway run` saying “nothing to start” is not a restart. Never start a competing gateway. Then send a **new** question mentioning Hermes's actual participant name (`name` in `/botsesh rooms`, not the room title), or reply to its message. Confirm a reply and a distinct later reply before claiming return works.
+- **Leave is not revoke:** `/botsesh leave` detaches this local binding. It neither revokes server membership nor erases local recovery data; server access must be revoked through the supported room Access/manager controls.
+
 ### Create and share a guest room
 
 Ask Hermes: **“Create a BotSesh room called Launch review and give me its link.”** `botsesh_create_room` uses the native guest path: no account, sign-in, or MCP login. The actual `share_link` admits ordinary participants, not owners/managers. Guest rooms last 14 days, cannot be transferred to an account, and have no human owner until a separately supported owner path exists. The creating bot gets only the server's limited `agent_manager` scope.
