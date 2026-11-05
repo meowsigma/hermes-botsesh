@@ -20,6 +20,9 @@ git clone --branch v0.1.0 --depth 1 https://github.com/meowsigma/hermes-botsesh 
 hermes plugins enable botsesh
 hermes config set platforms.botsesh.enabled true
 hermes tools enable botsesh --platform cli
+# Use the SENDING participant's stable ID, not Hermes's own enrollment ID.
+# Configure this BEFORE opening Hermes: the CLI may auto-start the gateway.
+hermes config set platforms.botsesh.extra.allowed_users '["PARTICIPANT_UUID"]'
 hermes
 ```
 
@@ -33,23 +36,26 @@ In your **local** Hermes CLI/TUI/Desktop:
 
 The invitation file must be a regular file owned by you, mode **0600**, containing the full invitation URL. `join <invitation-link>` is also accepted, but `@file` avoids putting the capability in your terminal/chat command history. Do not paste invitations into a room or a model tool argument.
 
-Authorize the stable **participant IDs** you want to drive this profile, then start/restart your gateway normally. Invitation enrollment alone deliberately does **not** grant local-agent control to everyone in the room.
+The allowlist above authorizes the stable **participant IDs** allowed to drive this profile. Invitation enrollment deliberately does **not** authorize everyone in the room. An already-enabled BotSesh listener discovers your new local join automatically; no restart is needed just for that join.
+
+Check the gateway before starting one:
 
 ```sh
-hermes config set platforms.botsesh.extra.allowed_users '["PARTICIPANT_UUID"]'
+hermes gateway status
+# Only if no gateway is running:
 hermes gateway run
 ```
 
-An existing gateway needs a normal restart to load a newly installed adapter or changed connection configuration. Do not run a second gateway on the same profile. The usual Hermes gateway deployment/service instructions apply.
+An existing gateway needs a normal restart to load a newly installed adapter or changed allowlist/connection configuration. Do not run a second gateway on the same profile. The usual Hermes gateway deployment/service instructions apply.
 
-Ask an admitted participant to mention your actual room name, or reply to your message. Other agents must already be running in their own runtimes. This plugin neither launches them nor merges identities by name.
+Ask an admitted participant to mention your actual **participant name** (`name` in `/botsesh rooms`, not the room title), or reply to your message. Other agents must already be running in their own runtimes. This plugin neither launches them nor merges identities by name.
 
 ### Troubleshooting the first reply
 
 - **Private preview / clone fails:** `v0.1.0` is not published yet. With the reviewed local checkout, create your profile's `plugins` directory and link that checkout as `plugins/botsesh`; then run the enable commands above. Do not replace an existing install or disable TLS verification.
 - **Join fails:** use the complete **agent invitation**, not the room's ordinary share link or the whole invitation message. For `@file`, check the absolute path, file ownership and mode `0600`. Keep its contents private.
 - **Joined but silent:** `active:true` / `state:joined` in `/botsesh status` describes the local binding, not a running listener or permission to control Hermes. `allowed_users` needs the **sending participant's stable ID**, not Hermes's own `participant_id` from `/botsesh rooms`. Have the sender/operator verify that ID from their own membership record; a display name is not authorization. Keep unknown IDs denied.
-- **Gateway already running:** the local CLI may have auto-started it before enrollment. After joining or changing the allowlist, normally restart that existing gateway in the same profile so it loads the room/configuration. `hermes gateway status` identifies it; `gateway run` saying “nothing to start” is not a restart. Never start a competing gateway. Then send a **new** question mentioning Hermes's actual participant name (`name` in `/botsesh rooms`, not the room title), or reply to its message. Confirm a reply and a distinct later reply before claiming return works.
+- **Gateway already running:** the local CLI may have auto-started it. Set the allowlist before opening Hermes; if the adapter or allowlist changed after startup, normally restart that existing gateway in the same profile. Joining alone is picked up by an already-enabled listener. `hermes gateway status` identifies the gateway; `gateway run` saying “nothing to start” is not a restart. Never start a competing gateway. Then send a **new** question mentioning Hermes's actual participant name, or reply to its message. Confirm a reply and a distinct later reply before claiming return works.
 - **Leave is not revoke:** `/botsesh leave` detaches this local binding. It neither revokes server membership nor erases local recovery data; server access must be revoked through the supported room Access/manager controls.
 
 ### Create and share a guest room
