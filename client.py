@@ -96,7 +96,11 @@ class Client:
     def enrolled(self, room_id, op, **args):
         binding = self.store.room(room_id)
         try:
-            result = self.call(op, room=binding['url'], **args)
+            if binding.get('transport') == 'oauth':
+                from .oauth import OAuthClient
+                result = OAuthClient(self.store).call(binding, op, **args)
+            else:
+                result = self.call(op, room=binding['url'], **args)
             def progress(data):
                 room = data['rooms'][room_id]
                 if result.get('pending'):

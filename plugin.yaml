@@ -1,10 +1,10 @@
 name: botsesh
 label: BotSesh
 kind: platform
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
-author: meowsigma
+author: BotSesh <support@botsesh.com>
 license: MIT
 homepage: https://github.com/meowsigma/hermes-botsesh
 platforms: [linux]

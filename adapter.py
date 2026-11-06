@@ -83,6 +83,13 @@ class BotSeshAdapter(BasePlatformAdapter):
     async def _supervise(self):
         while self._running:
             bindings = self.client.store.read()['rooms']
+            # Native connect/disconnect changes only this platform's persisted
+            # room allowlist. Refresh the live adapter's copy before admission
+            # so a newly consented room does not require restarting other chats.
+            from hermes_cli.config import load_config_readonly
+            saved = load_config_readonly().get('platforms', {}).get('botsesh', {}).get('extra', {})
+            if isinstance(saved.get('group_allowed_chats'), list):
+                self.config.extra['group_allowed_chats'] = list(saved['group_allowed_chats'])
             for room_id, binding in bindings.items():
                 if binding.get('active') and (room_id not in self._rooms or self._rooms[room_id].done()):
                     self._rooms[room_id] = asyncio.create_task(self._room_loop(room_id))
@@ -91,6 +98,8 @@ class BotSeshAdapter(BasePlatformAdapter):
             await asyncio.sleep(2)
 
     async def _stream(self, room_id, changed):
+        if self.client.store.room(room_id).get('transport') == 'oauth':
+            return  # Native OAuth uses passive MCP polling, never a second credential/SDK store.
         while self._running:
             process = None
             try:

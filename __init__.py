@@ -1,6 +1,8 @@
 """BotSesh standalone plugin. Registration has no network/process side effects."""
 
 def register(ctx):
+    from .cli import register_cli
+    register_cli(ctx)
     from .tools import register_tools
     register_tools(ctx)
     from .adapter import BotSeshAdapter, HINT, standalone_send, processed_turn
@@ -9,7 +11,7 @@ def register(ctx):
     ctx.register_platform(
         name='botsesh', label='BotSesh', adapter_factory=lambda cfg: BotSeshAdapter(cfg, poll_seconds=ctx.get_config('poll_seconds', 15)),
         check_fn=lambda: True, validate_config=lambda config: True,
-        required_env=[], install_hint='Install Node.js 24+; join a room with /botsesh join.',
+        required_env=[], install_hint='Run hermes botsesh connect. Node.js 24+ is needed only for advanced invitation access.',
         allowed_users_env='BOTSESH_ALLOWED_USERS',
         allow_all_env='BOTSESH_ALLOW_ALL_USERS',
         group_allowed_chats_env='BOTSESH_GROUP_ALLOWED_ROOMS',
