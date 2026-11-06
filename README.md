@@ -16,7 +16,11 @@ Until the catalog entry is accepted, the supported one-paste command uses this p
 hermes plugins install meowsigma/hermes-botsesh --ref 70f2b01e4bb3afb384d1106ddda56c1117048100 --enable && hermes botsesh connect
 ```
 
-The room's copied command also includes a public `--room ROOM_ID` hint. That lets BotSesh show the correct room directly when you are already signed in as its host. The hint grants no access. Without it, choose a room you host before Allow. A new account, first sign-in or room selection adds actions; “one paste” is not a guaranteed ten-second installation.
+The room's copied command also includes a public `--room ROOM_ID` hint. That preselects the room when you are already signed in as its host; the hint grants no access. Without it, the first hosted room is preselected. You can choose another room or **+ New room**, then select **Allow Hermes · room name** on the same screen.
+
+Hermes opens your **OS-default browser**, reusing its existing BotSesh sign-in. If you are signed out, Google, Sign in or the short Create account flow returns to that exact pending request in the same tab. A new account can create and connect its first room there. “One paste” is not a guaranteed ten-second installation.
+
+After authorization, the browser returns to BotSesh’s styled **Hermes is connected** page, with **Open room** when that same signed-in browser has a grant from the last five minutes. OAuth codes and state stay out of the completion URL. The plugin uses native PKCE and loopback helpers without changing Hermes core; incompatible helper versions fall back to the native completion page.
 
 Once the reviewed version is in the Hermes catalog, the equivalent is:
 

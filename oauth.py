@@ -128,6 +128,67 @@ def _token_request(origin, fields):
     return result
 
 
+def _make_loopback_callback_handler(expected_path, *, origin, expected_state):
+    """Capture the native callback fields, then leave the browser on BotSesh."""
+    from http.server import BaseHTTPRequestHandler
+    from urllib.parse import parse_qs
+
+    landing = checked_origin(origin) + '/connected?client=hermes'
+    result = dict.fromkeys(('code', 'state', 'error', 'error_description'))
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlsplit(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'Not found.')
+                return
+            params = parse_qs(parsed.query)
+            for key in result:
+                result[key] = params.get(key, [None])[0]
+            import hmac
+            failed = result['error'] or not str(result['code'] or '').strip() or not hmac.compare_digest(str(result['state'] or ''), expected_state)
+            self.send_response(302)
+            self.send_header('Location', landing + ('&error=1' if failed else ''))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # The request URL contains the authorization code and state.
+
+    return CallbackHandler, result
+
+
+def _native_loopback_helpers():
+    """Check private Hermes seams before binding; older cores keep their login."""
+    import inspect
+    try:
+        from hermes_cli import auth_device_flow as flow, auth_oauth_pkce_plugin as pkce
+        # Bind the exact calls we will make, without invoking any helper. A new
+        # required argument, missing helper or uninspectable callable falls back.
+        calls = {
+            'bind': (flow._bind_loopback_callback_server, ('127.0.0.1', 0, object),
+                     {'err': None, 'bind_failed_code': 'oauth_callback_bind_failed'}),
+            'verifier': (flow._pkce_code_verifier, (), {}),
+            'challenge': (flow._pkce_code_challenge, ('verifier',), {}),
+            'hint': (flow._print_loopback_ssh_hint, ('http://127.0.0.1:1/callback',), {}),
+            'serve': (flow._serve_loopback_callback, (None, {}),
+                      {'timeout_seconds': 180, 'err': None, 'timeout_code': 'oauth_callback_timeout'}),
+            'graphical': (flow._can_open_graphical_browser, (), {}),
+            'post_token': (pkce._post_token, ('botsesh', None, {}), {'code': 'oauth_token_exchange_failed'}),
+            'err': (pkce._err, ('botsesh', 'message', 'code'), {}),
+            'validate': (pkce.validate_config, ('botsesh', None), {}),
+        }
+        for function, args, kwargs in calls.values():
+            inspect.signature(function).bind(*args, **kwargs)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return None
+    return {name: function for name, (function, _, _) in calls.items()}
+
+
 def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None):
     from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, login as hermes_login
     origin = checked_origin(origin)
@@ -137,9 +198,58 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_
                           token_request=lambda fields: _token_request(origin, fields),
                           redirect_path='/callback', redirect_port=0,
                           timeout_seconds=timeout, label='BotSesh')
-    # The native helper owns S256, random-port 127.0.0.1 callback, constant-time
-    # state verification, cancellation and SSH loopback-forward instructions.
-    return hermes_login('botsesh', cfg, open_browser=open_browser)
+    helpers = _native_loopback_helpers()
+    if helpers is None:
+        return hermes_login('botsesh', cfg, open_browser=open_browser)
+
+    import hmac
+    import secrets
+    import webbrowser
+    from urllib.parse import urlencode
+
+    helpers['validate']('botsesh', cfg)
+    err = lambda message, code: helpers['err']('botsesh', message, code)
+    verifier = helpers['verifier']()
+    state = secrets.token_urlsafe(32)
+    handler, result = _make_loopback_callback_handler(cfg.redirect_path, origin=origin, expected_state=state)
+    server = helpers['bind']('127.0.0.1', cfg.redirect_port, handler,
+                             err=err, bind_failed_code='oauth_callback_bind_failed')
+    try:
+        redirect_uri = f'http://127.0.0.1:{server.server_address[1]}{cfg.redirect_path}'
+        params = {**cfg.extra_authorize_params, 'client_id': cfg.client_id, 'response_type': 'code',
+                  'redirect_uri': redirect_uri, 'state': state,
+                  'code_challenge': helpers['challenge'](verifier), 'code_challenge_method': 'S256',
+                  'scope': ' '.join(cfg.scopes)}
+        authorize_url = cfg.authorize_url + '?' + urlencode(params)
+        # As in native login, show the authorize URL for manual authorization.
+        # Never print the received callback query, error prose, verifier or tokens.
+        print(f'\nOpen this URL to authorize Hermes with BotSesh:\n  {authorize_url}\n')
+        print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
+        helpers['hint'](redirect_uri)
+        if open_browser and helpers['graphical']():
+            try:
+                webbrowser.open(authorize_url)
+            except Exception:
+                print('Could not open the browser automatically; use the URL above.')
+        callback = helpers['serve'](server, result, timeout_seconds=timeout, err=err,
+                                    timeout_code='oauth_callback_timeout')
+        if callback.get('error'):
+            # Do not reflect untrusted callback error prose into CLI logs.
+            raise err('authorization failed.', 'oauth_authorization_denied')
+        if not hmac.compare_digest(str(callback.get('state') or ''), state):
+            raise err('callback state mismatch — aborting login.', 'oauth_state_mismatch')
+        code = str(callback.get('code') or '').strip()
+        if not code:
+            raise err('callback carried no authorization code.', 'oauth_no_code')
+        return helpers['post_token']('botsesh', cfg, {
+            'grant_type': 'authorization_code', 'code': code,
+            'redirect_uri': redirect_uri, 'code_verifier': verifier,
+        }, code='oauth_token_exchange_failed')
+    except KeyboardInterrupt:
+        print('\nLogin cancelled.')
+        raise SystemExit(130)
+    finally:
+        server.server_close()  # Native serve closes too; cover pre-serve failures.
 
 
 class OAuthClient:

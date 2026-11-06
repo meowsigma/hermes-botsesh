@@ -1,5 +1,11 @@
 """Focused OAuth boundary regressions. Doubles are not native model evidence."""
+import contextlib
 import importlib.util
+import io
+import http.client
+from http.server import HTTPServer
+from threading import Thread
+from urllib.parse import parse_qs, urlencode, urlsplit
 import json
 import os
 from pathlib import Path
@@ -81,8 +87,224 @@ class OAuthTests(unittest.TestCase):
         config=OAuthPKCEConfig(client_id=oauth.CLIENT_ID,authorize_url='https://botsesh.com/oauth/authorize',token_url='https://botsesh.com/oauth/token',token_request=lambda fields:self.fail('state mismatch exchanged a code'))
         from unittest.mock import Mock
         server=Mock(server_address=('127.0.0.1',43111))
-        with patch('hermes_cli.auth_device_flow._bind_loopback_callback_server',return_value=server),patch('hermes_cli.auth_device_flow._serve_loopback_callback',return_value={'state':'foreign-state','code':'not-a-real-code'}):
+        with contextlib.redirect_stdout(io.StringIO()), patch('hermes_cli.auth_device_flow._bind_loopback_callback_server',return_value=server),patch('hermes_cli.auth_device_flow._serve_loopback_callback',return_value={'state':'foreign-state','code':'not-a-real-code'}):
             with self.assertRaises(AuthError) as raised:login('botsesh',config,open_browser=False)
         self.assertEqual(raised.exception.code,'oauth_state_mismatch')
+
+class LoopbackRedirectTests(unittest.TestCase):
+    def request_callback(self, path, *, origin='https://botsesh.com', expected_state='private-state'):
+        handler, result = oauth._make_loopback_callback_handler('/callback', origin=origin, expected_state=expected_state)
+        with HTTPServer(('127.0.0.1', 0), handler) as server:
+            thread = Thread(target=server.handle_request, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(*server.server_address, timeout=3)
+            try:
+                connection.request('GET', path)
+                response = connection.getresponse()
+                status, headers, body = response.status, dict(response.getheaders()), response.read()
+            finally:
+                connection.close()
+                thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        return status, headers, body, result
+
+    def test_success_captures_callback_but_redirects_without_oauth_values(self):
+        with patch('sys.stderr') as stderr:
+            status, headers, body, result = self.request_callback(
+                '/callback?' + urlencode({'code': 'private-code', 'state': 'private-state'}))
+        self.assertEqual(status, 302)
+        self.assertEqual(headers['Location'], 'https://botsesh.com/connected?client=hermes')
+        self.assertEqual(result, {'code': 'private-code', 'state': 'private-state',
+                                  'error': None, 'error_description': None})
+        self.assertNotIn(b'private-', body)
+        stderr.write.assert_not_called()
+
+
+    def test_error_redirect_does_not_reflect_description_or_state(self):
+        status, headers, body, result = self.request_callback('/callback?' + urlencode({
+            'error': 'access_denied', 'error_description': 'private-description', 'state': 'private-state'}))
+        self.assertEqual(status, 302)
+        self.assertEqual(headers['Location'], 'https://botsesh.com/connected?client=hermes&error=1')
+        self.assertEqual(result['error_description'], 'private-description')
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(headers['Referrer-Policy'], 'no-referrer')
+        self.assertEqual(body, b'')
+
+    def test_local_origin_is_preserved_and_query_cannot_choose_redirect(self):
+        for query in ('code=one&state=two&next=https://evil.test', 'error=denied&state=two'):
+            with self.subTest(query=query):
+                status, headers, _, _ = self.request_callback('/callback?' + query, origin='http://127.0.0.1:43210', expected_state='two')
+                self.assertEqual(status, 302)
+                self.assertEqual(headers['Location'], 'http://127.0.0.1:43210/connected?client=hermes'
+                                 + ('&error=1' if query.startswith('error=') else ''))
+
+    def test_wrong_path_does_not_capture_callback(self):
+        status, headers, _, result = self.request_callback('/other?code=private-code&state=private-state')
+        self.assertEqual(status, 404)
+        self.assertNotIn('Location', headers)
+        self.assertTrue(all(value is None for value in result.values()))
+
+    def test_empty_callback_does_not_complete_native_wait(self):
+        _, headers, _, result = self.request_callback('/callback?state=private-state')
+        self.assertTrue(headers['Location'].endswith('&error=1'))
+        self.assertIsNone(result['code'])
+        self.assertIsNone(result['error'])
+
+    def test_redirect_origin_rejects_arbitrary_hosts_and_url_components(self):
+        for origin in ('https://evil.test', 'https://botsesh.com.evil.test', 'http://localhost:1234',
+                       'http://127.0.0.1:1234/evil', 'http://127.0.0.1:1234?next=evil',
+                       'http://user@127.0.0.1:1234', 'https://botsesh.com#evil'):
+            with self.subTest(origin=origin), self.assertRaises(BotSeshError):
+                oauth._make_loopback_callback_handler('/callback', origin=origin, expected_state='private-state')
+
+
+class LoginRedirectTests(unittest.TestCase):
+    """Real native PKCE/bind + plugin handler; browser/token/serve transport doubles."""
+    def setUp(self):
+        from hermes_cli import auth_device_flow
+        self.native = auth_device_flow
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.output = self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        self.browser = self.stack.enter_context(patch('webbrowser.open'))
+        self.hint = self.stack.enter_context(patch.object(self.native, '_print_loopback_ssh_hint', autospec=True))
+        self.graphical = self.stack.enter_context(patch.object(self.native, '_can_open_graphical_browser', autospec=True, return_value=True))
+        self.exchange = self.stack.enter_context(patch.object(oauth, '_token_request', return_value={
+            'access_token': 'A'*43, 'refresh_token': 'R'*43, 'expires_in': 300}))
+        self.callback_overrides = {}
+        self.serve = self.stack.enter_context(patch.object(self.native, '_serve_loopback_callback',
+                                                         autospec=True, side_effect=self.serve_callback))
+
+    def serve_callback(self, server, result, *, timeout_seconds, err, timeout_code):
+        self.authorize_url = next(line.strip() for line in self.output.getvalue().splitlines()
+                                  if '/oauth/authorize?' in line)
+        self.params = {key: values[0] for key, values in parse_qs(urlsplit(self.authorize_url).query).items()}
+        fields = {'code': 'private-code', 'state': self.params['state'], **self.callback_overrides}
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection(*server.server_address, timeout=3)
+        try:
+            connection.request('GET', '/callback?' + urlencode(fields))
+            response = connection.getresponse()
+            self.response = response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+            thread.join(timeout=3)
+            server.server_close()
+        return result
+
+    def test_login_uses_plugin_redirect_and_native_pkce_with_os_browser(self):
+        grant = oauth.login(room_hint='room-one', timeout=42)
+        self.assertEqual(self.response[0], 302)
+        self.assertEqual(self.response[1]['Location'], 'https://botsesh.com/connected?client=hermes')
+        self.browser.assert_called_once_with(self.authorize_url)
+        self.hint.assert_called_once_with(self.params['redirect_uri'])
+        self.assertEqual(self.serve.call_args.kwargs['timeout_seconds'], 42)
+        self.assertEqual(self.params['client_id'], oauth.CLIENT_ID)
+        self.assertEqual(self.params['scope'], ' '.join(oauth.SCOPES))
+        self.assertEqual(self.params['resource'], 'https://botsesh.com/mcp')
+        self.assertEqual(self.params['room_hint'], 'room-one')
+        self.assertEqual(self.params['code_challenge_method'], 'S256')
+        origin, fields = self.exchange.call_args.args
+        self.assertEqual(origin, 'https://botsesh.com')
+        self.assertEqual(fields['grant_type'], 'authorization_code')
+        self.assertEqual(fields['code'], 'private-code')
+        self.assertEqual(fields['redirect_uri'], self.params['redirect_uri'])
+        self.assertEqual(self.params['code_challenge'], self.native._pkce_code_challenge(fields['code_verifier']))
+        self.assertEqual(grant['access_token'], 'A'*43)
+        self.assertNotIn('private-code', self.output.getvalue())
+        self.assertNotIn('A'*43, self.output.getvalue())
+
+
+    def test_invalid_state_never_exchanges_and_uses_constant_time_comparison(self):
+        import hmac
+        from hermes_cli.auth_constants import AuthError
+        self.callback_overrides['state'] = 'foreign-state'
+        with patch('hmac.compare_digest', wraps=hmac.compare_digest) as compare:
+            with self.assertRaises(AuthError) as raised:
+                oauth.login(open_browser=False)
+        self.assertEqual(raised.exception.code, 'oauth_state_mismatch')
+        compare.assert_any_call('foreign-state', self.params['state'])
+        self.assertEqual(compare.call_count, 2)
+        self.assertTrue(self.response[1]['Location'].endswith('&error=1'))
+        self.exchange.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_denial_redirects_to_error_without_exchange_or_error_prose(self):
+        from hermes_cli.auth_constants import AuthError
+        self.callback_overrides.update(error='access_denied', error_description='private-description')
+        with self.assertRaises(AuthError) as raised:
+            oauth.login()
+        self.assertEqual(raised.exception.code, 'oauth_authorization_denied')
+        self.assertEqual(self.response[1]['Location'], 'https://botsesh.com/connected?client=hermes&error=1')
+        self.assertNotIn('private-description', str(raised.exception))
+        self.exchange.assert_not_called()
+
+    def test_local_login_redirects_to_configured_origin_without_opening_headless_browser(self):
+        self.graphical.return_value = False
+        oauth.login(origin='http://127.0.0.1:43210')
+        self.assertEqual(self.response[1]['Location'], 'http://127.0.0.1:43210/connected?client=hermes')
+        self.assertEqual(self.params['resource'], 'http://127.0.0.1:43210/mcp')
+        self.assertEqual(self.exchange.call_args.args[0], 'http://127.0.0.1:43210')
+        self.browser.assert_not_called()
+        self.hint.assert_called_once_with(self.params['redirect_uri'])
+
+    def test_browser_failure_still_accepts_manual_callback(self):
+        self.browser.side_effect = RuntimeError('private-browser-error')
+        oauth.login()
+        self.exchange.assert_called_once()
+        self.assertNotIn('private-browser-error', self.output.getvalue())
+
+    def test_no_code_is_rejected_before_exchange(self):
+        from hermes_cli.auth_constants import AuthError
+        self.callback_overrides['code'] = ''
+        with self.assertRaises(AuthError) as raised:
+            oauth.login(open_browser=False)
+        self.assertEqual(raised.exception.code, 'oauth_no_code')
+        self.exchange.assert_not_called()
+
+    def test_cancel_and_timeout_close_listener_without_exchange(self):
+        from hermes_cli.auth_constants import AuthError
+        bind = self.native._bind_loopback_callback_server
+        for failure, expected in ((KeyboardInterrupt(), SystemExit),
+                                  (AuthError('timed out', provider='botsesh', code='oauth_callback_timeout'), AuthError)):
+            with self.subTest(failure=type(failure).__name__):
+                servers = []
+                def record_bind(*args, **kwargs):
+                    server = bind(*args, **kwargs)
+                    servers.append(server)
+                    return server
+                self.serve.side_effect = failure
+                with patch.object(self.native, '_bind_loopback_callback_server', autospec=True, side_effect=record_bind):
+                    with self.assertRaises(expected) as raised:
+                        oauth.login(open_browser=False)
+                self.assertEqual(servers[0].fileno(), -1)
+                self.assertEqual(raised.exception.code, 130 if expected is SystemExit else 'oauth_callback_timeout')
+        self.exchange.assert_not_called()
+
+    def test_missing_or_changed_helpers_fall_back_before_starting_plugin_flow(self):
+        from hermes_cli import auth_oauth_pkce_plugin as pkce
+        def incompatible(*, new_required):
+            self.fail('incompatible helper was invoked')
+        names = ('_bind_loopback_callback_server', '_pkce_code_verifier', '_pkce_code_challenge',
+                 '_print_loopback_ssh_hint', '_serve_loopback_callback', '_can_open_graphical_browser')
+        for module, name in [(self.native, name) for name in names] + [(pkce, '_post_token')]:
+            for mode in ('missing', 'changed'):
+                with self.subTest(helper=name, mode=mode), contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(module, name, incompatible))
+                    if mode == 'missing':
+                        delattr(module, name)
+                    fallback = stack.enter_context(patch.object(pkce, 'login', return_value={'native': True}))
+                    handler = stack.enter_context(patch.object(oauth, '_make_loopback_callback_handler'))
+                    self.assertEqual(oauth.login(open_browser=False, timeout=17), {'native': True})
+                    handler.assert_not_called()
+                    fallback.assert_called_once()
+                    args, kwargs = fallback.call_args
+                    self.assertEqual(args[0], 'botsesh')
+                    self.assertEqual(args[1].timeout_seconds, 17)
+                    self.assertEqual(args[1].extra_authorize_params['resource'], 'https://botsesh.com/mcp')
+                    self.assertEqual(kwargs, {'open_browser': False})
+        self.exchange.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()
