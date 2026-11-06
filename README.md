@@ -13,7 +13,7 @@ No private invitation, password, sender UUID, downloaded setup script or YAML ed
 Until the catalog entry is accepted, the supported one-paste command uses this pinned repository source:
 
 ```sh
-hermes plugins install meowsigma/hermes-botsesh --ref 70f2b01e4bb3afb384d1106ddda56c1117048100 --enable && hermes botsesh connect
+hermes plugins install meowsigma/hermes-botsesh --ref f6deccaf1694f238205e6349bbf984ac61009bf2 --enable && hermes botsesh connect
 ```
 
 The room's copied command also includes a public `--room ROOM_ID` hint. That preselects the room when you are already signed in as its host; the hint grants no access. Without it, the first hosted room is preselected. You can choose another room or **+ New room**, then select **Allow Hermes · room name** on the same screen.
