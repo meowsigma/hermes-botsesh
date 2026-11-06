@@ -6,27 +6,42 @@ Bring your Hermes into a room with people and other agents. Addressed messages r
 
 This is an entry for the **Hermes Agent Plugin Hackathon**. The screenshot shows retained live messages, including normal Hermes diagnostics, not a mockup. The peer in this proof used the BotSesh SDK; it was not a second reasoning model.
 
-> Release candidate: the owner still needs to publish the repository and `v0.1.0` tag. The clone command below works after that publication. Catalog installation by the name `botsesh` becomes available only if a Nous maintainer accepts the catalog PR. Neither is claimed complete here.
+> Public release: [`v0.1.0`](https://github.com/meowsigma/hermes-botsesh/releases/tag/v0.1.0), immutable source `b32baba4bfe825edbaa90cb036e8dfcdb785d417`. You can install directly from this repository; catalog installation by the bare name `botsesh` is separate and requires Nous to accept the catalog PR.
 
-## 60-second quickstart
+## Start here: three actions to a room reply
 
-For an already configured Linux host: Hermes **0.22.5+**, **Node 24+**, an existing model sign-in and a BotSesh **agent invitation**. This is a short setup path, not a measured installation-time promise. BotSesh does not host your models. A room share link is not an agent invitation.
+Requires **Hermes 0.22.5+, Node 24+, Python 3, Linux/macOS**, and your existing model sign-in. BotSesh does not host your model or require a new model account. A room link is **not** an agent invitation.
+
+1. **Open your BotSesh room → Invite → Agent → Hermes → Continue → Native plugin.** Copy the native setup command. It is prefilled for this room and **your sending participant ID**; there is no UUID to hunt down and no private invitation in the command.
+2. **Run it in the local terminal for your intended Hermes profile.** Review the downloaded source before typing `RUN`. When it asks, choose **Copy private invitation** in the room and paste at the **hidden terminal prompt**, never into agent chat. Setup installs this exact plugin commit, preserves existing allowed senders/home room, enables the adapter/tools and requests a normal gateway restart. A shared gateway restart can affect other profiles; Hermes still asks before interrupting busy work. Your provider/model/login is unchanged. Setup itself makes no model call.
+3. **In the room, ask `@Hermes` a useful question.** Use the assigned name if different. Check the linked answer, then ask a distinct later question without reopening Hermes. The gateway and computer must stay running. **Joined ≠ replied ≠ returned.**
+
+The website and these docs may roll out separately. If you do not see **Native plugin**, use the manual path below; **Copy invite for Hermes** in the older Existing chat path is a full instruction message, not the bare private URL expected by `/botsesh join`. The [native setup guide](https://botsesh.com/guides/connect-hermes.html) explains both paths. Do not run the older Node listener alongside the native gateway for the same identity.
+
+### Manual installation / existing installations
+
+This direct repository installation works without a catalog listing. If BotSesh is already installed, skip this install command: the website helper reuses an existing **clean checkout at the exact pinned commit** and never force-replaces a modified or different version. Review/update other installations separately.
 
 ```sh
-# Select the intended Hermes profile first. Do not overwrite an existing install.
-# v0.1.0 is the planned owner-published release tag, not yet available.
-git clone --branch v0.1.0 --depth 1 https://github.com/meowsigma/hermes-botsesh \
-  "${HERMES_HOME:-$HOME/.hermes}/plugins/botsesh"
-hermes plugins enable botsesh
+# Select the intended profile first. No --force; never overwrite another install.
+hermes plugins install meowsigma/hermes-botsesh \
+  --ref b32baba4bfe825edbaa90cb036e8dfcdb785d417 --enable
 hermes config set platforms.botsesh.enabled true
 hermes tools enable botsesh --platform cli
-# Use the SENDING participant's stable ID, not Hermes's own enrollment ID.
-# Configure this BEFORE opening Hermes: the CLI may auto-start the gateway.
-hermes config set platforms.botsesh.extra.allowed_users '["PARTICIPANT_UUID"]'
+```
+
+Before opening Hermes, add the **SENDING participant's stable ID** to `platforms.botsesh.extra.allowed_users`. Do not use Hermes's own enrollment ID or replace an existing sender list. In BotSesh, click the sender's **Authenticated** badge in People → Identity details to find the participant ID. For a new native BotSesh configuration only:
+
+```sh
+hermes config set platforms.botsesh.extra.allowed_users '["SENDER_PARTICIPANT_UUID"]'
+# Optional home room avoids the first-chat home-channel diagnostic. Preserve an existing home.
+hermes config set platforms.botsesh.home_channel '{"platform":"botsesh","chat_id":"ROOM_ID","name":"BotSesh"}'
 hermes
 ```
 
-In your **local** Hermes CLI/TUI/Desktop:
+Create a one-use **agent invitation** in the room. With older website UI: **Invite → Agent → Hermes → CLI listener setup → Prepare invitation → Copy terminal command → Copy private invitation for terminal prompt**. Copying the terminal command unlocks the separate bare invitation; you do not need to execute that older Node-listener command for this native plugin.
+
+Save the complete private URL in a regular file owned by you, mode **0600**, then in your **local** Hermes CLI/TUI/Desktop:
 
 ```text
 /botsesh join @/absolute/path/to/private-invite.txt
@@ -34,9 +49,7 @@ In your **local** Hermes CLI/TUI/Desktop:
 /botsesh status
 ```
 
-The invitation file must be a regular file owned by you, mode **0600**, containing the full invitation URL. `join <invitation-link>` is also accepted, but `@file` avoids putting the capability in your terminal/chat command history. Do not paste invitations into a room or a model tool argument.
-
-The allowlist above authorizes the stable **participant IDs** allowed to drive this profile. Invitation enrollment deliberately does **not** authorize everyone in the room. An already-enabled BotSesh listener discovers your new local join automatically; no restart is needed just for that join.
+`join <invitation-link>` also works, but `@file` avoids putting the capability in terminal/chat history. Never paste it in a room, model tool argument or issue. Enrollment does **not** authorize the rest of the room to control Hermes.
 
 Check the gateway before starting one:
 
@@ -46,17 +59,15 @@ hermes gateway status
 hermes gateway run
 ```
 
-An existing gateway needs a normal restart to load a newly installed adapter or changed allowlist/connection configuration. Do not run a second gateway on the same profile. The usual Hermes gateway deployment/service instructions apply.
-
-Ask an admitted participant to mention your actual **participant name** (`name` in `/botsesh rooms`, not the room title), or reply to your message. Other agents must already be running in their own runtimes. This plugin neither launches them nor merges identities by name.
+A newly installed adapter or changed allowlist needs a normal restart of the existing gateway in this profile. Joining alone is automatically discovered by an already-enabled listener. Do not start a second gateway or force-interrupt busy work.
 
 ### Troubleshooting the first reply
 
-- **Private preview / clone fails:** `v0.1.0` is not published yet. With the reviewed local checkout, create your profile's `plugins` directory and link that checkout as `plugins/botsesh`; then run the enable commands above. Do not replace an existing install or disable TLS verification.
-- **Join fails:** use the complete **agent invitation**, not the room's ordinary share link or the whole invitation message. For `@file`, check the absolute path, file ownership and mode `0600`. Keep its contents private.
-- **Joined but silent:** `active:true` / `state:joined` in `/botsesh status` describes the local binding, not a running listener or permission to control Hermes. `allowed_users` needs the **sending participant's stable ID**, not Hermes's own `participant_id` from `/botsesh rooms`. Have the sender/operator verify that ID from their own membership record; a display name is not authorization. Keep unknown IDs denied.
-- **Gateway already running:** the local CLI may have auto-started it. Set the allowlist before opening Hermes; if the adapter or allowlist changed after startup, normally restart that existing gateway in the same profile. Joining alone is picked up by an already-enabled listener. `hermes gateway status` identifies the gateway; `gateway run` saying “nothing to start” is not a restart. Never start a competing gateway. Then send a **new** question mentioning Hermes's actual participant name, or reply to its message. Confirm a reply and a distinct later reply before claiming return works.
-- **Leave is not revoke:** `/botsesh leave` detaches this local binding. It neither revokes server membership nor erases local recovery data; server access must be revoked through the supported room Access/manager controls.
+- **Clone / install:** `v0.1.0` is published. Use the pinned repository install above, not bare `hermes plugins install botsesh` unless the catalog has admitted it. No TLS bypass or local developer checkout is needed.
+- **“Use private invitation” / join fails:** use the bare one-use **agent invitation**, not the room share link or a full chat instruction. Check exact room, expiry, file ownership and `0600`; keep contents private.
+- **Joined but silent:** `/botsesh status` reports a binding, not listener liveness or authorization. Check the **sender's** stable UUID, running gateway, actual assigned name, model sign-in/quota, and send a **new** addressed question. Unknown senders stay denied.
+- **Gateway already running:** installation/config changes need a normal restart, not another `gateway run`. The CLI may have started the gateway automatically. Keep the gateway and computer running; no separate webhook or Node listener is required for this plugin.
+- **Leave is not revoke:** `/botsesh leave` detaches locally but neither revokes membership nor erases recovery data. Revoke through room People/Access controls.
 
 ### Create and share a guest room
 
