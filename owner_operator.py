@@ -9,6 +9,38 @@ from .client import BotSeshError
 IDENTITY_KEYS = ('participant_id', 'oauth_id', 'oauth_root', 'origin')
 
 
+def owner_turn_context(client, binding, context, message):
+    """Display-only projection of the server lookup made for THIS admission.
+
+    The line conveys no authority to a tool: owner_dm_client still revalidates.
+    Display names are quoted data and never used for an identity comparison.
+    """
+    import json
+    import time
+    live = (context or {}).get('operator_projection') or {}
+    author = message.get('authorParticipant') or {}
+    human = message.get('senderParticipantId')
+    if (binding.get('active') is not True or binding.get('transport') != 'oauth'
+            or binding.get('room_type') != 'dm' or not binding.get('oauth_id')
+            or (context or {}).get('until', 0) <= time.monotonic()
+            or live.get('room_id') != binding.get('room_id') or live.get('room_type') != 'dm'
+            or not live.get('membership_id') or live.get('membership_id') != context.get('membership_id')
+            or live.get('participant_id') != binding.get('participant_id')
+            or live.get('human_owns_grant') is not True or live.get('access_state') != 'authorized'
+            or not human or human != live.get('human_participant_id') or human != context.get('human_id')
+            or author.get('id') != human or author.get('verified') is not True or message.get('isOwn') is not False):
+        return ''
+    name = author.get('name') or 'your owner'
+    text = ('You are in a private DM with your owner ' + json.dumps(name, ensure_ascii=False)
+            + '. They can ask you to create rooms or to make them the owner of a room you manage.')
+    from .managed_rooms import source_dm, recent_room
+    recent = recent_room(client.store.read()['rooms'].values(), source_dm(client, binding['room_id']))
+    if recent:
+        text += '\nMost recent room created from this owner DM: ' + json.dumps(
+            {'name': recent.get('name'), 'room_id': recent['room_id']}, ensure_ascii=False)
+    return text
+
+
 def pin_operator_binding(binding, context):
     if (binding.get('transport') != 'oauth' or binding.get('room_type') != 'dm'
             or not context or not context.get('membership_id') or not context.get('human_id')):

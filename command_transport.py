@@ -63,7 +63,9 @@ class CommandTransportMixin(DmControlsMixin):
                                    chat_type='dm', user_id=human, user_name='DM owner')
         self._dm_contexts[chat_id] = dict(human_id=human, membership_id=member,
             generation=prior['generation'] if prior else str(uuid.uuid4()),
-            session_key=self._source_session_key(source), until=time.monotonic()+35)
+            session_key=self._source_session_key(source), until=time.monotonic()+35,
+            operator_projection={key: live.get(key) for key in ('room_id', 'room_type', 'participant_id',
+                'membership_id', 'human_participant_id', 'human_owns_grant', 'access_state')})
         # Native Hermes remains the authorization authority. No implicit grant from
         # discovery/room consent: the operator must allow this stable human ID (or
         # approve its native pairing). Explicit native allowlists are never edited.

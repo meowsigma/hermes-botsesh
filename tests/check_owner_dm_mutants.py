@@ -22,8 +22,10 @@ results = {}
 for label, (old, new) in {'baseline': ('', ''), **mutants}.items():
     source = text
     if label != 'baseline':
-        assert text.count(old) == 1, label
-        source = text.replace(old, new)
+        assert old in text, label
+        # Mutate the authorization function, not the separate display projection.
+        before, after = text.rsplit(old, 1)
+        source = before + new + after
     module = types.ModuleType(name)
     module.__package__ = 'owner_dm_test'
     exec(compile(source, str(Path(__file__).resolve().parents[1] / 'owner_operator.py'), 'exec'), module.__dict__)
