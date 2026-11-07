@@ -39,6 +39,16 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.handle_message=AsyncMock(side_effect=admit)
     def make_adapter(self):
         with patch('hermes_botsesh_test.adapter.Client',return_value=self.client):return BotSeshAdapter(PlatformConfig())
+    async def test_listener_stop_is_metadata_only_and_inactive_binding_needs_no_cleanup_auth(self):
+        self.adapter._running=False
+        await self.adapter._room_loop('a')
+        self.assertIn(('a','listener',{'state':'stopped'}),self.calls)
+        self.adapter.handle_message.assert_not_called()
+        self.client.store.update(lambda d:d['rooms']['a'].update(active=False))
+        self.calls.clear()
+        await self.adapter._room_loop('a')
+        self.assertEqual(self.calls,[])
+
     async def test_durable_pickup_admission_and_two_messages_do_not_merge(self):
         await self.adapter._check_room('a')
         row=self.client.store.room('a')['processing_receipts']['3']

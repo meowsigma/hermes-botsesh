@@ -52,6 +52,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from .client import Client, BotSeshError, child_env, pending_notice
+from .storage import StorageError
 from .reliability import receipt, health, backoff, failure_code, failure_notice
 from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 
@@ -246,8 +247,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         finally:
             stream.cancel()
             await asyncio.gather(stream, return_exceptions=True)
-            if self.client.store.room(room_id).get('transport') == 'oauth':
-                with contextlib.suppress(BotSeshError):
+            with contextlib.suppress(BotSeshError, StorageError):
+                if self.client.store.room(room_id).get('transport') == 'oauth':
                     await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='stopped')
 
     async def _check_room(self, room_id):
