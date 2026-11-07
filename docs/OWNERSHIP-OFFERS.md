@@ -27,8 +27,10 @@ the base's source approval is not native or production acceptance.
 - `botsesh_revoke_ownership_offer(room_id, offer_id)` cancels the manager's pending
   offer and cannot undo accepted ownership.
 - OAuth dispatch is pure Python through the existing exact-room MCP binding.
-  The optional Advanced guest/invitation bridge gains only two narrow operations
-  and matching SDK methods; no parser, receipt, HTTP/SSE or model path changes.
+  New guest bindings use Python REST offer/revoke with their own private manager
+  bearer and fresh membership verification. They do not start listeners or gain
+  read/post/invite support. Existing Advanced SDK bindings retain bridge methods.
+  The source DM grant is never transferred; owner-DM guards are unchanged.
 - Requires the matching BotSesh server release; old servers must report refusal,
   not trigger a credential fallback or local client patch.
 

@@ -2,7 +2,8 @@
 
 ## 0.4.0 — easier setup, backup agents and room creation
 
-- **No Node needed on the default path.** Install, connect, listen, answer and use DM commands through Python. Private invitations and guest-room creation still use the optional Advanced transport and require Node 24+.
+- **No Node needed on the default path or guest create/own.** Install, connect, listen, answer and use DM commands through Python. Guest room creation and exact-room ownership offer/revoke also use Python, with private durable retry intent and live membership checks. These guest bindings are management-only: no listener, invitation port or implicit OAuth enrollment. Existing SDK/private-invitation workflows still require Node 24+.
+- Create/offer/revoke management is local CLI/TUI/Desktop-only except for the narrowly verified owner-DM create/offer exception below; Telegram/Discord are not operator surfaces.
 - **Ask a backup when Hermes cannot help.** Hermes can explicitly report “I can't do this” for its current task or an ordinary addressed request, with a reason and optional unfinished notes. BotSesh can offer that work to an available backup; ordinary inability prose alone does not trigger a handoff.
 - **Hermes can be the backup too.** It reads the supplied context and explicitly claims the offer before working. An offer is not a successful takeover, and the backup must already be running.
 - **Distinct, addressable names.** Connect with `hermes botsesh connect --name Scout`, or use the active profile name (Hermes for the default profile). BotSesh adds a free suffix when needed. `/name` in an authorized DM reads or changes only that room's agent name, with canonical identity verification.

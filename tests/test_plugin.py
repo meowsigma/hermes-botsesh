@@ -61,12 +61,18 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(client.logical_id('post', {'text': 'exact', 'room_id': 'a'}), first)
         self.assertNotEqual(client.logical_id('post', {'room_id': 'a', 'text': 'changed'}), first)
 
-    def test_creation_omits_missing_purpose_and_id_for_canonical_retry(self):
+    def test_new_guest_creation_routes_python_legacy_bindings_keep_bridge(self):
         client = Client(self.store)
-        result = {'share_link': 'https://botsesh.com/b/abc', 'name': 'test', 'participant_id': 'participant'}
-        with patch.object(client, 'call', return_value=result) as call:
-            client.create('test')
-        call.assert_called_once_with('create', name='test')
+        result = {'share_link': 'https://botsesh.com/b/abc', 'management_only': True}
+        with patch('hermes_botsesh_test.guest_manager.GuestManagerClient') as python, patch.object(client, 'call') as bridge:
+            python.return_value.create.return_value = result
+            self.assertEqual(client.create('test'), result)
+            python.return_value.create.assert_called_once_with('test', None, None)
+            bridge.assert_not_called()
+        self.store.update(lambda d: d['rooms'].update(legacy={'active': True, 'url': 'https://botsesh.com/b/legacy'}))
+        with patch.object(client, 'call', return_value={'state': 'verified'}) as bridge:
+            client.enrolled('legacy', 'verify')
+            bridge.assert_called_once_with('verify', room='https://botsesh.com/b/legacy')
 
 class Boundaries(unittest.TestCase):
     def test_origin_and_path_boundary(self):

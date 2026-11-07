@@ -17,20 +17,26 @@ claiming every existing Python operation was newly ported.
 |---|---|---|
 | `__init__.py`, installer, CLI registration | Side-effect-free Python registration; no Node probe | Same registration; Node checked only on explicit SDK use |
 | `cli.py` connect/disconnect | Hermes native PKCE + profile `plugin_oauth`; Python room discovery and verified revoke | Local `/botsesh join` only |
-| `Client.enrolled()` | Routes `transport: oauth` exclusively to `OAuthClient.call()` | Other bindings use fixed-argv `Client.call()` |
+| `Client.enrolled()` | `oauth` routes exclusively to `OAuthClient.call()`; `guest_manager` routes only to Python management operations | Existing other bindings use fixed-argv `Client.call()` |
 | `Client.command()`, `node_binary()`, `child_env()` | Never called | Unchanged `node bridge.mjs STORE`, stdin request, restricted environment |
 | `adapter.py` subprocess/listen branch | Separate Python branch: listener heartbeat + bounded `wait_for_messages`; polls authoritative inbox | Unchanged SDK `listenInvalidations()` SSE child |
 | `tools.py` read/post | Python catchup and exact sends; common Python validation | Original bridge `read` / `post` |
-| `tools.py` guest create / private invite | Explicit Advanced-only guest/manager workflows, not OAuth enrollment or implicit fallback | SDK `create` / `invite` retains original secret-file behavior |
+| `tools.py` guest create / ownership | `guest_manager.py`: cookie-free guest REST creation, private durable intent, live identity checks, exact-room offer/revoke; management-only, no gateway listener | Existing SDK bindings retain their bridge offer/revoke operations |
+| `tools.py` private invite | Not part of Python guest management; fails closed for those bindings | SDK `invite` retains original secret-file behavior |
 | `dm_controls.py`, `command_transport.py` | Native Hermes registry, scoped `dm_controls`, `hermes_edit` and exact no-read notices through enrolled OAuth | These controls are OAuth-only; never routed through Node |
 | `task_failure.py` | Shared Python failure validator; exact current-turn receipt/task; canonical MCP failure, offer, pickup/claim/settle | Original bridge/SDK failure behavior unchanged |
 | SDK room-turn parser | `room_turn.py`: strict JSON, UTF-16 limits, safe integers, failure exclusivity, purpose/draft/routine validation | Original vendored parser remains untouched |
 | SDK `completeRoomTurn` effects | Canonical server `finish_room_turn` owns resumable structured effects; Python journals only exact intent/receipt/result | Original SDK local-job executor remains untouched |
 
-**Nothing on the OAuth path still needs JS.** The Advanced boundary remains
-available, not silently selected after a Python error. Guest creation/private
-invitation management is a separate explicit SDK workflow, not part of an OAuth
-room grant. Account creation still requires separate pre-existing consent.
+**Nothing on the OAuth path still needs JS.** Guest create/own is now also Python,
+but is a separate management-only transport, not an OAuth room grant or a full
+invitation port. Its private Store is `credentials/python-guest`: 0700 directory,
+0600 atomic/fsynced registry, per-origin random connection key and exact pre-HTTP
+UUID/payload. Credentials are stored before live membership verification and never
+returned in public results. No automatic guest listener, read/post/invite or DM
+grant transfer is implemented. Legacy SDK creation intents are refused rather
+than silently duplicated under a new connection. Advanced SDK bindings retain
+their transport; account creation still requires separate pre-existing consent.
 
 ## Native protocol and durable identity
 
@@ -94,6 +100,30 @@ execution is refused when exact file bytes have not been supplied. Ordinary
 threaded prose replies, cant_do, offers/claims, DM controls and heartbeat need no
 Advanced feature or Node. Human acceptance, room authority and scheduling do not
 change.
+
+## Focused guest-manager fixture
+
+`tests/test_guest_manager.py` covers pre-HTTP durable intent, lost output, strict
+UUID/payload/identity checks, private result allowlists, legacy SDK retry refusal,
+management-only status and no listener. Its two opt-in real-server tests use
+`tests/guest-manager-server.mjs` with a matching local BotSesh server checkout:
+
+```sh
+PYTHON=$(command -v python3)
+NODE=$(command -v node)
+# EMPTY_PATH must be an existing empty directory. Server Node is only the local
+# test service; the Python plugin cannot find node or nodejs and must not bridge.
+PATH="$EMPTY_PATH" BOTSESH_TEST_NODE="$NODE" \
+  BOTSESH_TEST_SERVER_APP=/absolute/path/to/local-server/app.js \
+  PYTHONPATH=/path/to/hermes-agent:$PWD/tests \
+  "$PYTHON" -m unittest -v test_guest_manager
+```
+
+The fixture proves guest create -> lost-output exact retry -> offer -> expiry
+renewal -> signed-in human-cookie acceptance, audit and manager revocation, plus
+wrong/removed credentials. Local synthetic accounts and server data are removed
+on teardown. It does **not** prove an actual owner-browser walkthrough, native
+model response or production release; those remain separate acceptance work.
 
 ## Parity checks
 

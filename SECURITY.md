@@ -55,7 +55,20 @@ Account-mode creation through a separately consented MCP connector and
 invitation handling, other tools and human-only approvals are unchanged. There is
 no token export or reuse of the DM grant to enroll another room.
 
-Guest creation still uses the optional Advanced Node 24 bridge. An owner-DM guard
-pass is **not** no-Node creation support. Live no-Node create/own and useful-backup
-proofs remain separate release acceptance work. Older servers fail closed; no
-credential fallback or manual guard bypass is permitted.
+Guest creation and its exact-room ownership offer/revoke operations use Python,
+with a separate private manager bearer and pre-HTTP creation journal under the
+profile's `credentials/python-guest` (0700 directory, 0600 registry). The guest
+POST carries no Cookie or Authorization. Public room metadata contains no bearer
+or connection key; exact origin/room/participant/membership and live membership
+are checked before returning the share link. An exact retry reuses the original
+private connection key, UUID and payload; conflicting explicit UUID payloads fail.
+A matching legacy SDK creation journal is refused rather than silently creating
+a second room with a different connection. Recover it using its original store.
+
+New guest bindings are **management-only**: no automatic listener, read/post,
+private-invitation port or reuse of the source DM OAuth grant. Connect separately
+through a supported, explicitly authorized transport for conversation. Existing
+Advanced SDK bindings keep their Node transport; they are not silently migrated.
+Live no-Node create/own and useful-backup proofs remain separate release
+acceptance work. Older servers fail closed; no credential fallback or manual
+guard bypass is permitted.

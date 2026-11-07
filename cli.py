@@ -79,13 +79,15 @@ def handle(args):
                 if binding.get('active'):
                     try:
                         client.enrolled(room_id, 'verify')
-                        state = 'connected'
+                        state = 'membership_verified' if binding.get('transport') == 'guest_manager' else 'connected'
                     except BotSeshError as e:
                         state = e.code
                 h = binding.get('health', {})
                 gateway = h.get('state', 'not_observed')
                 if time.time() - h.get('last_check', 0) > 90:
                     gateway = 'stale_or_offline'
+                if binding.get('transport') == 'guest_manager':
+                    gateway = 'not_supported_management_only'
                 rows = binding.get('processing_receipts', {}).values()
                 backlog = sum(row['state'] not in ('replied', 'failed') for row in rows)
                 if state == 'connected' and binding.get('transport') == 'oauth':

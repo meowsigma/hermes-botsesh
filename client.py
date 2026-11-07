@@ -1,4 +1,4 @@
-"""Transport router: pure Python OAuth; optional Advanced Node SDK invitations.
+"""Transport router: Python OAuth/guest management; Advanced Node invitations.
 
 No OAuth path calls command()/call() or sends its grant to the JS bridge.
 """
@@ -114,6 +114,9 @@ class Client:
             if binding.get('transport') == 'oauth':
                 from .oauth import OAuthClient
                 result = OAuthClient(self.store).call(binding, op, **args)
+            elif binding.get('transport') == 'guest_manager':
+                from .guest_manager import GuestManagerClient
+                result = GuestManagerClient(self.store).call(binding, op, **args)
             else:
                 result = self.call(op, room=binding['url'], **args)
             def progress(data):
@@ -136,6 +139,9 @@ class Client:
         except BotSeshError as e:
             if e.pending:
                 self.store.update(lambda d: d['rooms'][room_id].update(pending_completion=e.pending))
+            if binding.get('transport') == 'guest_manager' and e.code == 'agent_manager_revoked':
+                # Human acceptance ends management, not ordinary membership.
+                self.store.update(lambda d: d['rooms'][room_id].update(manager=False, state=e.code))
             if e.terminal and not (op == 'offer_ownership' and e.code == 'offer_ended'):
                 self.store.update(lambda d: d['rooms'][room_id].update(active=False, state=e.code))
             raise
@@ -147,7 +153,5 @@ class Client:
         return {'state': 'joined', 'room_id': room_id, 'participant_id': result['participantId'], 'url': url}
 
     def create(self, name='BotSesh room', purpose=None, client_id=None):
-        result = self.call('create', name=name, **({'purpose': purpose} if purpose is not None else {}), **({'client_id': client_id} if client_id else {}))
-        url, room_id = room_url(result['share_link'])
-        self.store.update(lambda d: d['rooms'].update({room_id: {'url': url, 'room_id': room_id, 'name': result['name'], 'participant_id': result['participant_id'], 'active': True, 'state': 'created', 'manager': True, 'expires_at': result.get('expires_at')}}))
-        return result
+        from .guest_manager import GuestManagerClient
+        return GuestManagerClient(self.store).create(name, purpose, client_id)

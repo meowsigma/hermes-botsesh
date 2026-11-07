@@ -140,6 +140,13 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if isinstance(saved.get('group_allowed_chats'), list):
                 self.config.extra['group_allowed_chats'] = list(saved['group_allowed_chats'])
             for room_id, binding in bindings.items():
+                # Guest creation is management-only, not a Python invitation or
+                # listening grant. Never probe the Node bridge or infer a new
+                # OAuth room authorization from the source owner DM.
+                if binding.get('transport') == 'guest_manager':
+                    if room_id in self._rooms:
+                        self._rooms[room_id].cancel()
+                    continue
                 if binding.get('active') and binding.get('oauth_root'):
                     allowed = self.config.extra.setdefault('group_allowed_chats', [])
                     if room_id not in allowed:
