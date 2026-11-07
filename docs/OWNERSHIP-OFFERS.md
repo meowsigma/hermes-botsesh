@@ -1,9 +1,11 @@
 # Browser-accepted human ownership offers
 
-Task `t_ef5a72bd`. This is a small additive change on the transport owner's frozen
-`pure-python` candidate `63badae9b78220b32ccaa1ff776b4a8316e34bc7`, coordinated on
-`t_5df8ed41`. That base still needs its own independent approval; this branch does
-not approve or publish the refactor.
+Task `t_ef5a72bd`. The original ownership commit `eeecb6e` was replayed unchanged
+onto `pure-python` `1928da2deae4ca71a11d358e05220c45fa8cd88e`, independently
+source-approved on `t_5df8ed41`. The rebased increment is published separately as
+`qr/agent-creates-room-pure-python`, preserving the original published branch
+without force-push. This branch still requires its own ownership source review;
+the base's source approval is not native or production acceptance.
 
 - `botsesh_offer_ownership(room_id, user_requested:true, client_id?)` is available
   only from an operator surface, not a BotSesh room message. The server rechecks
@@ -27,13 +29,18 @@ not approve or publish the refactor.
 
 Local verification: five focused tests in `tests/test_ownership.py` cover operator
 and explicit-request fences, exact room/UUID preservation, stable retries, pure
-Python OAuth RPC and registered handler/manifest parity. Existing `test_plugin.py`
-passes 18 tests after adding the two tool names to its exhaustive inventory.
+Python OAuth RPC and registered handler/manifest parity. On the approved-base
+replay, those five and all 18 existing `test_plugin.py` cases pass. Four focused
+OAuth journal regressions also pass: definitive post/finish/failure rejection
+retires pending work, while uncertain/retryable outcomes keep the exact intent.
+Bridge and vendored SDK syntax checks and `git diff --check` pass.
 These are offline checks, not native-agent or production proof. The app candidate
-separately exercises actual HTTP/MCP/SDK/browser acceptance. Named-host inference
-has not run: the task's six-upstream-call ceiling cannot reserve the normal eight
-requests for two complete tool+final turns in both hosts. No provider call has
-been spent and no native completion is claimed pending owner disposition.
+separately exercises actual HTTP/MCP/SDK/browser acceptance. The required two-host,
+two-turn native browser witness is **NOT RUN**; production acceptance is unproven.
+The parent raised the inference ceiling to ten actual cheap requests, still 0/10,
+and on 2026-11-07 authorized this source-only review split. Browser-route refusal
+and task-container shutdown remain queued for the interactive parent; this pass
+must not retry/bypass them, touch the owner browser, spend inference or deploy.
 
 Integration hotspot: `oauth.py` / `tools.py`; compose the add-only ownership hunks
 with the frozen transport owner rather than replacing either file wholesale.
