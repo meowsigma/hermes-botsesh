@@ -30,3 +30,18 @@ async def test_native_clarify_copy_preserves_exact_pending_identity(choices, tra
             assert entry.response == 'Blue'
     finally:
         clarify.clear_session('session')
+
+
+@async_test
+async def test_retired_native_clarify_notice_never_publishes_a_raw_key():
+    from tools import clarify_gateway as clarify
+    a = harness()
+    clarify.register('retire-copy', 'session', 'Wait?', ['Wait', 'Cancel'])
+    try:
+        assert (await a.send_clarify('dm', 'Wait?', ['Wait', 'Cancel'], 'retire-copy', 'session')).success
+        with patch('agent.i18n.t', side_effect=lambda key: key):
+            await a.retire_clarify_card('retire-copy', 'gateway.clarify.expired')
+        assert a.calls[-1][1] == 'retire'
+        assert a.calls[-1][2]['notice'] == 'This prompt is no longer waiting. Send a new request if needed.'
+    finally:
+        clarify.clear_session('session')

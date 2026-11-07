@@ -9,6 +9,7 @@ and optional session_key; None rejects the route. See INTEGRATION.md.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from gateway.platforms.base import ExecApprovalPrompt, SendResult
 
 _NATIVE_COPY = {
     'gateway.clarify.skip_hint': 'Reply "skip" to skip this question.',
+    'gateway.clarify.expired': 'This prompt is no longer waiting. Send a new request if needed.',
+    'gateway.clarify.cancelled': 'Clarification cancelled. Your next message will be handled as a follow-up.',
     'gateway.shutdown.notice_restart': 'Hermes is restarting.',
     'gateway.shutdown.notice_shutdown': 'Hermes is shutting down.',
     'gateway.notify.no_home_channel': 'No home channel is set for BotSesh. Use /sethome here to receive scheduled results and cross-platform messages, or ignore this notice.',
@@ -38,7 +41,12 @@ def _native_translation(key: str) -> str:
             return text
     except Exception:
         pass
-    return _NATIVE_COPY[key]
+    return _NATIVE_COPY.get(key, 'Hermes status update unavailable.')
+
+
+def _native_notice(text: str) -> str:
+    # Native UI notice fields only, not authored question/answer/command bytes.
+    return _native_translation(text) if re.fullmatch(r'gateway\.[A-Za-z0-9_.]+', text) else text
 
 
 def _clarify_text(question: str) -> str:
@@ -430,6 +438,7 @@ class DmControlsMixin:
             return SendResult(success=False, error=str(exc))
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        notice = _native_notice(notice)
         for card in list(self._controls().values()):
             if card.kind == 'clarify' and card.native_id == clarify_id and not card.claimed:
                 await self._retire(card, notice)
