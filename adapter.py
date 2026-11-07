@@ -273,11 +273,14 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 await asyncio.to_thread(self.client.enrolled, room_id, 'check')
                 return  # Keep both journals; never replace the earlier tool intent.
             self._journal_gateway_delivery(room_id, pending['payload'], pending['target'])
-            await self._post_payload(room_id, pending['payload'])
-            self._mark_handled(room_id, pending['target'])
+            result = await self._post_final(room_id, pending['payload'], pending['target'])
+            if result.get('read_effect') != 'none':
+                self._mark_handled(room_id, pending['target'])
         await self._flush_failures(room_id)
         for saved in list(self.client.store.room(room_id).get('processing_receipts', {}).values()):
             if saved['state'] in ('admitting', 'admitted', 'started') and saved.get('instance') != self._instance:
+                if await self._posted_reply(room_id, saved['target'], saved.get('receipt_id')):
+                    continue
                 # Started tools may have external effects. Never silently replay an
                 # uncertain execution; preserve it and deliver an honest failure.
                 self._queue_failure(room_id, saved['target'], 'interrupted')
@@ -424,6 +427,69 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 room['failure_outbox'].pop(target, None)
             self.client.store.update(finish)
 
+    async def _posted_reply(self, room_id, target, receipt_id):
+        """Reconcile a confirmed tool reply, including pre-upgrade OAuth journals.
+
+        Missing receipts alone prove nothing. Match this exact room/receipt/target,
+        retry an uncertain original UUID, and verify live access before settlement.
+        """
+        if not receipt_id:
+            return None
+        room = self.client.store.room(room_id)
+        row = room.get('processing_receipts', {}).get(str(target), {})
+        result = row.get('posted_reply') if row.get('receipt_id') == receipt_id else None
+        if result:
+            await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
+        elif room.get('transport') == 'oauth':
+            posts = [post for post in room.get('oauth_posts', {}).values()
+                     if post['exact'].get('receipt_id') == receipt_id
+                     and post['exact'].get('processed') is True
+                     and (post['exact'].get('reply_to') == target
+                          or post['exact'].get('reply_to') is None and row.get('receipt_id') == receipt_id)]
+            # A committed reply owns the outcome; otherwise resolve the original
+            # uncertain tool send before considering a different final payload.
+            posts.sort(key=lambda post: not post.get('complete', False))
+            if posts:
+                result = await asyncio.to_thread(self.client.enrolled, room_id, 'retry', client_id=posts[0]['exact']['client_id'])
+        if not result or result.get('read_effect') != 'processed_frozen_receipt':
+            return None
+        self._mark_handled(room_id, target)
+        current = self._current.get(room_id)
+        if current and current['target'] == target and current['receipt_id'] == receipt_id:
+            current['delivered'] = True
+        return result
+
+    async def _post_final(self, room_id, payload, target):
+        posted = await self._posted_reply(room_id, target, payload.get('receipt_id'))
+        if posted:
+            return posted
+        row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target), {})
+        if row.get('final_expired'):
+            await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
+        else:
+            try:
+                return await self._post_payload(room_id, payload)
+            except BotSeshError as error:
+                room = self.client.store.room(room_id)
+                if (error.code != 'receipt_expired' or room.get('pending_completion')
+                        or room.get('oauth_posts', {}).get(payload['client_id'])):
+                    raise  # Never discard an uncertain original send.
+                # Keep the deployed server's existing failure-code vocabulary.
+                self._queue_failure(room_id, target, 'runtime_error')
+                self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(target)].update(final_expired=True))
+        # A missing, uncommitted receipt cannot be attested or regenerated. One
+        # durable no-read failure retires it, including stale core-ledger retries.
+        await self._flush_failures(room_id)
+        def retire(data):
+            room = data['rooms'][room_id]
+            if room.get('pending_final', {}).get('payload') == payload:
+                room.pop('pending_final', None)
+        self.client.store.update(retire)
+        current = self._current.get(room_id)
+        if current and current['target'] == target:
+            current['failure_delivered'] = True
+        return {'read_effect': 'none'}
+
     async def _post_payload(self, room_id, payload):
         text = payload['text']
         # Exact contiguous bytes, no lossy fallback or reflow. Only the final
@@ -515,23 +581,31 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 return SendResult(success=False, error='Native command response delivery unconfirmed')
         current = self._current.get(chat_id)
         try:
+            replay = self._gateway_replay(chat_id, content, metadata)
+            if replay:
+                if replay['payload'].get('processed') is True:
+                    result = await self._post_final(chat_id, replay['payload'], replay['target'])
+                    if result.get('read_effect') != 'none':
+                        # Do not clear a newer turn's journal or context.
+                        pending = self.client.store.room(chat_id).get('pending_final')
+                        if pending and pending['payload'] == replay['payload']:
+                            self._mark_handled(chat_id, replay['target'])
+                        if current and current['client_id'] == replay['payload']['client_id']:
+                            current['delivered'] = True
+                else:
+                    result = await self._post_payload(chat_id, replay['payload'])
+                return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
+            if current:
+                posted = await self._posted_reply(chat_id, current['target'], current['receipt_id'])
+                if posted:
+                    return SendResult(success=True, message_id=str(posted['number']))
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
                 code = current.get('provider_hint') or failure_code(content)
                 self._queue_failure(chat_id, current['target'], code)
                 await self._flush_failures(chat_id)
                 current['failure_delivered'] = True
                 return SendResult(success=True)
-            replay = self._gateway_replay(chat_id, content, metadata)
-            if replay:
-                result = await self._post_payload(chat_id, replay['payload'])
-                if replay['payload'].get('processed') is True:
-                    # Do not clear a newer turn's journal or mark its context handled.
-                    pending = self.client.store.room(chat_id).get('pending_final')
-                    if pending and pending['payload'] == replay['payload']:
-                        self._mark_handled(chat_id, replay['target'])
-                    if current and current['client_id'] == replay['payload']['client_id']:
-                        current['delivered'] = True
-                return SendResult(success=True, message_id=str(result['number']))
+
             final = current and current.get('model_processed') is True and bool((metadata or {}).get('notify'))
             pending = self.client.store.room(chat_id).get('pending_completion')
             if final and not pending:
@@ -547,10 +621,11 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 options = {'client_id': self.client.logical_id('gateway-notice', {'chat_id': chat_id, 'target': current.get('target') if current else reply_to, 'text': content})}
             if (metadata or {}).get('notify'):
                 self._journal_gateway_delivery(chat_id, {'text': content, **options}, current['target'] if final else None, pending_final=bool(final and not current['delivered']))
-            result = await self._post_payload(chat_id, {'text': content, **options})
-            if final:
+            payload = {'text': content, **options}
+            result = await self._post_final(chat_id, payload, current['target']) if final else await self._post_payload(chat_id, payload)
+            if final and result.get('read_effect') != 'none':
                 current['delivered'] = True
-            return SendResult(success=True, message_id=str(result['number']))
+            return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
         except (BotSeshError, Exception) as e:
             return SendResult(success=False, error=str(e) if isinstance(e, BotSeshError) else 'BotSesh delivery unconfirmed; retry the same saved operation.', raw_response={'pending': e.pending} if isinstance(e, BotSeshError) and e.pending else None)
 
@@ -568,7 +643,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                     saved.pop('text', None)
                 room.setdefault('health', {}).update(last_reply=time.time())
                 room['processed_cursor'] = max(room.get('processed_cursor', -1), target)
-                room.pop('pending_final', None)
+                if room.get('pending_final', {}).get('target') == target:
+                    room.pop('pending_final', None)
         self.client.store.update(mark)
 
     async def on_processing_start(self, event):
@@ -587,6 +663,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
             return
         current = self._current.pop(room_id, None)
+        if current and await self._posted_reply(room_id, current['target'], current['receipt_id']):
+            current['delivered'] = True
         if current and current['delivered']:
             self._mark_handled(room_id, current['target'])
         elif current and self.client.store.room(room_id).get('pending_completion'):
@@ -642,6 +720,10 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)
+        if current:
+            posted = await self._posted_reply(event.source.chat_id, current['target'], current['receipt_id'])
+            if posted:
+                return SendResult(success=True, message_id=str(posted['number'])), self
         if current and current.get('model_processed') is not True:
             # Our durable failure outbox owns this short no-read notice. Do not
             # put raw provider prose in a second, unrelated core replay ledger.
