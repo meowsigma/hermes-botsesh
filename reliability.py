@@ -29,6 +29,10 @@ def health(store, room_id, **fields):
 
 def failure_code(text):
     lower = str(text).lower()
+    # Native execution diagnostics also have budgets. They are not evidence
+    # that the provider rejected a request or ran out of money.
+    if any(phrase in lower for phrase in ('iteration budget', 'turn budget', 'tool budget', 'run time budget', 'run budget', 'max_iterations_reached')):
+        return 'runtime_error'
     if any(word in lower for word in ('402', 'budget', 'credit', 'quota', 'billing', 'payment')):
         return 'provider_budget'
     return 'provider_error'

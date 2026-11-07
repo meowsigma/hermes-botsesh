@@ -117,6 +117,13 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         post=next(iter(self.posts.values()));self.assertNotIn('private vendor detail',post['text']);self.assertNotIn('processed',post)
         await self.adapter.on_processing_complete(Mock(source=Mock(chat_id='a'),message_id='3'),ProcessingOutcome.SUCCESS)
         self.assertNotIn('handled',self.client.store.room('a'))
+    async def test_iteration_budget_is_not_reported_as_provider_credit_failure(self):
+        self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':'exact input'}
+        await self.adapter.send_or_update_status('a','error','⚠️ Iteration budget exhausted (4/4) — asking model to summarise')
+        await self.adapter.send('a','Turn stopped.',metadata={'notify':True})
+        self.assertEqual(len(self.posts),1)
+        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: gateway processing error.")
+
     async def test_native_diagnostic_status_does_not_post_a_duplicate_error(self):
         self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':'exact input'}
         await self.adapter.send_or_update_status('a','error','HTTP 402: budget exceeded')
