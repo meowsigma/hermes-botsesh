@@ -499,6 +499,14 @@ class OAuthClient:
 
     def call(self, binding, op, **args):
         room_id = binding['room_id']
+        if op == 'offer_ownership':
+            if args.get('user_requested') is not True:
+                raise BotSeshError('explicit_request_required')
+            require_client_id(args.get('client_id'))
+            return self.rpc(binding, 'offer_ownership', {'room_id': room_id, 'client_id': args['client_id'], 'user_requested': True})
+        if op == 'revoke_ownership_offer':
+            require_client_id(args.get('offer_id'))
+            return self.rpc(binding, 'revoke_ownership_offer', {'room_id': room_id, 'offer_id': args['offer_id']})
         if op == 'discover':
             return self.discover(binding)
         if op == 'dm_context':
