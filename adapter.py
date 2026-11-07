@@ -55,6 +55,7 @@ from .client import Client, BotSeshError, child_env, pending_notice
 from .storage import StorageError
 from .reliability import receipt, health, backoff, failure_code, failure_notice
 from .command_transport import CommandTransportMixin, _NATIVE_INPUT
+from .dm_controls import _shutdown_notice, _native_translation
 
 HINT = (
     'You are Hermes in a BotSesh room with people and their own agents. '
@@ -496,6 +497,14 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         self.client.store.update(journal)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        if (metadata or {}).get('_interim_send') and _shutdown_notice(content):
+            if self._current.get(chat_id):
+                # The durable linked final outcome owns the interruption. Native
+                # shutdown status is not a second answer, failure or read receipt.
+                health(self.client.store, chat_id, last_status=time.time())
+                return SendResult(success=True)
+            if content in ('gateway.shutdown.notice_restart', 'gateway.shutdown.notice_shutdown'):
+                content = _native_translation(content)
         incoming = _NATIVE_INPUT.get()
         if incoming and incoming[0] == chat_id:
             try:

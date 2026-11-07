@@ -19,6 +19,40 @@ from uuid import uuid4
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
 
 
+_NATIVE_COPY = {
+    'gateway.clarify.skip_hint': 'Reply "skip" to skip this question.',
+    'gateway.shutdown.notice_restart': 'Hermes is restarting.',
+    'gateway.shutdown.notice_shutdown': 'Hermes is shutting down.',
+}
+
+
+def _native_translation(key: str) -> str:
+    # Core can return the bare key when an installed language catalogue is absent.
+    # Use its profile-scoped translator first; never infer just to translate UI.
+    try:
+        from agent.i18n import t
+        text = t(key)
+        if isinstance(text, str) and text.strip() and not text.startswith('gateway.'):
+            return text
+    except Exception:
+        pass
+    return _NATIVE_COPY[key]
+
+
+def _clarify_text(question: str) -> str:
+    # Only the core-appended hint is presentation. Keep the pending question,
+    # choices, callback identity and authored text byte-for-byte unchanged.
+    key = 'gateway.clarify.skip_hint'
+    if question.endswith('\n' + key):
+        return question[:-len(key)] + _native_translation(key)
+    return question
+
+
+def _shutdown_notice(text: str) -> bool:
+    return any(text in (key, _NATIVE_COPY[key], _native_translation(key))
+               for key in ('gateway.shutdown.notice_restart', 'gateway.shutdown.notice_shutdown'))
+
+
 def _units(text: str) -> int:
     return len(text.encode('utf-16-le')) // 2
 
@@ -355,10 +389,11 @@ class DmControlsMixin:
                     or list(entry.choices or []) != list(choices or [])):
                 raise ValueError('Clarify request is no longer pending or does not match')
             snapshot = (entry.question, tuple(entry.choices or []), entry.multi_select)
+            display_question = _clarify_text(question)
             if not choices or entry.multi_select:
                 # v1 is single-choice. Native typed parser retains multi-select semantics.
                 clarify.mark_awaiting_text(clarify_id)
-                text = question
+                text = display_question
                 if choices:
                     text += '\n\n' + '\n'.join(f'{i}. {c}' for i, c in enumerate(choices, 1))
                     text += '\nType one or more option numbers (for example 1,2), or type your answer.'
@@ -378,7 +413,7 @@ class DmControlsMixin:
                     await self._control_notice(chat_id, 'Answer submitted.')
                 else:
                     await self._expired_notice(chat_id)
-            result = await self._publish(chat_id, session_key, 'clarify', (clarify_id, id(entry)), question,
+            result = await self._publish(chat_id, session_key, 'clarify', (clarify_id, id(entry)), display_question,
                 [(str(c), ('answer', str(c)), 'secondary') for c in choices], selected,
                 buttons=[('Other (type answer)', ('other',), 'secondary')],
                 native_id=clarify_id, ttl=clarify.get_clarify_timeout(), binding=binding,
