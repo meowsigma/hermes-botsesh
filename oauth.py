@@ -441,8 +441,17 @@ class OAuthClient:
             rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
             if not any(room['room_id'] == room_id and room['participant_id'] == binding['participant_id'] for room in rooms):
                 raise BotSeshError('identity_mismatch', 401)
-            return {'pending': None, 'participantId': binding['participant_id']}
+            pending = next(({'client_id': key, 'failure': True, 'read_effect': 'none', 'task_id': post['exact']['failure']['task_id']}
+                            for key, post in self.store.room(room_id).get('oauth_posts', {}).items()
+                            if post.get('kind') == 'fail' and not post.get('complete')), None)
+            return {'pending': pending, 'participantId': binding['participant_id']}
         if op == 'check':
+            pending = next(({'client_id': key, 'failure': True, 'read_effect': 'none', 'task_id': post['exact']['failure']['task_id']}
+                            for key, post in self.store.room(room_id).get('oauth_posts', {}).items()
+                            if post.get('kind') == 'fail' and not post.get('complete')), None)
+            if pending:
+                self.call(binding, 'verify')
+                return {'pending': pending, 'hasMore': False}
             inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
             return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets']], 'replies': [], 'backlog': inbox['backlog']}
         if op == 'read':
@@ -477,10 +486,66 @@ class OAuthClient:
                         del receipts[key]
                 if len(receipts) >= 90:
                     raise BotSeshError('receipt_limit_retry_pending_turn')
-                receipts[receipt_id] = {'expires': time.time()+3600, 'numbers': [m['number'] for m in messages]}
+                receipts[receipt_id] = {'expires': time.time()+3600, 'participant_id': binding['participant_id'], 'numbers': [m['number'] for m in messages],
+                    'target_number': args.get('target_number'),
+                    'task_targets': {str(m['number']): (m.get('addressing') or {}).get('taskId') for m in messages if not m['isOwn']}}
             self.store.update(save_receipt)
             return result
+        if op == 'fail':
+            from .reliability import validate_failure
+            failure = validate_failure(args.get('failure'))
+            if any(key in args for key in ('text', 'reply', 'reply_to', 'processed', 'draft_ready', 'routine_report')):
+                raise BotSeshError('invalid_task_failure')
+            receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
+            if not isinstance(client_id, str) or not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', client_id):
+                raise BotSeshError('invalid_client_id')
+            exact = {k: args[k] for k in ('failure', 'receipt_id', 'client_id', 'target_number') if k in args}
+            current = self.store.room(room_id)
+            saved = current.get('oauth_posts', {}).get(client_id)
+            if saved and (saved.get('kind') != 'fail' or saved['exact'] != exact):
+                raise BotSeshError('pending_send_mismatch')
+            if saved and saved.get('participant_id') != binding['participant_id']:
+                raise BotSeshError('receipt_scope')
+            if saved and saved.get('complete'):
+                self.call(binding, 'verify')
+                return saved['result']
+            if not saved:
+                frozen = current.get('oauth_receipts', {}).get(receipt_id)
+                if not frozen or frozen['expires'] <= time.time():
+                    raise BotSeshError('receipt_expired')
+                if frozen.get('participant_id') != binding['participant_id']:
+                    raise BotSeshError('receipt_scope')
+                target = frozen.get('target_number')
+                if target is None:
+                    target = args.get('target_number')
+                matches = [int(number) for number, task in frozen.get('task_targets', {}).items()
+                           if task == failure['task_id'] and (target is None or int(number) == target)]
+                if len(matches) != 1 or args.get('target_number', matches[0]) != matches[0]:
+                    raise BotSeshError('failure_task_scope')
+                saved = {'kind': 'fail', 'participant_id': binding['participant_id'], 'exact': exact, 'target_number': matches[0]}
+                def journal(data):
+                    posts = data['rooms'][room_id].setdefault('oauth_posts', {})
+                    if any(not post.get('complete') for post in posts.values()):
+                        raise BotSeshError('pending_turn')
+                    if len(posts) >= 1000:
+                        del posts[next(iter(posts))]
+                    posts[client_id] = saved
+                self.store.update(journal)
+            try:
+                result = self.rpc(binding, 'finish_turn', {'room_id': room_id, 'batch_id': receipt_id,
+                                  'client_id': client_id, 'output': {'failure': failure}})
+                if result.get('read_effect') != 'none' or not result.get('failure'):
+                    raise BotSeshError('failure_not_confirmed_retry_same_intent')
+            except BotSeshError as error:
+                error.pending = {'client_id': client_id, 'failure': True, 'task_id': failure['task_id'], 'read_effect': 'none'}
+                raise
+            completed = {'client_id': client_id, 'failure': True, 'task_id': failure['task_id'],
+                         'status': failure['status'], 'target_number': saved['target_number'], 'read_effect': 'none'}
+            self.store.update(lambda d: d['rooms'][room_id]['oauth_posts'][client_id].update(complete=True, result=completed))
+            return completed
         if op == 'post':
+            if 'failure' in args:
+                raise BotSeshError('invalid_task_failure')
             receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
             try:
                 if str(uuid.UUID(client_id, version=4)) != client_id:
@@ -539,5 +604,5 @@ class OAuthClient:
             saved = self.store.room(room_id).get('oauth_posts', {}).get(args.get('client_id'))
             if not saved:
                 raise BotSeshError('original_operation_required')
-            return self.call(binding, 'post', **saved['exact'])
+            return self.call(binding, 'fail' if saved.get('kind') == 'fail' else 'post', **saved['exact'])
         raise BotSeshError('oauth_operation_not_supported')

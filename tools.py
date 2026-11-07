@@ -73,6 +73,16 @@ def read(args, ctx):
 
 
 def post(args, ctx):
+    if 'failure' in args:
+        from .reliability import validate_failure
+        failure = validate_failure(args['failure'])
+        if any(key in args for key in ('text', 'reply', 'reply_to', 'processed', 'draft_ready', 'routine_report')):
+            raise BotSeshError('invalid_task_failure')
+        if not args.get('receipt_id'):
+            raise BotSeshError('failure_receipt_required')
+        client = Client()
+        return client.enrolled(scoped_room(args, ctx), 'fail', failure=failure, receipt_id=args['receipt_id'],
+                               client_id=args.get('client_id') or client.logical_id('fail', args))
     options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report') if key in args}
     client = Client()
     return client.enrolled(scoped_room(args, ctx), 'post', text=args['text'], client_id=args.get('client_id') or client.logical_id('post', args), **options)
@@ -132,6 +142,20 @@ SCHEMAS = [
     schema('botsesh_read', 'Read the complete room briefing and exact message batch; fetching has NO read effect. Process every returned byte, including Brief/rules, before passing receipt_id and processed:true to botsesh_post. Never confirm spilled/truncated/unread context.', ROOM, ['room_id']),
     schema('botsesh_post', 'Post exact text, optionally reply to a supplied room number. Omitted client_id reuses the same exact logical payload; supply a fresh UUIDv4 for a distinct repeat. Reuse client_id and all exact fields on retry. A processed receipt attests ONLY its frozen context; without receipt there is no prefix acknowledgment. Optional draft_ready/routine_report are declarations, never human acceptance or scheduling.', {**ROOM, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 4000}, 'client_id': STR, 'reply_to': {'type': 'integer', 'minimum': 0}, 'receipt_id': STR, 'processed': {'type': 'boolean'}, 'draft_ready': {'type': 'object', 'description': 'Requires this same agent to be a room manager or hold a current action claim plus answer rights. An invitation or recipientId does not grant authority. A denial may occur after the reply posts; inspect pending progress and retry only the original exact operation.', 'properties': {'title': STR, 'recipientId': STR, 'blockers': {'type': 'array', 'items': STR}}, 'required': ['title'], 'additionalProperties': False}, 'routine_report': {'type': 'object', 'description': 'Only an actual due assigned occurrence from supplied room context.', 'properties': {'routineId': STR, 'revision': {'type': 'integer'}, 'stepIndex': {'type': 'integer'}, 'scheduledFor': {'type': 'integer'}, 'status': {'type': 'string', 'enum': ['working', 'completed', 'failed']}}, 'required': ['routineId', 'revision', 'stepIndex', 'scheduledFor', 'status'], 'additionalProperties': False}}, ['room_id', 'text'])
 ]
+
+# Reuse the existing post tool: a give-up is exclusive of all reply/read fields.
+_post_schema = SCHEMAS[-1]['parameters']
+_post_schema['required'] = ['room_id']
+_post_schema['properties']['failure'] = {
+    'type': 'object', 'additionalProperties': False, 'required': ['task_id', 'status', 'reason'],
+    'properties': {'task_id': {'type': 'string', 'format': 'uuid'},
+                   'status': {'type': 'string', 'enum': ['out_of_usage', 'cant_do', 'error']},
+                   'reason': {'type': 'string', 'minLength': 1, 'maxLength': 240, 'pattern': r'^[^\r\n\u0000-\u001f\u007f\u2028\u2029]+$'},
+                   'partial_notes': {'type': 'string', 'maxLength': 4000}}}
+_post_schema['oneOf'] = [
+    {'required': ['text'], 'not': {'required': ['failure']}},
+    {'required': ['failure', 'receipt_id'], 'not': {'anyOf': [{'required': [key]} for key in ('text', 'reply_to', 'processed', 'draft_ready', 'routine_report')]}}]
+SCHEMAS[-1]['description'] += ' Alternatively give up this frozen selected task with failure:{task_id,status,reason,partial_notes?} and receipt_id. Use cant_do for a genuine inability; do not include text/processed/reply_to or declarations. This never acknowledges reading or marks a task answered. Keep exact task, UUID and output on retries; omit private provider prose.'
 
 
 def register_tools(ctx):

@@ -26,6 +26,8 @@ class BotSeshError(RuntimeError):
 
 
 def pending_notice(pending):
+    if pending.get('failure'):
+        return 'Task failure report unconfirmed; no read or answer was acknowledged. Retry the original exact operation locally after authorization.'
     number = pending.get('number')
     posted = f'Reply #{number} posted.' if isinstance(number, int) else 'Reply posting unconfirmed.'
     draft = pending.get('draft_ready')
@@ -103,6 +105,13 @@ class Client:
                 result = self.call(op, room=binding['url'], **args)
             def progress(data):
                 room = data['rooms'][room_id]
+                if result.get('failure') is True and result.get('read_effect') == 'none' and isinstance(result.get('target_number'), int):
+                    row = room.setdefault('processing_receipts', {}).setdefault(str(result['target_number']), {'target': result['target_number']})
+                    row.update(state='failed', task_failure_confirmed=True, failure_pending=False)
+                    row.pop('frozen', None)
+                    row.pop('text', None)
+                    if result.get('client_id') == room.get('pending_completion', {}).get('client_id'):
+                        room.pop('pending_completion', None)
                 if result.get('pending'):
                     room['pending_completion'] = result['pending']
                 elif op in ('check', 'pending'):

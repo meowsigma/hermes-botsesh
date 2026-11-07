@@ -240,6 +240,7 @@ class BotSeshAdapter(BasePlatformAdapter):
         if room_id in self._current:
             await self._receive_while_busy(room_id)
             return
+        await self._flush_failures(room_id)
         if self.client.store.room(room_id).get('pending_completion'):
             status = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
             if status.get('pending'):
@@ -375,16 +376,40 @@ class BotSeshAdapter(BasePlatformAdapter):
             if row.get('state') == 'failed' and row.get('failure_pending') is False:
                 return
             exact_code = row.get('failure_code') or code
-            payload = {'text': failure_notice(exact_code), 'reply_to': target, 'client_id': client_id}
+            payload = {'text': failure_notice(exact_code), 'client_id': client_id}
+            # hermes_notice is explicitly no-read/no-answer. A generic device send
+            # with reply_to would close the selected task before its failure report.
+            if room.get('transport') == 'oauth':
+                payload['reply_to'] = target
+            frozen = row.get('frozen') or {}
+            message = next((m for m in frozen.get('batch', {}).get('messages', []) if m.get('number') == target and not m.get('isOwn')), {})
+            task_id = (message.get('addressing') or {}).get('taskId')
+            failure = None
+            if task_id and row.get('receipt_id'):
+                try:
+                    if str(uuid.UUID(task_id)) != task_id:
+                        raise ValueError()
+                except (ValueError, TypeError, AttributeError):
+                    task_id = None
+                if task_id:
+                    failure = {'failure': {'task_id': task_id, 'status': 'out_of_usage' if exact_code == 'provider_budget' else 'error',
+                                           'reason': failure_notice(exact_code)},
+                               'receipt_id': row['receipt_id'], 'target_number': target,
+                               'client_id': str(uuid.uuid4())}
+                    # The existing outbox persists this v4 once, before any I/O.
             row.update(state='failed', failure_code=exact_code, failure_pending=True, updated_at=time.time())
-            room.setdefault('failure_outbox', {}).setdefault(str(target), {'payload': payload, 'code': exact_code})
+            room.setdefault('failure_outbox', {}).setdefault(str(target), {'payload': payload, 'code': exact_code, 'task_failure': failure})
         self.client.store.update(save)
         logger.error('BotSesh room %s target %s failed: %s; notice queued.', room_id, target, code)
 
     async def _flush_failures(self, room_id):
         for target, saved in list(self.client.store.room(room_id).get('failure_outbox', {}).items()):
-            await self._post_payload(room_id, saved['payload'])
+            if not saved.get('notice_confirmed'):
+                await self._post_payload(room_id, saved['payload'])
+                self.client.store.update(lambda d: d['rooms'][room_id]['failure_outbox'][target].update(notice_confirmed=True))
             await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
+            if self.client.store.room(room_id).get('transport') != 'oauth' and saved.get('task_failure'):
+                await asyncio.to_thread(self.client.enrolled, room_id, 'fail', **saved['task_failure'])
             def finish(data):
                 room = data['rooms'][room_id]
                 row = room['processing_receipts'][target]
@@ -468,9 +493,18 @@ class BotSeshAdapter(BasePlatformAdapter):
                 room['pending_final'] = record  # One atomic write, only after validation.
         self.client.store.update(journal)
 
+    def _task_failure_confirmed(self, room_id, current):
+        return bool(current and self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {}).get('task_failure_confirmed'))
+
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         current = self._current.get(chat_id)
         try:
+            if self._task_failure_confirmed(chat_id, current):
+                current['failure_delivered'] = True
+                return SendResult(success=True)  # No synthetic reply/read after explicit give-up.
+            pending_failure = self.client.store.room(chat_id).get('pending_completion')
+            if pending_failure and pending_failure.get('failure'):
+                return SendResult(success=False, error=pending_notice(pending_failure), raw_response={'pending': pending_failure})
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
                 code = current.get('provider_hint') or failure_code(content)
                 self._queue_failure(chat_id, current['target'], code)
@@ -539,12 +573,14 @@ class BotSeshAdapter(BasePlatformAdapter):
         if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
             return
         current = self._current.pop(room_id, None)
+        if self._task_failure_confirmed(room_id, current):
+            return
         if current and current['delivered']:
             self._mark_handled(room_id, current['target'])
         elif current and self.client.store.room(room_id).get('pending_completion'):
             health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
         elif current and not current.get('failure_delivered') and not self.client.store.room(room_id).get('pending_final'):
-            code = 'cancelled' if outcome == ProcessingOutcome.CANCELLED else 'runtime_error' if outcome == ProcessingOutcome.FAILURE else 'empty_response'
+            code = current.get('provider_hint') or ('cancelled' if outcome == ProcessingOutcome.CANCELLED else 'runtime_error' if outcome == ProcessingOutcome.FAILURE else 'empty_response')
             self._queue_failure(room_id, current['target'], code)
             await self._flush_failures(room_id)
         # Silence, model failure and cancellation never acknowledge fetched context.
@@ -580,8 +616,11 @@ class BotSeshAdapter(BasePlatformAdapter):
             return
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')
-        if self.client.store.room(chat_id).get('transport') == 'oauth':
+        if self.client.store.room(chat_id).get('transport') == 'oauth' and not current.get('working_announced'):
+            # Transport typing renews liveness, not task progress. Repeating this
+            # automatic status would otherwise prevent server stall inference.
             await asyncio.to_thread(self.client.enrolled, chat_id, 'working', target=current['target'])
+            current['working_announced'] = True
 
     def _send_retry_is_final(self, result):
         # The durable original payload will retry via the room loop/core ledger.
@@ -590,6 +629,14 @@ class BotSeshAdapter(BasePlatformAdapter):
 
     async def send_final_ledgered(self, event, session_key, text_content, metadata, *, reply_to, is_ephemeral_response=False):
         current = self._current.get(event.source.chat_id)
+        if self._task_failure_confirmed(event.source.chat_id, current):
+            return SendResult(success=True), self
+        pending = self.client.store.room(event.source.chat_id).get('pending_completion')
+        if current and current.get('model_processed') is True and not pending:
+            status = await asyncio.to_thread(self.client.enrolled, event.source.chat_id, 'pending')
+            pending = status.get('pending')
+        if pending and pending.get('failure'):
+            return SendResult(success=False, error=pending_notice(pending), raw_response={'pending': pending}), self
         if current and current.get('model_processed') is not True:
             # Our durable failure outbox owns this short no-read notice. Do not
             # put raw provider prose in a second, unrelated core replay ledger.

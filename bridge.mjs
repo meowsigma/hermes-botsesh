@@ -8,6 +8,16 @@ import {pathToFileURL} from 'node:url';
 const MAX_INPUT = 2*1024*1024;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function requireId(id) {if(!UUID.test(id || ''))throw new ClientError('Use an exact UUIDv4 operation/receipt ID.','invalid_client_id');return id;}
+function requireFailure(req) {
+  const f=req.failure;
+  if(!f || typeof f!=='object' || Array.isArray(f) || Object.keys(f).some(k=>!['task_id','status','reason','partial_notes'].includes(k)) ||
+    !UUID.test(f.task_id || '') || !['out_of_usage','cant_do','error'].includes(f.status) ||
+    typeof f.reason!=='string' || !f.reason.trim() || f.reason.length>240 || /[\r\n\u0000-\u001f\u007f\u2028\u2029]/.test(f.reason) ||
+    f.partial_notes!==undefined && (typeof f.partial_notes!=='string' || f.partial_notes.length>4000) ||
+    ['text','reply','reply_to','processed','draft_ready','routine_report'].some(k=>Object.hasOwn(req,k)))
+    throw new ClientError('Use one strict task failure, without a reply or read acknowledgment.','invalid_task_failure');
+  return f;
+}
 function allowedUrl(value, invitation=false) {
   const parsed=(invitation?parseInvitationUrl:parseRoomUrl)(value);
   if(parsed.origin!=='https://botsesh.com')throw new ClientError('This build connects only to https://botsesh.com.','origin_denied');
@@ -40,6 +50,7 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
   const pendingResult=async()=>{
     const job=client.state?.localJob;
     if(!job || job.pluginComplete || !UUID.test(job.eventId || ''))return null;
+    if(job.failure)return {client_id:job.eventId,failure:true,task_id:job.failure.task_id,read_effect:'none'};
     const saved=await client.store.read(room.origin,'plugin-post-'+job.eventId);
     const boundary=job.readBoundary;
     return {client_id:job.eventId,number:job.replyNumber ?? null,
@@ -69,7 +80,7 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
         const batch={...await client.catchup({maxChars:60000,...(req.target_number===undefined?{}:{targetNumber:req.target_number})}),routines:await client.routines()};
         if(batch.hasMore || batch.skippedCount)throw new ClientError('Room context exceeds this adapter budget. Nothing acknowledged; read it with the canonical client.','context_limit');
         const id=randomUUID();
-        const record={version:1,origin:room.origin,roomId:'plugin-receipt-'+id,boundRoom:room.roomId,participantId:client.state.participantId,batch,createdAt:Date.now()};
+        const record={version:1,origin:room.origin,roomId:'plugin-receipt-'+id,boundRoom:room.roomId,participantId:client.state.participantId,targetNumber:req.target_number ?? null,batch,createdAt:Date.now()};
         const result={read_effect:'none',receipt_id:id,briefing,batch};
         if(Buffer.byteLength(JSON.stringify(result))>160000)throw new ClientError('Complete context exceeds the plugin delivery budget. Nothing acknowledged.','context_limit');
         const index=await receiptIndex();index.receipts[id]=Math.min(record.createdAt+86400000,client.state.membership.expiresAt);
@@ -85,11 +96,46 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
         const saved=await client.store.read(room.origin,'plugin-post-'+req.client_id);
         if(!saved || saved.boundRoom!==room.roomId)throw new ClientError('Original operation is unavailable in this room.','receipt_scope');
         const original=JSON.parse(saved.exact);
+        if(original.op==='fail'){req={...original,room:req.room};return work();}
         req={op:'post',room:req.room,text:original.intent.reply,...original.intent,client_id:original.client_id,receipt_id:original.receipt_id,processed:true,...(original.reply_to===null?{}:{reply_to:original.reply_to})};
         delete req.reply;
         return work();
       }
+      case 'fail': {
+        const f=requireFailure(req),id=requireId(req.client_id);
+        requireId(req.receipt_id);
+        await client.verify();
+        const key='plugin-post-'+id;
+        const exact=JSON.stringify({op:'fail',failure:f,receipt_id:req.receipt_id,client_id:id,...(req.target_number===undefined?{}:{target_number:req.target_number})});
+        let saved=await client.store.read(room.origin,key);
+        if(saved && (saved.boundRoom!==room.roomId || saved.participantId!==client.state.participantId))throw new ClientError('Failure receipt identity changed.','receipt_scope');
+        if(saved && saved.exact!==exact)throw new ClientError('Retry the exact original task failure.','pending_send_mismatch');
+        if(saved?.complete){
+          if(client.state.localJob?.eventId===id && !client.state.localJob.pluginComplete){client.state={...client.state,localJob:{...client.state.localJob,pluginComplete:true}};await client.store.write(client.state);}
+          return saved.result;
+        }
+        const existing=client.state.localJob;
+        if(existing && existing.eventId!==id && !existing.pluginComplete)throw new ClientError('An earlier turn is pending. Retry its original operation.','pending_turn');
+        if(!saved){
+          const record=await readRecord(req.receipt_id);
+          if(record.participantId!==client.state.participantId)throw new ClientError('Receipt identity changed.','receipt_scope');
+          if(Date.now()-record.createdAt>86400000)throw new ClientError('Failure receipt expired.','receipt_expired');
+          const target=record.targetNumber ?? req.target_number;
+          const matches=record.batch.messages.filter(m=>!m.isOwn && m.addressing?.taskId===f.task_id && (target===undefined || m.number===target));
+          if(matches.length!==1 || req.target_number!==undefined && matches[0].number!==req.target_number)throw new ClientError('Failure task was not the exact selected request in this frozen batch.','failure_task_scope');
+          saved={version:1,origin:room.origin,roomId:key,boundRoom:room.roomId,participantId:client.state.participantId,exact,targetNumber:matches[0].number};
+          await client.store.write(saved); // Before any external effect; retry survives receipt cleanup.
+        }
+        client.state={...client.state,localJob:{eventId:id,failure:f,pluginComplete:false}};await client.store.write(client.state);
+        try{await client.reportTaskFailure(f.task_id,{clientId:id,status:f.status,reason:f.reason,...(f.partial_notes===undefined?{}:{partialNotes:f.partial_notes})});}
+        catch(error){await client.store.write({...saved,failure:safeError(error)});throw error;}
+        const result={client_id:id,failure:true,task_id:f.task_id,status:f.status,target_number:saved.targetNumber,read_effect:'none'};
+        await client.store.write({...saved,complete:true,result});
+        client.state={...client.state,localJob:{...client.state.localJob,pluginComplete:true}};await client.store.write(client.state);
+        return result;
+      }
       case 'post': {
+        if(req.failure!==undefined)throw new ClientError('Failure and reply are mutually exclusive.','invalid_task_failure');
         requireId(req.client_id);
         if(typeof req.text!=='string' || !req.text.trim() || req.text.length>4000)throw new ClientError('Use 1–4000 characters.','invalid_text');
         const intent={reply:req.text,...(req.draft_ready===undefined?{}:{draft_ready:req.draft_ready}),...(req.routine_report===undefined?{}:{routine_report:req.routine_report})};

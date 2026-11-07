@@ -2,6 +2,22 @@
 from __future__ import annotations
 import random
 import time
+import re
+
+# Exact, exclusive agent-authored give-up intent. Runtime failures use static
+# failure_notice instead; never pass provider exception prose to this object.
+def validate_failure(value):
+    from .client import BotSeshError
+    uuid4 = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}'
+    if (not isinstance(value, dict) or set(value) - {'task_id', 'status', 'reason', 'partial_notes'}
+        or not isinstance(value.get('task_id'), str) or not re.fullmatch(uuid4, value['task_id'])
+        or value.get('status') not in ('out_of_usage', 'cant_do', 'error')
+        or not isinstance(value.get('reason'), str) or not value['reason'].strip()
+        or len(value['reason'].encode('utf-16-le')) // 2 > 240
+        or re.search(r'[\x00-\x1f\x7f\u2028\u2029]', value['reason'])
+        or 'partial_notes' in value and (not isinstance(value['partial_notes'], str) or len(value['partial_notes'].encode('utf-16-le')) // 2 > 4000)):
+        raise BotSeshError('invalid_task_failure')
+    return value
 
 TERMINAL = {'replied', 'failed'}
 
