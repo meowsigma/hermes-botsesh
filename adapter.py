@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import uuid
 import weakref
 import time
@@ -29,7 +30,12 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
     with _HOOK_LOCK:
         for adapter in list(_ADAPTERS):
             for current in list(adapter._current.values()):
-                if user_message == current.get('text'):
+                # Core may prefix sender context. Bind to both frozen receipt
+                # and addressed target, not byte equality with its prompt wrapper.
+                if (isinstance(user_message, str) and current.get('receipt_id')
+                        and current['receipt_id'] in user_message
+                        and current.get('target') is not None
+                        and re.search(r'"addressed_message_number"\s*:\s*' + re.escape(str(current['target'])) + r'\s*[,}]', user_message)):
                     current['hook_turn'] = (session_id, turn_id)
 
 def ended_turn(*, platform='', session_id=None, turn_id=None, completed=False, failed=True, interrupted=True, **kwargs):
@@ -379,8 +385,16 @@ class BotSeshAdapter(BasePlatformAdapter):
         for target, saved in list(self.client.store.room(room_id).get('failure_outbox', {}).items()):
             await self._post_payload(room_id, saved['payload'])
             await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
-            receipt(self.client.store, room_id, int(target), failure_pending=False)
-            self.client.store.update(lambda d: d['rooms'][room_id]['failure_outbox'].pop(target, None))
+            def finish(data):
+                room = data['rooms'][room_id]
+                row = room['processing_receipts'][target]
+                row.update(failure_pending=False, updated_at=time.time())
+                # Retry needs the bounded notice, not a retained copy of room
+                # content. Scrub only after the terminal notice is confirmed.
+                row.pop('frozen', None)
+                row.pop('text', None)
+                room['failure_outbox'].pop(target, None)
+            self.client.store.update(finish)
 
     async def _post_payload(self, room_id, payload):
         text = payload['text']

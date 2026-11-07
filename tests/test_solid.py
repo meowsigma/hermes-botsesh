@@ -61,6 +61,7 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         await restarted._check_room('a');self.assertEqual(len(self.posts),1)
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'failed')
     async def test_failure_notice_lost_response_retries_same_id_after_restart(self):
+        receipt(self.client.store,'a',3,state='started',frozen={'batch':{'messages':[{'text':'private room context'}]}},text='private model input')
         self.adapter._queue_failure('a',3,'provider_budget')
         original=self.client.enrolled.side_effect
         def lose(room,op,**args):
@@ -70,13 +71,46 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.client.enrolled.side_effect=lose
         with self.assertRaises(BotSeshError):await self.adapter._flush_failures('a')
         self.assertTrue(self.client.store.room('a')['failure_outbox'])
+        self.assertIn('frozen',self.client.store.room('a')['processing_receipts']['3'],'uncertain delivery remains retryable')
         self.client.enrolled.side_effect=original
         await self.make_adapter()._flush_failures('a')
         self.assertEqual(len(self.posts),1);self.assertFalse(self.client.store.room('a')['failure_outbox'])
         self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: provider budget exceeded.")
+        row=self.client.store.room('a')['processing_receipts']['3']
+        self.assertEqual(row['state'],'failed');self.assertFalse(row['failure_pending'])
+        self.assertNotIn('frozen',row);self.assertNotIn('text',row)
+        self.assertNotIn('private room context',self.client.store.path.read_text())
+        self.assertNotIn('private model input',self.client.store.path.read_text())
+    async def test_sender_prefixed_turn_posts_exact_attesting_reply(self):
+        await self.adapter._check_room('a')
+        prompt=self.adapter._current['a']['text']
+        processed_turn(platform='botsesh',user_message='[Owner] '+prompt,session_id='prefixed',turn_id='turn')
+        self.assertEqual(self.adapter._current['a']['hook_turn'],('prefixed','turn'))
+        self.assertFalse(self.adapter._current['a']['model_processed'],'candidate alone cannot attest')
+        ended_turn(platform='botsesh',session_id='other',turn_id='turn',completed=True,failed=False,interrupted=False)
+        self.assertFalse(self.adapter._current['a']['model_processed'],'wrong native session cannot attest')
+        ended_turn(platform='botsesh',session_id='prefixed',turn_id='turn',completed=True,failed=False,interrupted=False)
+        result=await self.adapter.send('a','Useful answer to question 3.',metadata={'notify':True})
+        self.assertTrue(result.success)
+        post=next(iter(self.posts.values()))
+        self.assertEqual(post['text'],'Useful answer to question 3.')
+        self.assertEqual(post['reply_to'],3);self.assertEqual(post['receipt_id'],'receipt-3');self.assertTrue(post['processed'])
+        await self.adapter.on_processing_complete(self.adapter.handle_message.call_args.args[0],ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'replied')
+        self.assertEqual(len(self.posts),1)
+    async def test_hook_requires_receipt_and_exact_addressed_number(self):
+        await self.adapter._check_room('a')
+        for receipt_id,target in [('receipt-3',30),('receipt-other',3)]:
+            prompt='[Owner] '+json.dumps({'receipt_id':receipt_id,'addressed_message_number':target})
+            processed_turn(platform='botsesh',user_message=prompt,session_id='wrong',turn_id='wrong')
+            self.assertNotIn('hook_turn',self.adapter._current['a'])
+        processed_turn(platform='telegram',user_message=self.adapter._current['a']['text'],session_id='wrong',turn_id='wrong')
+        self.assertNotIn('hook_turn',self.adapter._current['a'])
     async def test_402_and_success_outcome_never_claim_processed_read(self):
-        self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':'exact input'}
-        processed_turn(platform='botsesh',user_message='exact input',session_id='s',turn_id='t')
+        prompt=json.dumps({'receipt_id':'r','addressed_message_number':3})
+        self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':prompt}
+        processed_turn(platform='botsesh',user_message='[Owner] '+prompt,session_id='s',turn_id='t')
+        self.assertEqual(self.adapter._current['a']['hook_turn'],('s','t'))
         ended_turn(platform='botsesh',session_id='s',turn_id='t',completed=False,failed=True,interrupted=False)
         sent=await self.adapter.send('a','HTTP 402: credits exhausted (private vendor detail)',metadata={'notify':True})
         self.assertTrue(sent.success)

@@ -130,8 +130,9 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('receipt_id', client.enrolled.call_args.kwargs)
             self.assertEqual(client.store.room('a')['processing_receipts']['3']['state'], 'failed')
             from hermes_botsesh_test.adapter import processed_turn, ended_turn
-            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 4, 'client_id': 'uuid-b', 'delivered': False, 'text': 'frozen receipt-a context'}
-            processed_turn(user_message='frozen receipt-a context', platform='botsesh', session_id='s', turn_id='t')
+            prompt = json.dumps({'receipt_id': 'receipt-a', 'addressed_message_number': 4, 'context': 'frozen context'})
+            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 4, 'client_id': 'uuid-b', 'delivered': False, 'text': prompt}
+            processed_turn(user_message=prompt, platform='botsesh', session_id='s', turn_id='t')
             self.assertNotIn('model_processed', adapter._current['a'])
             ended_turn(platform='botsesh', session_id='s', turn_id='t', completed=True, failed=False, interrupted=False)
             await adapter.send('a', 'exact final', metadata={'notify': True})
