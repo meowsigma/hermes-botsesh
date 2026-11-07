@@ -103,6 +103,13 @@ class Client:
                 result = self.call(op, room=binding['url'], **args)
             def progress(data):
                 room = data['rooms'][room_id]
+                if op == 'post' and args.get('processed') is True and result.get('read_effect') == 'processed_frozen_receipt':
+                    # Tool and gateway sends share a receipt, not necessarily a UUID.
+                    # Remember only a confirmed reply to this exact addressed turn.
+                    for row in room.get('processing_receipts', {}).values():
+                        if (row.get('receipt_id') == args.get('receipt_id')
+                                and args.get('reply_to', row['target']) == row['target']):
+                            row['posted_reply'] = result
                 if result.get('pending'):
                     room['pending_completion'] = result['pending']
                 elif op in ('check', 'pending'):
