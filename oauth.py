@@ -466,7 +466,7 @@ class OAuthClient:
             inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
             return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets']], 'replies': [], 'backlog': inbox['backlog']}
         if op == 'read':
-            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 60000, 'max_pages': 100, **({'target_number': args['target_number']} if args.get('target_number') is not None else {})})
+            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100, **({'target_number': args['target_number']} if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
                 raise BotSeshError('context_limit')
             messages = []

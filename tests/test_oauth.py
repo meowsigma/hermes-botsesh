@@ -54,6 +54,20 @@ class OAuthTests(unittest.TestCase):
                 values=list(pool.map(lambda _:self.client._access(self.binding),range(2)))
         self.assertEqual(values,['B'*43]*2);self.assertEqual(token.call_count,1)
         self.assertEqual(oauth._rows()[0]['refresh_token'],'S'*43)
+    def test_read_requests_complete_command_rich_history_before_size_fence(self):
+        value={'messages':[{'number':0,'text':'exact','senderParticipantId':'human','authorParticipant':{'id':'human','verified':True}}], 'batch_id':str(uuid.uuid4()),'ack_eligible':True,'has_more':False,'truncated':False,'read_checkpoint':0,'next_checkpoint':1}
+        def catchup(binding,name,args=None):
+            self.assertEqual(name,'catchup')
+            # Real production command history needed >60k before the server's
+            # compact projection. The plugin's own final160k fence stays intact.
+            self.assertGreaterEqual(args['max_chars'],150000)
+            return value
+        with patch.object(self.client,'rpc',side_effect=catchup):
+            read=self.client.call(self.binding,'read',target_number=0)
+        self.assertEqual(read['batch']['messages'][0]['text'],'exact')
+        self.assertEqual(read['briefing'][0],value)
+        self.assertEqual(read['read_effect'],'none')
+
     def test_null_reply_preview_and_unprocessed_checks_do_not_ack(self):
         result={'messages':[{'number':0,'text':'exact','senderParticipantId':'human','authorParticipant':{'id':'human','verified':True},'mentions':[{'participant':None},{'participant':{'id':'bot'}}],'replyPreview':None}], 'batch_id':str(uuid.uuid4()),'ack_eligible':True,'has_more':False,'truncated':False,'read_checkpoint':0,'next_checkpoint':1}
         with patch.object(self.client,'rpc',side_effect=lambda binding,name,args=None: {'targets':[{'number':0}], 'has_more':False, 'backlog':1} if name=='hermes_inbox' else result) as rpc:
