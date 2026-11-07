@@ -97,6 +97,10 @@ def _http(origin, path, *, form=None, payload=None, bearer=None):
                     if len(raw) > MAX_BYTES:
                         raise BotSeshError('response_limit')
                 status, content_type = response.status_code, response.headers.get('content-type', '')
+                try:
+                    retry_after_ms = max(0, float(response.headers.get('retry-after', '0')) * 1000)
+                except ValueError:
+                    retry_after_ms = 0
     except httpx.HTTPError:
         raise BotSeshError('connection_failed_retry_same_intent') from None
     if status == 200 and path == '/oauth/revoke':
@@ -112,10 +116,10 @@ def _http(origin, path, *, form=None, payload=None, bearer=None):
         if not isinstance(value, dict):
             raise ValueError()
     except (ValueError, UnicodeError):
-        raise BotSeshError('invalid_server_response', status) from None
+        raise BotSeshError('invalid_server_response', status, retry_after_ms) from None
     if not 200 <= status < 300:
         code = value.get('error')
-        raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied', status)
+        raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied', status, retry_after_ms)
     return value
 
 
@@ -258,22 +262,26 @@ class OAuthClient:
 
     def _credential(self, binding):
         row = next((r for r in _rows() if r.get('id') == binding['oauth_id']), None)
-        if not row or row.get('extra', {}).get('origin') != binding['origin'] or row.get('extra', {}).get('room_id') != binding['room_id']:
+        if not row or row.get('extra', {}).get('origin') != binding['origin'] or binding['room_id'] not in row.get('extra', {}).get('room_ids', [row.get('extra', {}).get('room_id')]):
             raise BotSeshError('authorization_revoked', 401)
         if row.get('extra', {}).get('client_id') != CLIENT_ID:
             raise BotSeshError('credential_binding_denied')
         return row
 
-    def _access(self, binding):
+    def _access(self, binding, *, rejected=None):
         with _lock(self.store):
             row = self._credential(binding)
-            if row.get('expires_at_ms', 0) <= int(time.time()*1000) + 45000:
+            if row.get('expires_at_ms', 0) <= int(time.time()*1000) + 45000 or rejected is not None and row['access_token'] == rejected:
                 try:
                     result = _token_request(binding['origin'], {'grant_type': 'refresh_token', 'refresh_token': row['refresh_token']})
                 except BotSeshError as e:
                     if e.code == 'invalid_grant':
                         _save(remove=row['id'])
-                        self.store.update(lambda d: d['rooms'][binding['room_id']].update(active=False, state='authorization_revoked'))
+                        def disable(data):
+                            for room in data['rooms'].values():
+                                if room.get('oauth_id') == binding['oauth_id']:
+                                    room.update(active=False, state='authorization_revoked')
+                        self.store.update(disable)
                     raise
                 row = {**row, 'access_token': result['access_token'], 'refresh_token': result['refresh_token'],
                        'expires_at_ms': int(time.time()*1000) + result['expires_in']*1000}
@@ -281,13 +289,27 @@ class OAuthClient:
             return row['access_token']
 
     def rpc(self, binding, name, args=None, *, token=None):
-        value = _http(binding['origin'], '/mcp', bearer=token or self._access(binding), payload={
+        bearer = token or self._access(binding)
+        payload = {
             'jsonrpc': '2.0', 'id': uuid.uuid4().hex, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': args or {}}})
+            'params': {'name': name, 'arguments': args or {}}}
+        try:
+            value = _http(binding['origin'], '/mcp', bearer=bearer, payload=payload)
+        except BotSeshError as error:
+            if token is not None or error.status != 401:
+                raise
+            # Clock drift or a sleep/wake token expiry gets exactly one serialized
+            # refresh. A competing request's newer token is reused, not rotated.
+            value = _http(binding['origin'], '/mcp', bearer=self._access(binding, rejected=bearer), payload=payload)
         result = value.get('result')
         if value.get('error') or not isinstance(result, dict) or result.get('isError'):
             # Never echo server error prose, room content or the HTTP request.
-            raise BotSeshError('mcp_operation_denied')
+            detail = result.get('structuredContent', {}) if isinstance(result, dict) else {}
+            code = detail.get('code', 'mcp_operation_denied') if isinstance(detail, dict) else 'mcp_operation_denied'
+            if not isinstance(code, str) or not re.fullmatch(r'[a-z0-9_-]{1,80}', code):
+                code = 'mcp_operation_denied'
+            status = detail.get('status') if isinstance(detail, dict) else None
+            raise BotSeshError(code, status if isinstance(status, int) and 400 <= status < 600 else None)
         data = result.get('structuredContent')
         if not isinstance(data, dict):
             raise BotSeshError('invalid_mcp_response')
@@ -353,11 +375,11 @@ class OAuthClient:
         if binding.get('transport') != 'oauth':
             raise BotSeshError('legacy_invitation_use_room_access_to_revoke')
         with _lock(self.store):
-            if not binding.get('active') and binding.get('state') in ('authorization_revoked', 'revoked', 'invalid_token', 'membership_revoked'):
-                _save(remove=binding['oauth_id'])
-                self.store.update(lambda d: d['rooms'][room_id].update(active=False, state='revoked'))
+            if not binding.get('active') and binding.get('state') == 'revoked':
                 return
-            row = self._credential(binding)
+            # A closed DM is not revocation of its still-live source grant.
+            root = self.store.read()['rooms'].get(binding.get('oauth_root'), binding)
+            row = self._credential(root)
             _http(binding['origin'], '/oauth/revoke', form={'client_id': CLIENT_ID, 'token': row['refresh_token']})
             # RFC7009 always returns 200; read back the exact old access before
             # claiming revocation. A transient failure keeps credentials for retry.
@@ -368,18 +390,63 @@ class OAuthClient:
                     raise
             else:
                 raise BotSeshError('revocation_not_confirmed')
-            self.store.update(lambda d: d['rooms'][room_id].update(active=False, state='revoked'))
+            def disable(data):
+                for room in data['rooms'].values():
+                    if room.get('oauth_id') == binding['oauth_id']:
+                        room.update(active=False, state='revoked')
+            self.store.update(disable)
             _save(remove=row['id'])
+
+    def discover(self, binding):
+        """Only server-authorized exact DM descendants, never names/invitations."""
+        rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
+        root = binding.get('oauth_root', binding['room_id'])
+        accepted = [room for room in rooms if room.get('room_id') == root or room.get('source_room_id') == root and room.get('room_type') == 'dm']
+        if not any(room.get('room_id') == root for room in accepted):
+            raise BotSeshError('authorization_revoked', 401)
+        for room in accepted:
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
+                raise BotSeshError('invalid_room_binding')
+        with _lock(self.store):
+            row = self._credential(binding)
+            row['extra']['room_ids'] = [room['room_id'] for room in accepted]
+            _save(row)
+            def enroll(data):
+                live = set(row['extra']['room_ids'])
+                for saved in data['rooms'].values():
+                    if saved.get('oauth_id') == binding['oauth_id'] and saved['room_id'] not in live:
+                        saved.update(active=False, state='membership_revoked')
+                for room in accepted:
+                    if room['room_id'] in data['rooms']:
+                        continue
+                    rid = room['room_id']
+                    data['rooms'][rid] = {'room_id': rid, 'url': binding['origin']+'/b/'+rid, 'origin': binding['origin'],
+                        'name': room['name'], 'display_name': room['display_name'], 'participant_id': room['participant_id'],
+                        'oauth_id': binding['oauth_id'], 'oauth_root': root, 'room_type': room.get('room_type', 'room'),
+                        'active': True, 'state': 'connected', 'transport': 'oauth'}
+            self.store.update(enroll)
+        return {'rooms': accepted}
 
     def call(self, binding, op, **args):
         room_id = binding['room_id']
+        if op == 'discover':
+            return self.discover(binding)
+        if op == 'wait':
+            return self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': args.get('after', -1), 'timeout_seconds': 25, **({'since': args['since']} if args.get('since') else {})})
+        if op == 'delivery':
+            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
+        if op == 'working':
+            return self.rpc(binding, 'working', {'room_id': room_id, 'status': 'Hermes is working…', **({'mention_number': args['target']} if args.get('target') is not None else {})})
         if op in ('verify', 'pending'):
             rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
-            if len(rooms) != 1 or rooms[0]['room_id'] != room_id or rooms[0]['participant_id'] != binding['participant_id']:
+            if not any(room['room_id'] == room_id and room['participant_id'] == binding['participant_id'] for room in rooms):
                 raise BotSeshError('identity_mismatch', 401)
             return {'pending': None, 'participantId': binding['participant_id']}
-        if op in ('check', 'read'):
-            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 60000, 'max_pages': 100})
+        if op == 'check':
+            inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
+            return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets']], 'replies': [], 'backlog': inbox['backlog']}
+        if op == 'read':
+            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 60000, 'max_pages': 100, **({'target_number': args['target_number']} if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
                 raise BotSeshError('context_limit')
             messages = []
@@ -404,8 +471,9 @@ class OAuthClient:
                 raise BotSeshError('context_limit')
             def save_receipt(data):
                 receipts = data['rooms'][room_id].setdefault('oauth_receipts', {})
+                used = {r.get('receipt_id') for r in data['rooms'][room_id].get('processing_receipts', {}).values() if r.get('state') not in ('replied', 'failed')}
                 for key in list(receipts):
-                    if receipts[key]['expires'] <= time.time():
+                    if receipts[key]['expires'] <= time.time() and key not in used:
                         del receipts[key]
                 if len(receipts) >= 90:
                     raise BotSeshError('receipt_limit_retry_pending_turn')
@@ -424,9 +492,15 @@ class OAuthClient:
             text = args.get('text')
             if not isinstance(text, str) or not text.strip() or len(text) > 4000:
                 raise BotSeshError('invalid_text')
-            # MCP implicit-last-batch semantics can attest an unprocessed fetch.
-            # OAuth posting therefore always requires an explicit frozen receipt.
-            if not receipt_id or args.get('processed') is not True:
+            # Native runtime notices use an explicit no-read server capability,
+            # NEVER implicit-last-batch send_message semantics.
+            if args.get('processed') is not True:
+                result = self.rpc(binding, 'hermes_notice', {'room_id': room_id, 'text': text, 'client_id': client_id, **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {})})
+                message = result.get('message') or {}
+                if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
+                    raise BotSeshError('send_not_confirmed_retry_same_intent')
+                return {'client_id': client_id, 'number': message['number'], 'read_effect': 'none'}
+            if not receipt_id:
                 raise BotSeshError('processed_receipt_required')
             exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to') if k in args}
             current = self.store.room(room_id)
@@ -437,7 +511,7 @@ class OAuthClient:
                 self.call(binding, 'verify')
                 return saved['result']
             receipt = current.get('oauth_receipts', {}).get(receipt_id)
-            if not saved and (not receipt or receipt['expires'] <= time.time()):
+            if not saved and not receipt:
                 raise BotSeshError('receipt_expired')
             if not saved and args.get('reply_to') is not None and args['reply_to'] not in receipt['numbers']:
                 raise BotSeshError('unread_reply_target')

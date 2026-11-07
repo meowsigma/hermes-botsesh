@@ -17,7 +17,7 @@ provides_tools:
   - botsesh_rooms
   - botsesh_read
   - botsesh_post
-provides_hooks: [post_llm_call]
+provides_hooks: [post_llm_call, on_session_end]
 config_schema:
   poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}
   account_create_tool: {type: str, default: "", description: Exact existing BotSesh MCP create_room tool name, after separate first-party Create rooms consent. Optional.}

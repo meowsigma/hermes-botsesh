@@ -5,9 +5,10 @@ def register(ctx):
     register_cli(ctx)
     from .tools import register_tools
     register_tools(ctx)
-    from .adapter import BotSeshAdapter, HINT, standalone_send, processed_turn
+    from .adapter import BotSeshAdapter, HINT, standalone_send, processed_turn, ended_turn
     from functools import partial
     ctx.register_hook('post_llm_call', processed_turn)
+    ctx.register_hook('on_session_end', ended_turn)
     ctx.register_platform(
         name='botsesh', label='BotSesh', adapter_factory=lambda cfg: BotSeshAdapter(cfg, poll_seconds=ctx.get_config('poll_seconds', 15)),
         check_fn=lambda: True, validate_config=lambda config: True,

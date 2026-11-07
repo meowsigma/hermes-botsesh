@@ -56,13 +56,13 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(oauth._rows()[0]['refresh_token'],'S'*43)
     def test_null_reply_preview_and_unprocessed_checks_do_not_ack(self):
         result={'messages':[{'number':0,'text':'exact','senderParticipantId':'human','authorParticipant':{'id':'human','verified':True},'mentions':[{'participant':None},{'participant':{'id':'bot'}}],'replyPreview':None}], 'batch_id':str(uuid.uuid4()),'ack_eligible':True,'has_more':False,'truncated':False,'read_checkpoint':0,'next_checkpoint':1}
-        with patch.object(self.client,'rpc',return_value=result) as rpc:
+        with patch.object(self.client,'rpc',side_effect=lambda binding,name,args=None: {'targets':[{'number':0}], 'has_more':False, 'backlog':1} if name=='hermes_inbox' else result) as rpc:
             checked=self.client.call(self.binding,'check')
             self.assertEqual(checked['mentions'],[0]);self.assertEqual(checked['replies'],[])
             self.assertNotIn('oauth_receipts',self.store.room('one'))
             read=self.client.call(self.binding,'read')
             self.assertEqual(read['read_effect'],'none')
-            self.assertEqual([c.args[1] for c in rpc.call_args_list],['catchup','catchup'])
+            self.assertEqual([c.args[1] for c in rpc.call_args_list],['hermes_inbox','catchup'])
     def test_foreign_receipts_and_changed_retry_fail_before_network(self):
         with patch.object(self.client,'rpc') as rpc:
             with self.assertRaises(BotSeshError):self.client.call(self.binding,'post',text='exact',client_id=str(uuid.uuid4()),receipt_id=str(uuid.uuid4()),processed=True)
@@ -79,6 +79,13 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(revoke.call_args.args[:2],('https://botsesh.com','/oauth/revoke'))
         self.assertEqual(oauth._rows(),[]);self.assertEqual(self.store.read()['rooms']['one']['state'],'revoked')
         self.client.disconnect('one')  # idempotent cleanup after remote revocation
+    def test_closed_dm_disconnect_still_revokes_the_live_source_grant(self):
+        self.store.update(lambda d:d['rooms'].update(dm={**self.binding,'room_id':'dm','oauth_root':'one','active':False,'state':'membership_revoked'}))
+        with patch.object(oauth,'_http',return_value={}) as revoke,patch.object(self.client,'rpc',side_effect=BotSeshError('invalid_token',401)):
+            self.client.disconnect('dm')
+        revoke.assert_called_once()
+        self.assertEqual(oauth._rows(),[])
+        self.assertTrue(all(room['state']=='revoked' for room in self.store.read()['rooms'].values()))
     def test_invalid_state_cannot_exchange_a_code(self):
         # Exercise the native helper's real state comparison with only its
         # callback transport doubled. No token exchange may happen on mismatch.

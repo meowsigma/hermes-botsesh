@@ -12,7 +12,7 @@ from .storage import Store
 # Node canonicalizes import.meta.url; use the same path when the plugin install is
 # a symlink, otherwise bridge.mjs's CLI guard exits silently without running main.
 BRIDGE = (Path(__file__).parent / 'bridge.mjs').resolve()
-TERMINAL_CODES = {'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
+TERMINAL_CODES = {'invalid_grant', 'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
     def __init__(self, code, status=None, retry_after_ms=0, pending=None):

@@ -128,16 +128,20 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             # A native refusal/error can also be a notify-marked response: still no attestation.
             await adapter.send('a', 'native admission error', metadata={'notify': True})
             self.assertNotIn('receipt_id', client.enrolled.call_args.kwargs)
-            from hermes_botsesh_test.adapter import processed_turn
-            processed_turn(user_message='frozen receipt-a context', platform='botsesh')
+            self.assertEqual(client.store.room('a')['processing_receipts']['3']['state'], 'failed')
+            from hermes_botsesh_test.adapter import processed_turn, ended_turn
+            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 4, 'client_id': 'uuid-b', 'delivered': False, 'text': 'frozen receipt-a context'}
+            processed_turn(user_message='frozen receipt-a context', platform='botsesh', session_id='s', turn_id='t')
+            self.assertNotIn('model_processed', adapter._current['a'])
+            ended_turn(platform='botsesh', session_id='s', turn_id='t', completed=True, failed=False, interrupted=False)
             await adapter.send('a', 'exact final', metadata={'notify': True})
             self.assertEqual(client.enrolled.call_args.kwargs['receipt_id'], 'receipt-a')
-            self.assertEqual(client.enrolled.call_args.kwargs['reply_to'], 3)
+            self.assertEqual(client.enrolled.call_args.kwargs['reply_to'], 4)
             self.assertTrue(client.enrolled.call_args.kwargs['processed'])
             self.assertTrue(adapter._current['a']['delivered'])
             adapter._current['a']['delivered'] = False
             from gateway.platforms.event import ProcessingOutcome
-            await adapter.on_processing_complete(Mock(source=Mock(chat_id='a')), ProcessingOutcome.FAILURE)
+            await adapter.on_processing_complete(Mock(source=Mock(chat_id='a'), message_id='4'), ProcessingOutcome.FAILURE)
             self.assertNotIn('handled', client.store.room('a'))
 
     async def test_skipped_targets_do_not_starve_later_mentions(self):
@@ -155,7 +159,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 def enrolled(room_id, operation, **kwargs):
                     if operation == 'check':
                         return {'mentions': [3, 5], 'replies': [3]}
-                    self.assertEqual(operation, 'read')  # Skipping/completion must not POST an acknowledgment.
+                    if operation == 'post':
+                        # New contract: failures are visible, but NEVER attest reads.
+                        self.assertNotIn('receipt_id', kwargs)
+                        self.assertNotIn('processed', kwargs)
+                        self.assertIn("Hermes couldn't answer:", kwargs['text'])
+                        return {'number': 8}
+                    self.assertEqual(operation, 'read')
                     target = kwargs['target_number']
                     reads.append(target)
                     author = 'stranger' if target == 3 and reason == 'unauthorized' else 'owner'
@@ -179,7 +189,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                         dispatched.append(event)
                 adapter.handle_message = AsyncMock(side_effect=handle)
                 if reason == 'dedup':
-                    adapter._dedup.is_duplicate('a:message-3:0')
+                    client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={'3': {'target': 3, 'state': 'replied'}}))
                 await adapter._check_room('a')
                 if reason == 'failed':
                     self.assertEqual([e.message_id for e in dispatched], ['3'])
@@ -190,7 +200,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 await adapter.on_processing_complete(dispatched[-1], ProcessingOutcome.FAILURE)
                 for _ in range(4):
                     await adapter._check_room('a')
-                self.assertEqual(reads, [3, 5])
+                self.assertEqual(reads, [5] if reason == 'dedup' else [3, 5])
                 self.assertNotIn('handled', client.store.room('a'))
                 self.assertNotIn('pending_final', client.store.room('a'))
                 self.assertNotIn('a', adapter._current)

@@ -40,7 +40,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             with patch.object(client, 'enrolled', side_effect=lose_output):
                 result = await adapter.send('offline', text, metadata={'notify': True})
             self.assertFalse(result.success)
-            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline')), ProcessingOutcome.FAILURE)
+            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline'), message_id='7'), ProcessingOutcome.FAILURE)
             # Fresh adapter: the gateway no longer supplies current/notify/receipt on replay.
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 restarted = BotSeshAdapter(PlatformConfig())
@@ -105,7 +105,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(oldest_id, room['gateway_deliveries'])
             self.assertIn(second_id, room['gateway_deliveries'])
             self.assertEqual(room['gateway_deliveries'][current_id], room['pending_final'])
-            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline')), ProcessingOutcome.SUCCESS)
+            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline'), message_id='7'), ProcessingOutcome.SUCCESS)
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 restarted = BotSeshAdapter(PlatformConfig())
             refused = await restarted.send('offline', RECONNECTED_MARKER + oldest_text)

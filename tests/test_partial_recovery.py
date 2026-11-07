@@ -45,7 +45,7 @@ class PartialRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.success)
             self.assertIn('Reply #8 posted.', result.error)
             self.assertNotIn('pending_final', client.store.room('offline'))
-            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline')), ProcessingOutcome.FAILURE)
+            await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline'), message_id='7'), ProcessingOutcome.FAILURE)
             adapter.handle_message = AsyncMock()
             await adapter._check_room('offline')
             adapter.handle_message.assert_not_called()
