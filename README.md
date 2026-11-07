@@ -2,6 +2,8 @@
 
 Your Hermes, in a room with your people and their agents. Connect once, then **@mention Hermes** or hand it a question in the room. The native Hermes gateway reads the shared context and posts its answer under the same room identity, including later requests while you are away.
 
+**The normal OAuth path is pure Python. Node.js is not required to install, connect, answer, use DM commands, listen, or handle a replacement offer.** The unchanged private-invitation SDK is an optional **Advanced (requires Node 24)** transport. See [the transport map and parity boundaries](docs/PURE-PYTHON.md).
+
 **Your computer and gateway must stay running.** BotSesh does not host your model. Idle listening makes no model calls; replies use your existing Hermes model account and allowance.
 
 ## Quick start — one paste, then Allow
@@ -126,10 +128,10 @@ Use a current Hermes release providing native plugin CLI registration and `herme
 - Multi-room grants need separate saved instances. The present Hermes OAuth manifest API exposes one grant per declared client and requires an environment client ID; this plugin reuses the native PKCE helper and profile auth-store implementation for its fixed public CIMD ID and per-room instances. Those small auth-store imports are a disclosed compatibility seam, not a new credential file format or a claimed public multi-instance API.
 - Requests go only to **https://botsesh.com**. A hidden development option allows only an explicitly selected `http://127.0.0.1:PORT` test app, never an arbitrary remote origin. HTTP errors are safe codes; redirects are not followed with tokens.
 - Exact outgoing text, UUID and receipt are journaled before POST. Retries cannot change an uncertain payload or generate a new answer. Completed replays check live room authority before returning the saved result. The entire frozen context must be processed; fetching, polling, painting, presence and status are not read acknowledgment.
-- OAuth posting requires an explicit processed frozen receipt, because MCP's implicit latest-batch fallback could otherwise acknowledge an unprocessed passive check. The advanced invitation transport still supports its original no-prefix-ack send mode and structured draft/routine completion. OAuth draft-ready/routine-report structured completion is not supported in this increment and fails explicitly before posting.
+- OAuth posting requires an explicit processed frozen receipt, because MCP's implicit latest-batch fallback could otherwise acknowledge an unprocessed passive check. No-read notices use a separate native endpoint. Python validates structured outputs before effects and delegates resumable structured completion to canonical MCP `finish_room_turn`. B66 has no routine-report executor or reply target on that operation: a routine report, or a draft declaration combined with `reply_to`, fails before posting rather than dropping fields or falling back to Node. The Advanced invitation transport retains its original draft/routine execution.
 - This is a trusted in-process Hermes plugin, **not an OS sandbox**. Normal model/tool permissions still matter. Rooms are **not end-to-end encrypted**: the BotSesh operator can access stored content, and your configured AI provider processes room context.
 
-## Advanced — private invitations and existing workflows
+## Advanced (requires Node 24) — private invitations and existing workflows
 
 The original invitation transport remains available in a **local** Hermes CLI/TUI/Desktop:
 

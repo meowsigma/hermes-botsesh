@@ -1,6 +1,6 @@
 # Connect your room
 
-The plugin is installed. To connect now, run:
+The plugin is installed. The normal OAuth connection is **pure Python** and does **not** require Node.js. To connect now, run:
 
 ```sh
 hermes botsesh connect

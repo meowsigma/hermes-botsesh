@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from .client import BotSeshError
 from .storage import Store, StorageError
+from .room_turn import parse_room_turn_output, require_client_id, is_number
 
 CLIENT_ID = 'https://botsesh.com/oauth/clients/hermes.json'
 SCOPES = ('botsesh:chat', 'botsesh:rooms')
@@ -81,46 +82,8 @@ def _lock(store):
 
 
 def _http(origin, path, *, form=None, payload=None, bearer=None):
-    import httpx
-    checked_origin(origin)
-    if path not in ('/oauth/token', '/oauth/revoke', '/mcp'):
-        raise BotSeshError('endpoint_denied')
-    headers = {'Accept': 'application/json, text/event-stream' if path == '/mcp' else 'application/json'}
-    if bearer:
-        headers['Authorization'] = 'Bearer ' + bearer
-    try:
-        with httpx.Client(timeout=30, follow_redirects=False, trust_env=False) as client:
-            with client.stream('POST', origin + path, headers=headers, data=form, json=payload) as response:
-                raw = bytearray()
-                for part in response.iter_bytes():
-                    raw.extend(part)
-                    if len(raw) > MAX_BYTES:
-                        raise BotSeshError('response_limit')
-                status, content_type = response.status_code, response.headers.get('content-type', '')
-                try:
-                    retry_after_ms = max(0, float(response.headers.get('retry-after', '0')) * 1000)
-                except ValueError:
-                    retry_after_ms = 0
-    except httpx.HTTPError:
-        raise BotSeshError('connection_failed_retry_same_intent') from None
-    if status == 200 and path == '/oauth/revoke':
-        return {}
-    try:
-        if 'text/event-stream' in content_type:
-            values = [json.loads(line[5:].strip()) for line in raw.decode().splitlines() if line.startswith('data:')]
-            if len(values) != 1:
-                raise ValueError()
-            value = values[0]
-        else:
-            value = json.loads(raw)
-        if not isinstance(value, dict):
-            raise ValueError()
-    except (ValueError, UnicodeError):
-        raise BotSeshError('invalid_server_response', status, retry_after_ms) from None
-    if not 200 <= status < 300:
-        code = value.get('error')
-        raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied', status, retry_after_ms)
-    return value
+    from .http_transport import post
+    return post(origin, path, form=form, payload=payload, bearer=bearer)
 
 
 def _token_request(origin, fields):
@@ -308,6 +271,8 @@ class OAuthClient:
             # Clock drift or a sleep/wake token expiry gets exactly one serialized
             # refresh. A competing request's newer token is reused, not rotated.
             value = _http(binding['origin'], '/mcp', bearer=self._access(binding, rejected=bearer), payload=payload)
+        if value.get('jsonrpc') != '2.0' or value.get('id') != payload['id']:
+            raise BotSeshError('invalid_mcp_response')
         result = value.get('result')
         if value.get('error') or not isinstance(result, dict) or result.get('isError'):
             # Never echo server error prose, room content or the HTTP request.
@@ -321,7 +286,7 @@ class OAuthClient:
         if not isinstance(data, dict):
             raise BotSeshError('invalid_mcp_response')
         if name != 'read_tool_page' and data.get('next_cursor'):
-            cursor, fragments, seen = data['next_cursor'], [], set()
+            cursor, fragments, seen, size = data['next_cursor'], [], set(), 0
             while cursor:
                 if cursor in seen or len(seen) >= 100:
                     raise BotSeshError('context_limit')
@@ -330,13 +295,16 @@ class OAuthClient:
                 if not isinstance(page.get('json_fragment'), str):
                     raise BotSeshError('invalid_mcp_page')
                 fragments.append(page['json_fragment'])
-                if sum(len(p) for p in fragments) > 160000:
+                size += len(page['json_fragment'].encode('utf-8'))
+                if size > 160000:
                     raise BotSeshError('context_limit')
                 cursor = page.get('next_cursor')
             try:
                 data = json.loads(''.join(fragments))
             except ValueError:
                 raise BotSeshError('invalid_mcp_page') from None
+            if not isinstance(data, dict):
+                raise BotSeshError('invalid_mcp_page')
         return data
 
     def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None):
@@ -434,6 +402,85 @@ class OAuthClient:
             self.store.update(enroll)
         return {'rooms': accepted}
 
+    def pending(self, room_id):
+        room = self.store.room(room_id)
+        for section in ('oauth_posts', 'oauth_turns'):
+            for client_id, saved in room.get(section, {}).items():
+                if not saved.get('complete'):
+                    return {'client_id': client_id, 'number': None, 'read_effect': 'unconfirmed'}
+        return None
+
+    def _journal(self, room_id, section, client_id, exact):
+        def save(data):
+            rows = data['rooms'][room_id].setdefault(section, {})
+            saved = rows.get(client_id)
+            if saved:
+                if saved['exact'] != exact:
+                    raise BotSeshError('pending_send_mismatch')
+                return
+            # Recheck while holding the registry lock; concurrent gateway/tool
+            # callers may not overwrite an earlier uncertain intention.
+            other = 'oauth_turns' if section == 'oauth_posts' else 'oauth_posts'
+            if client_id in data['rooms'][room_id].get(other, {}):
+                raise BotSeshError('pending_send_mismatch')
+            if len(rows) >= 1000:
+                removable = next((key for key, row in rows.items() if row.get('complete')), None)
+                if removable is None:
+                    raise BotSeshError('operation_journal_full')
+                del rows[removable]
+            rows[client_id] = {'exact': exact}
+        self.store.update(save)
+        return self.store.room(room_id)[section][client_id]
+
+    def finish(self, binding, *, output, receipt_id, client_id, processed=False):
+        """One canonical resumable room turn, not another client-side executor.
+
+        Used for explicit structured outputs only. Native prose replies keep
+        send_message's exact reply_to semantics. B66's MCP catalog has no routine
+        executor or reply_to on finish_room_turn; reject those before any effect.
+        """
+        require_client_id(client_id)
+        intent = parse_room_turn_output(output)
+        if 'routine_report' in intent:
+            raise BotSeshError('oauth_routine_report_not_supported')
+        if intent.get('file_refs'):
+            raise BotSeshError('file_bytes_not_supplied')
+        if 'failure' not in intent and processed is not True:
+            raise BotSeshError('processed_receipt_required')
+        room_id = binding['room_id']
+        exact = {'output': intent, 'receipt_id': receipt_id, 'client_id': client_id, 'processed': processed}
+        room = self.store.room(room_id)
+        saved = room.get('oauth_turns', {}).get(client_id)
+        if saved and saved['exact'] != exact:
+            raise BotSeshError('pending_send_mismatch')
+        if saved and saved.get('complete'):
+            self.call(binding, 'verify')
+            return saved['result']
+        if not saved and receipt_id not in room.get('oauth_receipts', {}):
+            raise BotSeshError('receipt_expired')
+        if not saved:
+            saved = self._journal(room_id, 'oauth_turns', client_id, exact)
+        result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
+                          'client_id': client_id, 'output': intent})
+        if 'failure' in intent:
+            failure = result.get('failure') or {}
+            if (result.get('read_effect') != 'none' or failure.get('taskId') != intent['failure']['task_id']
+                    or failure.get('status') != intent['failure']['status']):
+                raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
+        else:
+            number = result.get('reply_number')
+            if ('reply' in intent and not is_number(number) or 'reply' not in intent and number is not None
+                    or not is_number(result.get('read_checkpoint'))):
+                raise BotSeshError('turn_completion_unconfirmed_retry_same_intent')
+            result = {**result, 'read_effect': 'processed_frozen_receipt', **({'number': number} if number is not None else {})}
+        def complete(data):
+            room = data['rooms'][room_id]
+            room['oauth_turns'][client_id].update(complete=True, result=result)
+            if 'failure' not in intent:
+                room.get('oauth_receipts', {}).pop(receipt_id, None)
+        self.store.update(complete)
+        return result
+
     def call(self, binding, op, **args):
         room_id = binding['room_id']
         if op == 'discover':
@@ -452,7 +499,14 @@ class OAuthClient:
         if op == 'edit':
             return self.rpc(binding, 'hermes_edit', {'room_id': room_id, 'number': args['number'], 'text': args['text'], 'client_id': args['client_id']})
         if op == 'wait':
-            return self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': args.get('after', -1), 'timeout_seconds': 25, **({'since': args['since']} if args.get('since') else {})})
+            after = args.get('after', -1)
+            since = args.get('since')
+            if not is_number(after, -1) or since is not None and (not isinstance(since, str) or not 1 <= len(since) <= 256):
+                raise BotSeshError('invalid_event_cursor')
+            value = self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': after, 'timeout_seconds': 25, **({'since': since} if since else {})})
+            if not is_number(value.get('next_after'), -1) or not isinstance(value.get('since'), str) or not 1 <= len(value['since']) <= 256:
+                raise BotSeshError('invalid_event_cursor')
+            return value  # The adapter persists BOTH cursors, never as a read checkpoint.
         if op == 'listener':
             if args.get('state') not in ('listening', 'stopped'):
                 raise BotSeshError('listener_state_denied')
@@ -465,8 +519,12 @@ class OAuthClient:
             rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
             if not any(room['room_id'] == room_id and room['participant_id'] == binding['participant_id'] for room in rooms):
                 raise BotSeshError('identity_mismatch', 401)
-            return {'pending': None, 'participantId': binding['participant_id']}
+            return {'pending': self.pending(room_id), 'participantId': binding['participant_id']}
         if op == 'check':
+            pending = self.pending(room_id)
+            if pending:
+                self.call(binding, 'verify')
+                return {'pending': pending, 'hasMore': False, 'mentions': [], 'replies': []}
             inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
             return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets'] if not target.get('takeover')], 'takeover_targets': [target for target in inbox['targets'] if target.get('takeover')], 'offers': inbox.get('offers', []), 'replies': [], 'backlog': inbox['backlog']}
         if op in ('takeover_accept', 'takeover_pickup', 'takeover_claim', 'takeover_settle'):
@@ -490,16 +548,13 @@ class OAuthClient:
                            'isMentionToMe': any((m.get('participant') or {}).get('id') == binding['participant_id'] for m in mentions),
                            'isReplyToMe': ((source.get('replyPreview') or {}).get('authorParticipant') or {}).get('id') == binding['participant_id']}
                 messages.append(message)
-            if op == 'check':
-                return {'pending': None, 'hasMore': False,
-                        'mentions': [m['number'] for m in messages if m['isMentionToMe'] and not m['isOwn']],
-                        'replies': [m['number'] for m in messages if m['isReplyToMe'] and not m['isOwn']]}
+
             receipt_id = value['batch_id']
             # Preserve the whole exact transport result, not a clipped summary.
             result = {'receipt_id': receipt_id, 'read_effect': 'none', 'briefing': [value],
                       'batch': {'messages': messages, 'hasMore': False, 'readCheckpoint': value['read_checkpoint'],
                                 'nextCheckpoint': value['next_checkpoint']}}
-            if len(json.dumps(result, ensure_ascii=False)) > 160000:
+            if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > 160000:
                 raise BotSeshError('context_limit')
             def save_receipt(data):
                 receipts = data['rooms'][room_id].setdefault('oauth_receipts', {})
@@ -518,28 +573,25 @@ class OAuthClient:
                 raise BotSeshError('invalid_task_failure')
             failure = validate_failure(args.get('failure'))
             client_id, receipt_id = args.get('client_id'), args.get('receipt_id')
-            try:
-                if str(uuid.UUID(client_id)) != client_id or uuid.UUID(client_id).version != 4:
-                    raise ValueError()
-            except (ValueError, TypeError, AttributeError):
-                raise BotSeshError('invalid_client_id') from None
+            require_client_id(client_id)
             if not receipt_id or receipt_id not in self.store.room(room_id).get('oauth_receipts', {}):
                 raise BotSeshError('receipt_scope')
-            result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
-                'client_id': client_id, 'output': {'failure': failure}})
+            result = self.finish(binding, output={'failure': failure}, receipt_id=receipt_id, client_id=client_id)
             return confirm_failure(result, failure['task_id'])
+        if op == 'finish':
+            return self.finish(binding, **args)
         if op == 'post':
             receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
-            try:
-                if str(uuid.UUID(client_id, version=4)) != client_id:
-                    raise ValueError()
-            except (ValueError, TypeError, AttributeError):
-                raise BotSeshError('invalid_client_id') from None
-            if 'draft_ready' in args or 'routine_report' in args:
-                raise BotSeshError('oauth_structured_completion_not_supported_use_invitation')
+            require_client_id(client_id)
             text = args.get('text')
-            if not isinstance(text, str) or not text.strip() or len(text) > 4000:
-                raise BotSeshError('invalid_text')
+            intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}})
+            if 'draft_ready' in args or 'routine_report' in args:
+                # Canonical MCP finish owns resumable structured effects; never
+                # spawn the invitation SDK or silently drop a requested target.
+                if args.get('reply_to') is not None:
+                    raise BotSeshError('oauth_structured_reply_target_not_supported')
+                result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'))
+                return {'client_id': client_id, 'number': result['reply_number'], 'read_effect': result['read_effect']}
             # Native runtime notices use an explicit no-read server capability,
             # NEVER implicit-last-batch send_message semantics.
             if args.get('processed') is not True:
@@ -564,15 +616,7 @@ class OAuthClient:
             if not saved and args.get('reply_to') is not None and args['reply_to'] not in receipt['numbers']:
                 raise BotSeshError('unread_reply_target')
             if not saved:
-                def journal(data):
-                    posts = data['rooms'][room_id].setdefault('oauth_posts', {})
-                    if len(posts) >= 1000:
-                        removable = next((key for key, post in posts.items() if post.get('complete')), None)
-                        if removable is None:
-                            raise BotSeshError('operation_journal_full')
-                        del posts[removable]
-                    posts[client_id] = {'exact': exact}
-                self.store.update(journal)
+                self._journal(room_id, 'oauth_posts', client_id, exact)
             result = self.rpc(binding, 'send_message', {'room_id': room_id, 'text': text,
                 'client_id': client_id, 'batch_id': receipt_id,
                 **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {})})
@@ -584,6 +628,9 @@ class OAuthClient:
             self.store.update(lambda d: d['rooms'][room_id].get('oauth_receipts', {}).pop(receipt_id, None))
             return completed
         if op == 'retry':
+            turn = self.store.room(room_id).get('oauth_turns', {}).get(args.get('client_id'))
+            if turn:
+                return self.finish(binding, **turn['exact'])
             saved = self.store.room(room_id).get('oauth_posts', {}).get(args.get('client_id'))
             if not saved:
                 raise BotSeshError('original_operation_required')

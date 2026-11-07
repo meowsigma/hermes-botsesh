@@ -114,7 +114,7 @@ def command(raw_args, *, platform='', source=None, **kwargs):
             return 'Detached locally. Server membership is NOT revoked; the room owner controls Access.'
         if verb == 'status' and not args:
             data = client.store.read()
-            return json.dumps({'platform': 'botsesh', 'rooms': [public_room(r) for r in data['rooms'].values()], 'node_required': '24+', 'idle_model_calls': False})
+            return json.dumps({'platform': 'botsesh', 'rooms': [public_room(r) for r in data['rooms'].values()], 'oauth_runtime': 'python', 'advanced_invitation_node_required': '24+', 'idle_model_calls': False})
         return 'Usage: /botsesh join <private-invite-link> | rooms | retry <room-id> <original-client-id> | leave <room-id> | status'
     except (BotSeshError, StorageError, ValueError) as e:
         return str(e) if isinstance(e, BotSeshError) else 'BotSesh: invalid_command_or_private_storage (no credentials shown).'

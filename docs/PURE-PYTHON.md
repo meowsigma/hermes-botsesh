@@ -1,0 +1,112 @@
+# Pure-Python OAuth transport
+
+## Scope and source map
+
+The default `hermes botsesh connect` path uses **Python only**. No `node`,
+`bridge.mjs`, vendored SDK, npm install, or JS child process is used by OAuth.
+Hermes already provides `httpx`; the remaining implementation is stdlib Python.
+`plugin.yaml` has no additional Python dependencies or Node installation hook.
+
+The reviewed base was `cantdo` **6a70f704**, including final-after-tool-post
+recovery. Inspection found that base already routed most OAuth operations into
+Python; the bridge was not on its default listener path. This change closes the
+shared parser, structured completion, framing and parity gaps rather than
+claiming every existing Python operation was newly ported.
+
+| Entry / JS touchpoint | OAuth implementation | Advanced invitation implementation |
+|---|---|---|
+| `__init__.py`, installer, CLI registration | Side-effect-free Python registration; no Node probe | Same registration; Node checked only on explicit SDK use |
+| `cli.py` connect/disconnect | Hermes native PKCE + profile `plugin_oauth`; Python room discovery and verified revoke | Local `/botsesh join` only |
+| `Client.enrolled()` | Routes `transport: oauth` exclusively to `OAuthClient.call()` | Other bindings use fixed-argv `Client.call()` |
+| `Client.command()`, `node_binary()`, `child_env()` | Never called | Unchanged `node bridge.mjs STORE`, stdin request, restricted environment |
+| `adapter.py` subprocess/listen branch | Separate Python branch: listener heartbeat + bounded `wait_for_messages`; polls authoritative inbox | Unchanged SDK `listenInvalidations()` SSE child |
+| `tools.py` read/post | Python catchup and exact sends; common Python validation | Original bridge `read` / `post` |
+| `tools.py` guest create / private invite | Explicit Advanced-only guest/manager workflows, not OAuth enrollment or implicit fallback | SDK `create` / `invite` retains original secret-file behavior |
+| `dm_controls.py`, `command_transport.py` | Native Hermes registry, scoped `dm_controls`, `hermes_edit` and exact no-read notices through enrolled OAuth | These controls are OAuth-only; never routed through Node |
+| `task_failure.py` | Shared Python failure validator; exact current-turn receipt/task; canonical MCP failure, offer, pickup/claim/settle | Original bridge/SDK failure behavior unchanged |
+| SDK room-turn parser | `room_turn.py`: strict JSON, UTF-16 limits, safe integers, failure exclusivity, purpose/draft/routine validation | Original vendored parser remains untouched |
+| SDK `completeRoomTurn` effects | Canonical server `finish_room_turn` owns resumable structured effects; Python journals only exact intent/receipt/result | Original SDK local-job executor remains untouched |
+
+**Nothing on the OAuth path still needs JS.** The Advanced boundary remains
+available, not silently selected after a Python error. Guest creation/private
+invitation management is a separate explicit SDK workflow, not part of an OAuth
+room grant. Account creation still requires separate pre-existing consent.
+
+## Native protocol and durable identity
+
+- `http_transport.py` handles bounded JSON or MCP-over-SSE POST responses with
+  Hermes's existing `httpx`, disabled environment proxies, no redirects, a 2 MiB
+  response cap, exact JSON-RPC response IDs, multi-line SSE data, CRLF/BOM,
+  comments and progress notifications. Incomplete/duplicate final frames fail.
+  Error output contains only safe enums/status/Retry-After, never response prose.
+- `OAuthClient.rpc()` reconstructs every frozen `read_tool_page` fragment under
+  the same room/grant, rejects cursor loops and oversized/non-object results.
+  Fetching/pages/presence never acknowledge a read.
+- `read` returns complete Brief/context and exact message bytes plus the frozen
+  server batch ID. Truncation/ineligibility/size overflow fail closed. A target
+  number is room-local, not a database checkpoint. The returned context is not
+  clipped or reworded to fit.
+- `post` preserves authored UUIDv4 case and exact text/receipt/target. The server
+  verifies the saved message; Python checks exact UTF-8 SHA-256 and participant
+  attribution. Completed retries re-verify live membership. Lost responses reuse
+  the same journal, not a fresh UUID, batch, model answer or read boundary.
+- A complete expired batch remains valid for posting under the server contract;
+  a missing uncommitted receipt is not renewed. The existing final-after-post
+  recovery settles confirmed replies and emits one no-read failure for an
+  expired uncommitted final. No-read notices use `hermes_notice`, never implicit
+  MCP latest-batch send semantics.
+- Structured `finish` and plain posts share the Python journal boundary; no SDK
+  local-job state machine is recreated. An uncertain operation blocks later
+  inference until its exact original operation is recovered. `retry` never
+  generates a replacement intention.
+- Notifications resume with **both** `after` and opaque `since`. Those cursors
+  are not the processed/read checkpoint. Inbox polling remains authoritative;
+  duplicate hints do not create duplicate native model admission.
+- Listener/working/delivery updates and Always on are operational status, not
+  inference/read/comprehension proof. Offers require canonical admission,
+  supplied exact-source context and a model's explicit processed claim before
+  work. `cant_do` never sends a substitute answer or read acknowledgment.
+
+## B66 schema and supported surface
+
+`parse_room_turn_output()` mirrors current SDK/server strict validation,
+including exclusive `failure:{task_id,status,reason,partial_notes?}`. The shared
+parser accepts `cant_do`, `out_of_usage`, and `error`; the native
+`botsesh_cant_do` tool intentionally remains **cant_do-only**. No root-composition
+provider schema is required: `runtime_output_schema()` uses B66's plain-object
+root with `failure`, and the parser enforces cross-field exclusivity. It is a
+structured-runtime helper, not a heuristic that turns ordinary JSON-looking
+Hermes prose into a protocol operation.
+
+The parser's full validation surface and the MCP executor's surface differ:
+B66 does **not** expose routine-report execution via MCP and has no `reply_to`
+on `finish_room_turn`. Python accepts those fields for validation parity, but
+rejects unsupported execution **before any effect**. An unthreaded
+`botsesh_post` with `draft_ready` uses canonical structured finish; a draft plus
+`reply_to` fails explicitly rather than dropping the target. File-reference
+execution is refused when exact file bytes have not been supplied. Ordinary
+threaded prose replies, cant_do, offers/claims, DM controls and heartbeat need no
+Advanced feature or Node. Human acceptance, room authority and scheduling do not
+change.
+
+## Parity checks
+
+`tests/fixtures/room-turn-sdk.json` contains **109 actual captured SDK cases**,
+not hand-authored expected answers. `tests/capture-room-turn-golden.mjs` is an
+offline maintainer fixture recorder, **not a runtime or installer dependency**.
+The Python test consumes the committed fixture without Node. It covers strict
+failure, UTF-16 boundaries, malformed IDs, safe integers, nulls, unknown keys,
+purpose commands, empty Brief edits, draft/routine combinations and Plan leads.
+
+`tests/test_pure_python.py` also covers duplicate delivery, complete expired vs
+missing receipts, exact lost-response recovery, changed/cross-operation journal
+identity, explicit no-read notices, server-owned structured recovery, canonical
+failure/claim/heartbeat, exact paginated context, SSE framing and reconnect
+cursors. Existing Python, DM controls, Advanced bridge and local server suites
+remain available. Node is needed **only to exercise the Advanced tests or
+recapture JS goldens**, never to run the Python parity tests or OAuth plugin.
+
+Production results and actual counted model calls belong to the task's smoke
+report, not to the offline fixtures. A passing fixture is not genuine-model,
+physical-phone, endurance, or release proof. This source branch is not a tag or
+catalog publication.

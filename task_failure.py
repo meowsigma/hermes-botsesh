@@ -1,22 +1,14 @@
 """Explicit model-authored failure of this native addressed task, never prose inference."""
 from __future__ import annotations
-import re
 import unicodedata
 from .client import BotSeshError
-
-TASK_ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.I)
+from .room_turn import TASK_ID, valid_failure
 
 
 def validate_failure(failure):
-    if (not isinstance(failure, dict) or set(failure) - {'task_id', 'status', 'reason', 'partial_notes'}
-            or not isinstance(failure.get('task_id'), str) or not TASK_ID.fullmatch(failure['task_id']) or failure.get('status') != 'cant_do'):
-        raise BotSeshError('invalid_task_failure')
-    reason = failure.get('reason')
-    if (not isinstance(reason, str) or not reason.strip() or len(reason.encode('utf-16-le')) // 2 > 240
-            or any(unicodedata.category(c) in ('Cc', 'Cf') or c in '\u2028\u2029' for c in reason)):
-        raise BotSeshError('invalid_task_failure')
-    notes = failure.get('partial_notes')
-    if notes is not None and (not isinstance(notes, str) or len(notes.encode('utf-16-le')) // 2 > 4000):
+    # The public tool remains cant_do-only; the shared B66 parser also accepts
+    # explicit out_of_usage/error for structured runtime consumers.
+    if not valid_failure(failure) or failure['status'] != 'cant_do':
         raise BotSeshError('invalid_task_failure')
     return failure
 

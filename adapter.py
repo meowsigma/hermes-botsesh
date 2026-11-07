@@ -475,9 +475,10 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if result:
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
         elif room.get('transport') == 'oauth':
-            posts = [post for post in room.get('oauth_posts', {}).values()
+            posts = [post for post in [*room.get('oauth_posts', {}).values(), *room.get('oauth_turns', {}).values()]
                      if post['exact'].get('receipt_id') == receipt_id
                      and post['exact'].get('processed') is True
+                     and ('output' not in post['exact'] or 'reply' in post['exact']['output'])
                      and (post['exact'].get('reply_to') == target
                           or post['exact'].get('reply_to') is None and row.get('receipt_id') == receipt_id)]
             # A committed reply owns the outcome; otherwise resolve the original

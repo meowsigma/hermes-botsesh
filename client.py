@@ -1,4 +1,7 @@
-"""Fixed-argv Node SDK boundary; no credential values on argv or in logs."""
+"""Transport router: pure Python OAuth; optional Advanced Node SDK invitations.
+
+No OAuth path calls command()/call() or sends its grant to the JS bridge.
+"""
 from __future__ import annotations
 import json
 import os
@@ -103,7 +106,7 @@ class Client:
                 result = self.call(op, room=binding['url'], **args)
             def progress(data):
                 room = data['rooms'][room_id]
-                if op == 'post' and args.get('processed') is True and result.get('read_effect') == 'processed_frozen_receipt':
+                if op in ('post', 'finish') and args.get('processed') is True and result.get('read_effect') == 'processed_frozen_receipt' and 'number' in result:
                     # Tool and gateway sends share a receipt, not necessarily a UUID.
                     # Remember only a confirmed reply to this exact addressed turn.
                     for row in room.get('processing_receipts', {}).values():
