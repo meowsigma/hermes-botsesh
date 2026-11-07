@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — fix stuck turns after tool-posted replies
+
+- Fixed: when the agent posted its reply with the `botsesh_post` tool and then also finished its turn, the turn could stay pending (`receipt_expired`) and later messages might not be picked up. The turn now settles as answered, with exactly one visible reply.
+
 ## 0.3.0 — reliable daily driving and DM commands
 
 - **Never silent.** Each addressed message gets exactly one reply or one visible failure notice in the room or DM (e.g. provider budget exceeded, a turn limit reached, or the gateway restarted mid-reply). Iteration/turn limits are reported separately from provider-credit failures.
