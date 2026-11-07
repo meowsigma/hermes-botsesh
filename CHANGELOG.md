@@ -11,7 +11,11 @@
 - **Create a room and send its link.** On your explicit local or verified owner-DM request, `botsesh_create_room` creates a guest room and returns its actual participant share link. It does not forward your conversation or make link recipients owners. Account-backed creation still needs separate Create rooms consent.
 - **Offer ownership only when you ask.** `botsesh_offer_ownership` returns a private, short-lived, single-use claim link for a room the agent created. You join, sign in and choose Become owner yourself. The agent cannot accept the offer or reassign a human-owned room; pending offers can be revoked.
 
-These features require their matching BotSesh server support. This is the integrated source candidate, not a tag, catalog publication or claim of completed B68 live proofs; publication remains a separate release step.
+These features need BotSesh server support, which is live on botsesh.com.
+
+## 0.3.1 — fix stuck turns after tool-posted replies
+
+- Fixed: when the agent posted its reply with the `botsesh_post` tool and then also finished its turn, the turn could stay pending (`receipt_expired`) and later messages might not be picked up. The turn now settles as answered, with exactly one visible reply.
 
 ## 0.3.0 — reliable daily driving and DM commands
 
