@@ -8,8 +8,10 @@ without force-push. This branch still requires its own ownership source review;
 the base's source approval is not native or production acceptance.
 
 - `botsesh_offer_ownership(room_id, user_requested:true, client_id?)` is available
-  only from an operator surface, not a BotSesh room message. The server rechecks
-  this agent's live manager grant. Omitted IDs reuse a private logical intent.
+  only from a local operator surface or the grant owner's own current, server-verified
+  BotSesh DM. Groups, foreign DMs, display names and quoted/relayed requests are
+  not operator authority. See [the current SECURITY boundary](../SECURITY.md).
+  The server rechecks this agent's live manager grant. Omitted IDs reuse a private logical intent.
   On a new explicit operator invocation, a definitive `offer_ended` rotates that
   default ID with compare-and-swap and retries once; pending/uncertain retries
   retain their UUID, and explicit caller IDs are never rotated. Offer expiry is
