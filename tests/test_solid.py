@@ -85,12 +85,25 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.client.enrolled.side_effect=original
         await self.make_adapter()._flush_failures('a')
         self.assertEqual(len(self.posts),1);self.assertFalse(self.client.store.room('a')['failure_outbox'])
-        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: provider budget exceeded.")
+        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: ran out of usage.")
+        posted = next(iter(self.posts.values()))
+        self.assertEqual(posted['failure_code'], 'provider_budget')
+        failures = [args for _, op, args in self.calls if op == 'delivery' and args.get('state') == 'failed']
+        self.assertEqual(failures[-1]['notice_client_id'], posted['client_id'])
         row=self.client.store.room('a')['processing_receipts']['3']
         self.assertEqual(row['state'],'failed');self.assertFalse(row['failure_pending'])
         self.assertNotIn('frozen',row);self.assertNotIn('text',row)
         self.assertNotIn('private room context',self.client.store.path.read_text())
         self.assertNotIn('private model input',self.client.store.path.read_text())
+    async def test_legacy_uncertain_notice_is_not_retrofitted(self):
+        payload = {'text': "Hermes couldn't answer: provider budget exceeded.", 'reply_to': 3, 'client_id': str(uuid.uuid4())}
+        self.client.store.update(lambda d: d['rooms']['a'].update(failure_outbox={'3': {'payload': payload, 'code': 'provider_budget'}}, processing_receipts={'3': {'state': 'failed'}}))
+        self.adapter._queue_failure('a', 3, 'provider_error')
+        await self.adapter._flush_failures('a')
+        self.assertEqual(self.posts[payload['client_id']], payload)
+        failure = next(args for _, op, args in self.calls if op == 'delivery' and args.get('state') == 'failed')
+        self.assertNotIn('notice_client_id', failure)
+
     async def test_sender_prefixed_turn_posts_exact_attesting_reply(self):
         await self.adapter._check_room('a')
         prompt=self.adapter._current['a']['text']
@@ -143,7 +156,7 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.on_processing_complete(Mock(source=Mock(chat_id='a'),message_id='3'),ProcessingOutcome.FAILURE)
         await self.adapter._notify_turn_error(Mock(source=Mock(chat_id='a'),message_id='3'),RuntimeError('tool detail'))
         self.assertEqual(len(self.posts),1)
-        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: provider budget exceeded.")
+        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't answer: ran out of usage.")
     async def test_exact_unicode_chunk_replay_and_only_last_chunk_attests(self):
         text='α🙂\n'*2200
         payload={'text':text,'client_id':str(uuid.uuid4()),'receipt_id':'frozen','processed':True,'reply_to':3}

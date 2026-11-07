@@ -38,7 +38,7 @@ def failure_code(text):
     return 'provider_error'
 
 def failure_notice(code):
-    why = {'provider_budget': 'provider budget exceeded', 'provider_error': 'model/provider error',
+    why = {'provider_budget': 'ran out of usage', 'provider_error': 'model/provider error',
            'interrupted': 'gateway restarted mid-turn; tool execution may be incomplete. Check before retrying',
            'cancelled': 'turn cancelled', 'empty_response': 'no answer was returned',
            'admission_denied': 'gateway did not admit this message', 'context_limit': 'room context is too large',
