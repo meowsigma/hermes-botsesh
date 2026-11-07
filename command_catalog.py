@@ -64,6 +64,9 @@ def build_manifest():
             # Do not publish shell command bodies or alias targets as labels.
             add(name, command.get('description') or 'Configured quick command')
 
+    # BotSesh overrides native /name (conversation naming) with the exact room
+    # participant label; it never changes a Hermes session title.
+    commands['name'] = {'name': 'name', 'description': 'Show or rename this agent’s addressable room name', 'args': '[new name]'}
     # Canonical built-ins precede aliases/plugins/quick commands without name
     # repair, ellipsis, or pretending an incomplete manifest is complete.
     if len(commands) > 128:

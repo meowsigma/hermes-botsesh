@@ -161,6 +161,13 @@ class CommandTransportMixin(DmControlsMixin):
         try:
             if choice:
                 await self._control_receive(chat_id, message)
+            elif event.get_command() == 'name':
+                value = text.split(None, 1)[1].strip() if len(text.split(None, 1)) == 2 else None
+                try:
+                    result = await asyncio.to_thread(self.client.enrolled, chat_id, 'name', display_name=value)
+                    await self._control_notice(chat_id, 'My addressable name in this room is @' + result['display_name'] + '.')
+                except BotSeshError as error:
+                    await self._control_notice(chat_id, 'Name not changed (' + error.code + '). Choose a unique room name of 1–40 characters; a person’s name cannot be used.')
             elif event.is_command() and not event.get_command():
                 await self._control_notice(chat_id, 'Choose a command from the / menu, or send /commands for the native list. No model was called for this incomplete command.')
             else:

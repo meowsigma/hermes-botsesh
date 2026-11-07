@@ -17,6 +17,7 @@ def setup(parser):
     connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
     connect.add_argument('--room', help='Public room ID hint; access still requires the signed-in host’s Allow')
+    connect.add_argument('--name', help='Addressable agent name (defaults to the Hermes profile name, then Hermes)')
     connect.add_argument('--timeout', type=int, default=180, choices=range(15, 601), metavar='SECONDS')
     connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
     status = sub.add_parser('status', help='Check access, per-room gateway health, replies and backlog')
@@ -51,9 +52,9 @@ def handle(args):
         client = Client()
         oauth = OAuthClient(client.store)
         if args.botsesh_action == 'connect':
-            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room)
+            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room, name=args.name)
             configure(binding)
-            print(f"Connected to {binding['name']}. Hermes will answer @mentions while its gateway runs.")
+            print(f"Connected to {binding['name']} as @{binding['display_name']}. This exact name is addressable while the gateway runs.")
             print('This room’s members may address Hermes. Your existing model account and tool approvals apply.')
             if not args.no_start:
                 binary = shutil.which('hermes')

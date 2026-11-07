@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import unicodedata
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -22,6 +23,22 @@ CLIENT_ID = 'https://botsesh.com/oauth/clients/hermes.json'
 SCOPES = ('botsesh:chat', 'botsesh:rooms')
 POOL = 'botsesh'
 MAX_BYTES = 2 * 1024 * 1024
+
+
+def preferred_name(value=None):
+    if value is None:
+        try:
+            from hermes_cli.profiles import current_profile_name
+            value = current_profile_name()
+        except (ImportError, AttributeError):
+            value = os.environ.get('HERMES_PROFILE_NAME') or os.environ.get('HERMES_PROFILE')
+        if not value or value == 'custom':
+            value = 'Hermes'
+    if (not isinstance(value, str) or not value.strip()
+            or len(value.encode('utf-16-le')) > 80
+            or '@' in value or any(unicodedata.category(c) in ('Cc', 'Cf') for c in value)):
+        raise BotSeshError('invalid_agent_name')
+    return value.strip()
 
 
 def checked_origin(value):
@@ -308,7 +325,8 @@ class OAuthClient:
                 raise BotSeshError('invalid_mcp_page')
         return data
 
-    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None):
+    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, name=None):
+        name = preferred_name(name)  # Refuse invalid names before creating a grant.
         if room_hint and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room_hint):
             raise BotSeshError('invalid_room_hint')
         fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint)
@@ -324,6 +342,12 @@ class OAuthClient:
             prior = self.store.read()['rooms'].get(room_id)
             if prior and prior.get('active'):
                 raise BotSeshError('room_already_connected_disconnect_first')
+            assigned = self.rpc(provisional, 'hermes_name', {'room_id': room_id, 'display_name': name, 'assign': True}, token=fields['access_token']).get('participant')
+            verified = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms', [])
+            exact = next((r for r in verified if r.get('room_id') == room_id and r.get('participant_id') == room['participant_id']), None)
+            if not assigned or assigned.get('id') != room['participant_id'] or not exact or exact.get('display_name') != assigned.get('name'):
+                raise BotSeshError('agent_name_not_confirmed')
+            room = exact
             credential_id = uuid.uuid4().hex
             binding = {'room_id': room_id, 'url': origin + '/b/' + room_id, 'origin': origin,
                        'name': room['name'], 'display_name': room['display_name'],
@@ -499,6 +523,16 @@ class OAuthClient:
 
     def call(self, binding, op, **args):
         room_id = binding['room_id']
+        if op == 'name':
+            params = {'room_id': room_id}
+            if args.get('display_name') is not None:
+                params['display_name'] = preferred_name(args['display_name'])
+            saved = self.rpc(binding, 'hermes_name', params).get('participant')
+            verified = self.rpc(binding, 'hermes_name', {'room_id': room_id}).get('participant')
+            if not saved or not verified or verified.get('id') != binding['participant_id'] or saved.get('id') != verified['id'] or saved.get('name') != verified.get('name'):
+                raise BotSeshError('agent_name_not_confirmed')
+            self.store.update(lambda d: d['rooms'][room_id].update(display_name=verified['name']))
+            return {'display_name': verified['name']}
         if op == 'discover':
             return self.discover(binding)
         if op == 'dm_context':

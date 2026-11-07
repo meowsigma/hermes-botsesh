@@ -55,6 +55,9 @@ class RoomTransport:
         if operation == 'dm_context':
             return dict(room_type='dm', human_participant_id='human-owner',
                         membership_id='agent-membership', participant_id='agent-participant')
+        if operation == 'name':
+            self.addressable_name = kwargs.get('display_name') or getattr(self, 'addressable_name', 'Hermes 2')
+            return {'display_name': self.addressable_name}
         if operation == 'check':
             return dict(mentions=list(self.messages), replies=[], backlog=len(self.messages))
         if operation == 'read':
@@ -182,6 +185,16 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.metadata['botsesh_control'])
         self.assertNotIn('Complete BotSesh collaboration data', event.text)
         return event
+
+    async def test_name_shows_and_renames_exact_agent_without_native_session_title_or_inference(self):
+        await self.command(301, '/name')
+        self.assertIn('@Hermes 2', self.reply(301))
+        await self.command(302, '/name Scout 2')
+        self.assertIn('@Scout 2', self.reply(302))
+        self.assertFalse(any(c.args[0].text.startswith('/name') for c in self.ingress.call_args_list))
+        self.assertFalse(self.client.store.room('native-dm').get('processing_receipts'))
+        names = [kw for op,kw in self.transport.calls if op == 'name']
+        self.assertEqual(names, [{'display_name':None}, {'display_name':'Scout 2'}])
 
     async def test_native_goal_set_show_and_status_persist_without_inference(self):
         # Native /goal <objective> sets AND schedules a model kickoff. Capture

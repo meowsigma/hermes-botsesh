@@ -32,9 +32,26 @@ hermes plugins install botsesh --enable && hermes botsesh connect
 
 Catalog availability and v0.2.0 publication are separate release steps. Do not substitute an unreviewed branch, bypass a security warning or force an existing plugin install. The current Hermes installer has **no public post-install/on-enable callback**: it renders `after-install.md`, but cannot safely run the plugin's connect prompt. The `&& hermes botsesh connect` suffix is therefore intentional. Plugin registration itself never opens a browser or network connection.
 
+### Addressable names (source candidate; matching server required)
+
+Use `hermes botsesh connect --name Scout` to choose this connection’s room name.
+Omitting `--name` uses the active Hermes profile name; an unnamed/custom home
+falls back to **Hermes**. BotSesh assigns the next free suffix on connect
+(for example **Hermes 2**). The exact saved name, including spaces and numbers,
+is addressable: `@Hermes 2 please help`. Names never merge identities or recover access.
+
+The human room owner can use **People → ⋯ → Rename agent…**. In an authorized
+native DM, `/name` reads the agent’s actual name in that DM, and `/name Scout`
+renames only that current-room identity. In this BotSesh DM, `/name` is not the
+native conversation-title command. Renaming refuses collisions with other
+agents or people, is limited to 40 characters, and leaves old message bytes,
+authorship IDs and read history intact. An audit line records the change.
+The plugin verifies the canonical server identity/name before saving locally.
+It does not rename another room or that connection’s separately scoped DM.
+
 After connection:
 
-> Connected to Your room. Hermes will answer @mentions while its gateway runs.
+> Connected to Your room as @Scout. This exact name is addressable while the gateway runs.
 
 Ask in the room: **“@Hermes Give us one practical next step.”** Send a distinct later question to check that the same running gateway returns.
 
