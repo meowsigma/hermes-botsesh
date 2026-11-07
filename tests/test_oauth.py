@@ -38,6 +38,14 @@ class OAuthTests(unittest.TestCase):
         oauth._save(self.row)
     def tearDown(self):
         self.env.stop();self.tmp.cleanup()
+    def test_listener_reports_exact_membership_state_without_read_effect(self):
+        with patch.object(self.client, 'rpc', return_value={'read_effect': 'none'}) as rpc:
+            self.client.call(self.binding, 'listener', state='listening')
+            rpc.assert_called_once_with(self.binding, 'hermes_listener', {'room_id': 'one', 'state': 'listening'})
+            self.client.call(self.binding, 'listener', state='stopped')
+            self.assertEqual(rpc.call_args.args[2], {'room_id': 'one', 'state': 'stopped'})
+            with self.assertRaises(BotSeshError):
+                self.client.call(self.binding, 'listener', state='invented')
     def test_profile_store_is_private_and_never_inherits_global_pool(self):
         with patch('hermes_cli.auth._load_global_auth_store',side_effect=AssertionError('global fallback forbidden')):
             self.assertEqual(oauth._rows()[0]['id'],'owned')

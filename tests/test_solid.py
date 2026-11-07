@@ -173,7 +173,11 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.adapter._running=True
         self.client.store.update(lambda d:d['rooms']['a'].update(event_cursor={'after':7,'since':9}))
         attempts=[]
+        heartbeats=[]
         def poll(room,op,**args):
+            if op == 'listener':
+                heartbeats.append((room,args))
+                return {'read_effect':'none'}
             attempts.append(args)
             if len(attempts)==1:raise BotSeshError('temporarily_unavailable',503)
             self.adapter._running=False
@@ -181,5 +185,6 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.client.enrolled.side_effect=poll
         with patch('hermes_botsesh_test.adapter.asyncio.sleep',new_callable=AsyncMock):
             await self.adapter._stream('a',asyncio.Event())
+        self.assertEqual(heartbeats,[('a',{'state':'listening'}),('a',{'state':'listening'})])
         self.assertEqual(attempts,[{'after':7,'since':9},{'after':7,'since':9}])
         self.assertEqual(self.client.store.room('a')['event_cursor'],{'after':10,'since':11})

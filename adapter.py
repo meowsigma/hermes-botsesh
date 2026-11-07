@@ -157,6 +157,14 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             while self._running:
                 try:
                     cursor = self.client.store.room(room_id).get('event_cursor', {})
+                    # Native gateway lifecycle, independent of read/model turns.
+                    # Old-server failure leaves inbox polling active, not green.
+                    try:
+                        await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='listening')
+                    except BotSeshError as error:
+                        if error.terminal:
+                            raise
+                        logger.warning('BotSesh listener heartbeat unconfirmed (%s); durable inbox remains active.', error.code)
                     result = await asyncio.to_thread(self.client.enrolled, room_id, 'wait', **cursor)
                     health(self.client.store, room_id, last_event=time.time(), stream='connected')
                     self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor={'after': result['next_after'], 'since': result['since']}))
@@ -238,6 +246,9 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         finally:
             stream.cancel()
             await asyncio.gather(stream, return_exceptions=True)
+            if self.client.store.room(room_id).get('transport') == 'oauth':
+                with contextlib.suppress(BotSeshError):
+                    await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='stopped')
 
     async def _check_room(self, room_id):
         await self._refresh_dm_controls(room_id)
