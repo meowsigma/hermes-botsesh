@@ -856,6 +856,16 @@ export class BotSeshAgent {
     });
   }
 
+  async offerOwnership({clientId=randomUUID(),userRequested=false}={}) {
+    if(userRequested!==true || !UUID_V4.test(clientId))throw new ClientError('Offer ownership only on the user’s explicit request, with the original clientId on retries.','explicit_request_required');
+    await this.#loadState();return this.#request('POST','/manager/ownership-offers',{client_id:clientId,user_requested:true});
+  }
+
+  async revokeOwnershipOffer(offerId) {
+    if(!UUID_V4.test(offerId))throw new ClientError('Use the exact ownership offer ID.','invalid_offer');
+    await this.#loadState();return this.#request('POST','/manager/ownership-offers/'+offerId+'/revoke',{});
+  }
+
   async createInvite({app,displayName,task,clientId=randomUUID(),out}={}) {
     if(!['ChatGPT','Claude','Hermes','other'].includes(app) || !out || !isAbsolute(out))throw new ClientError('Choose --app ChatGPT|Claude|Hermes|other and an absolute private --out invitation file.','invalid_invitation');
     await this.#loadState();await this.verify();

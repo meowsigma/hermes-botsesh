@@ -51,6 +51,8 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
     await pruneReceipts();
     switch(req.op){
       case 'create': return client.create({name:req.name,...(req.purpose===undefined?{}:{purpose:req.purpose}),...(req.client_id?{clientId:requireId(req.client_id)}:{})});
+      case 'offer_ownership': return client.offerOwnership({clientId:requireId(req.client_id),userRequested:req.user_requested===true});
+      case 'revoke_ownership_offer': return client.revokeOwnershipOffer(requireId(req.offer_id));
       case 'join': return client.enroll(req.link);
       case 'verify': return client.verify();
       case 'pending': await client.verify();return {pending:await pendingResult()};
