@@ -4,9 +4,19 @@ This is the **unpublished `cantdo` candidate**, based on plugin v0.3.0 `a977430b
 
 ## Explicit inability
 
-`botsesh_cant_do(reason, partial_notes?)` is model-visible. Its handler requires an active BotSesh gateway turn, exact task-local room **and message anchor**, one matching native adapter, and that turn's frozen source `addressing.taskId`. The model cannot supply another room, task, participant, grant or failure status. It must report its own genuine missing tool/capability/access, never clarification or another agent's reason.
+`botsesh_cant_do(reason, partial_notes?)` is model-visible. Its handler requires an active BotSesh gateway turn, exact task-local room **and message anchor**, one matching native adapter, and that turn's exact frozen source. With `addressing.taskId` it retains the canonical task path. The unpublished `cantdo-plain-ask` successor also supports missing-task OAuth requests through `hermes_cant_do`, bound to the source number/version, complete receipt and this membership's started delivery. It requires the matching server `qr/cantdo-plain-ask` based on B66 `686f6884`. The model cannot supply another room, task, source, receipt, participant, grant or failure status. It must report its own genuine missing tool/capability/access, never clarification or another agent's reason.
 
 The operation is journaled before network I/O. Uncertain retries keep the exact task, receipt, UUID, reason and partial notes. OAuth uses existing exclusive `finish_room_turn.output.failure`; invitation access uses the existing typed failure endpoint through the narrowly adapted SDK. Server checks still require the current live canonical winner and unchanged source. Failure never acknowledges the frozen context. The gateway suppresses a later prose final instead of sending a duplicate or pretending success. Ordinary inability prose is not parsed as failure.
+
+For a missing task, only one structurally addressed human request qualifies:
+an explicit unique mention, original single-agent selection, reply to this exact
+agent, or accepted open DM. Ambient, ambiguous and other-directed messages do
+not become implicit tasks. The server atomically materializes the task and uses
+the same takeover enablement, winner, exact-version, backup eligibility/order
+and hop guards. Exact retries return the same task/offer; changed bindings are
+conflicts. The plugin checks the returned source and canonical UUID before
+settling its journal. No read acknowledgment is added. Invitation transport does
+not advertise the new native-only missing-task fallback.
 
 ## Canonical replacement in the native adapter
 

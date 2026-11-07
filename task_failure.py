@@ -2,13 +2,25 @@
 from __future__ import annotations
 import unicodedata
 from .client import BotSeshError
-from .room_turn import TASK_ID, valid_failure
+from .room_turn import TASK_ID, valid_failure, is_text
 
 
 def validate_failure(failure):
-    # The public tool remains cant_do-only; the shared B66 parser also accepts
-    # explicit out_of_usage/error for structured runtime consumers.
-    if not valid_failure(failure) or failure['status'] != 'cant_do':
+    if not isinstance(failure, dict) or set(failure) - {'task_id', 'message_number', 'message_version', 'status', 'reason', 'partial_notes'}:
+        raise BotSeshError('invalid_task_failure')
+    if 'task_id' in failure:
+        # Preserve the approved shared parser and canonical finish journal.
+        if not valid_failure(failure) or failure['status'] != 'cant_do':
+            raise BotSeshError('invalid_task_failure')
+        return failure
+    source = all(type(failure.get(k)) is int and 0 <= failure[k] <= 9007199254740991 for k in ('message_number', 'message_version'))
+    if failure.get('status') != 'cant_do' or not source:
+        raise BotSeshError('invalid_task_failure')
+    reason = failure.get('reason')
+    if (not is_text(reason, 240)
+            or any(unicodedata.category(c) in ('Cc', 'Cf') or c in '\u2028\u2029' for c in reason)):
+        raise BotSeshError('invalid_task_failure')
+    if 'partial_notes' in failure and not is_text(failure['partial_notes'],4000,empty=True):
         raise BotSeshError('invalid_task_failure')
     return failure
 
@@ -16,7 +28,13 @@ def validate_failure(failure):
 def confirm_failure(result, task_id):
     failure = result.get('failure') if isinstance(result, dict) else None
     if (not isinstance(result, dict) or result.get('read_effect') != 'none' or not isinstance(failure, dict)
-            or failure.get('taskId') != task_id or failure.get('status') != 'cant_do'):
+            or failure.get('status') != 'cant_do' or not isinstance(failure.get('taskId'), str)
+            or not TASK_ID.fullmatch(failure['taskId'])):
+        raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
+    if isinstance(task_id, dict):
+        if failure.get('source') != {'number':task_id['message_number'], 'version':task_id['message_version']}:
+            raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
+    elif failure['taskId'] != task_id:
         raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
     return result
 
@@ -30,7 +48,8 @@ def flush_failure(client, room_id, target):
     result = saved.get('result')
     if result is None:
         result = client.enrolled(room_id, 'fail_task', **saved['payload'])
-        confirm_failure(result, saved['payload']['failure']['task_id'])
+        reference = saved['payload']['failure']
+        confirm_failure(result, reference.get('task_id', reference))
     def finish(data):
         row = data['rooms'][room_id]['processing_receipts'][str(target)]
         row['explicit_failure']['result'] = result
@@ -62,8 +81,10 @@ def cant_do(reason, partial_notes=None):
         if current.get('delivered') or row.get('state') in ('replied', 'failed') and not saved:
             raise BotSeshError('task_already_settled')
         source = next((m for m in row.get('frozen', {}).get('batch', {}).get('messages', []) if m.get('number') == target), {})
-        task_id = saved['payload']['failure']['task_id'] if saved else (source.get('addressing') or {}).get('taskId')
-        failure = validate_failure({'task_id': task_id or '', 'status': 'cant_do', 'reason': reason,
+        task_id = (source.get('addressing') or {}).get('taskId')
+        reference = ({k:v for k,v in saved['payload']['failure'].items() if k in ('task_id','message_number','message_version')} if saved
+                     else {'task_id':task_id} if task_id else {'message_number':target, 'message_version':source.get('editCount')})
+        failure = validate_failure({**reference, 'status': 'cant_do', 'reason': reason,
                                     **({'partial_notes': partial_notes} if partial_notes is not None else {})})
         payload = {'failure': failure, 'receipt_id': current['receipt_id'],
                    'client_id': adapter.client.logical_id('cant-do', {'room': room_id, 'target': target, 'receipt_id': current['receipt_id']})}

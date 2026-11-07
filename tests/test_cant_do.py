@@ -14,6 +14,20 @@ TASK = '11111111-1111-4111-8111-111111111111'
 REASON = 'No image generation tool is available to me.'
 
 class CantDoOAuthTests(OAuthTests):
+    def test_missing_task_uses_exact_frozen_message_and_receipt(self):
+        batch=str(uuid.uuid4());cid=str(uuid.uuid4())
+        self.store.update(lambda d:d['rooms']['one'].update(oauth_receipts={batch:{'expires':9999999999,'numbers':[3]}}))
+        failure={'message_number':3,'message_version':0,'status':'cant_do','reason':REASON}
+        result={'failure':{'taskId':TASK,'status':'cant_do','source':{'number':3,'version':0}},'read_effect':'none'}
+        with patch.object(self.client,'rpc',return_value=result) as rpc:
+            self.assertEqual(self.client.call(self.binding,'fail_task',failure=failure,receipt_id=batch,client_id=cid),result)
+            rpc.assert_called_once_with(self.binding,'hermes_cant_do',{'room_id':'one','batch_id':batch,'client_id':cid,'number':3,'message_version':0,'reason':REASON})
+        with patch.object(self.client,'rpc') as rpc:
+            with self.assertRaises(OAuthError):self.client.call(self.binding,'fail_task',failure={**failure,'message_number':4},receipt_id=batch,client_id=cid)
+            rpc.assert_not_called()
+        with patch.object(self.client,'rpc',return_value={**result,'failure':{**result['failure'],'source':{'number':4,'version':0}}}):
+            with self.assertRaises(OAuthError):self.client.call(self.binding,'fail_task',failure=failure,receipt_id=batch,client_id=cid)
+
     def test_existing_finish_turn_no_scope_expansion_and_no_read(self):
         batch = str(uuid.uuid4())
         self.store.update(lambda d: d['rooms']['one'].update(oauth_receipts={batch: {'expires': 9999999999, 'numbers': [3]}}))
@@ -33,6 +47,24 @@ class CantDoOAuthTests(OAuthTests):
             rpc.assert_not_called()
 
 class CantDoNativeTests(SolidTests):
+    async def test_plain_ask_no_task_passes_exact_target_version_and_replays_once(self):
+        tokens=await self.prepare();original=self.client.enrolled.side_effect
+        self.client.store.update(lambda d:d['rooms']['a']['processing_receipts']['3']['frozen']['batch']['messages'][0].update(addressing={'reason':'mention'},editCount=2))
+        def implicit(room,op,**args):
+            if op=='fail_task':
+                self.calls.append((room,op,args))
+                self.assertEqual(args['failure'],{'message_number':3,'message_version':2,'status':'cant_do','reason':REASON})
+                return {'failure':{'taskId':TASK,'status':'cant_do','source':{'number':3,'version':2}},'read_effect':'none'}
+            return original(room,op,**args)
+        self.client.enrolled.side_effect=implicit
+        try:
+            cant_do(REASON);cant_do(REASON)
+            with self.assertRaises(BotSeshError):cant_do('Changed reason')
+        finally:clear_session_vars(tokens)
+        self.assertEqual(len([x for x in self.calls if x[1]=='fail_task']),1)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'failed')
+        self.assertEqual(self.posts,{})
+
     async def prepare(self):
         from hermes_botsesh_test.adapter import _ADAPTERS
         _ADAPTERS.clear(); _ADAPTERS.add(self.adapter)
