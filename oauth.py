@@ -453,6 +453,10 @@ class OAuthClient:
             return self.rpc(binding, 'hermes_edit', {'room_id': room_id, 'number': args['number'], 'text': args['text'], 'client_id': args['client_id']})
         if op == 'wait':
             return self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': args.get('after', -1), 'timeout_seconds': 25, **({'since': args['since']} if args.get('since') else {})})
+        if op == 'listener':
+            if args.get('state') not in ('listening', 'stopped'):
+                raise BotSeshError('listener_state_denied')
+            return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
             return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
         if op == 'working':
