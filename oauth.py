@@ -141,6 +141,13 @@ def _make_loopback_callback_handler(expected_path, *, origin, expected_state):
     result = dict.fromkeys(('code', 'state', 'error', 'error_description'))
 
     class CallbackHandler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            # The native loopback server is single-threaded. Chromium may
+            # preconnect without sending HTTP; bound that socket so neither a
+            # queued callback nor native shutdown can wait forever on it.
+            self.connection.settimeout(2)
+
         def do_GET(self):
             parsed = urlsplit(self.path)
             if parsed.path != expected_path:

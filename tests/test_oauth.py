@@ -115,6 +115,31 @@ class LoopbackRedirectTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         return status, headers, body, result
 
+    def test_idle_browser_preconnect_does_not_block_callback_or_shutdown(self):
+        import socket
+        handler, result = oauth._make_loopback_callback_handler(
+            '/callback', origin='https://botsesh.com', expected_state='private-state')
+        with HTTPServer(('127.0.0.1', 0), handler) as server:
+            serving = Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
+            serving.start()
+            idle = socket.create_connection(server.server_address, timeout=1)
+            connection = http.client.HTTPConnection(*server.server_address, timeout=4)
+            try:
+                # Chromium opens sockets before sending an HTTP request. The
+                # native single-threaded HTTPServer must not wait indefinitely.
+                time.sleep(.1)
+                connection.request('GET', '/callback?code=private-code&state=private-state')
+                response = connection.getresponse()
+                self.assertEqual(response.status, 302)
+                response.read()
+                self.assertEqual(result['code'], 'private-code')
+            finally:
+                idle.close()
+                connection.close()
+                server.shutdown()
+                serving.join(timeout=2)
+        self.assertFalse(serving.is_alive())
+
     def test_success_captures_callback_but_redirects_without_oauth_values(self):
         with patch('sys.stderr') as stderr:
             status, headers, body, result = self.request_callback(
