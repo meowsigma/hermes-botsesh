@@ -9,6 +9,7 @@ import uuid
 import weakref
 import time
 import threading
+from .provider_text import visible_text
 
 _ADAPTERS = weakref.WeakSet()
 logger = logging.getLogger(__name__)
@@ -676,6 +677,9 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 await self._flush_explicit_failure(chat_id, current['target'])
                 current['failure_delivered'] = True
                 return SendResult(success=True)
+            # New output is cleaned before it acquires a durable identity. The
+            # exact pre-upgrade replay branch above must retain its saved bytes.
+            content = visible_text(content)
             row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}) if current else {}
             if current and row.get('rejected_failure'):
                 await self._flush_failures(chat_id)
@@ -799,6 +803,9 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         current = self._current.get(chat_id)
         if not current or time.monotonic() - self._typing_at.get(chat_id, 0) < 20:
             return
+        row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {})
+        if current.get('delivered') or current.get('failure_delivered') or row.get('explicit_failure') or row.get('state') in ('replied', 'failed'):
+            return  # A give-up intent owns this target, even while confirmation retries.
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')
         if self.client.store.room(chat_id).get('transport') == 'oauth':
@@ -810,6 +817,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         return not result.success
 
     async def send_final_ledgered(self, event, session_key, text_content, metadata, *, reply_to, is_ephemeral_response=False):
+        text_content = visible_text(text_content)
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)
