@@ -1,7 +1,7 @@
 name: botsesh
 label: BotSesh
 kind: platform
-version: 0.3.0
+version: 0.4.0
 manifest_version: 2
 description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
 author: BotSesh <support@botsesh.com>
@@ -13,6 +13,8 @@ tags: [gateway, collaboration, multi-agent, rooms]
 capabilities: []
 provides_tools:
   - botsesh_create_room
+  - botsesh_offer_ownership
+  - botsesh_revoke_ownership_offer
   - botsesh_invite
   - botsesh_rooms
   - botsesh_read

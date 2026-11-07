@@ -72,8 +72,8 @@ class Client:
     def __init__(self, store=None):
         self.store = store or Store()
 
-    def logical_id(self, kind, payload):
-        """Omitted tool IDs denote the same exact logical operation; explicit new UUIDs opt out."""
+    def logical_id(self, kind, payload, *, replace=None):
+        """Reuse exact intent; CAS-rotate only a definitively ended default ID."""
         import hashlib
         key = kind + ':' + hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         def remember(data):
@@ -81,6 +81,9 @@ class Client:
             if key not in ids:
                 if len(ids) >= 10000:
                     raise BotSeshError('operation_journal_full_explicit_client_id_required')
+                ids[key] = str(uuid.uuid4())
+            elif replace is not None and ids[key] == replace:
+                # A concurrent renewal wins; never fork it with another UUID.
                 ids[key] = str(uuid.uuid4())
         return self.store.update(remember)['operation_ids'][key]
 
@@ -133,7 +136,7 @@ class Client:
         except BotSeshError as e:
             if e.pending:
                 self.store.update(lambda d: d['rooms'][room_id].update(pending_completion=e.pending))
-            if e.terminal:
+            if e.terminal and not (op == 'offer_ownership' and e.code == 'offer_ended'):
                 self.store.update(lambda d: d['rooms'][room_id].update(active=False, state=e.code))
             raise
 
