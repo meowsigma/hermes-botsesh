@@ -497,6 +497,10 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         self.client.store.update(journal)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        # Core's operational setup notice is unmarked, unlike final model output.
+        # Resolve only this exact native key, never edit authored text/commands.
+        if content == 'gateway.notify.no_home_channel' and not (metadata or {}).get('notify'):
+            content = _native_translation(content)
         if (metadata or {}).get('_interim_send') and _shutdown_notice(content):
             if self._current.get(chat_id):
                 # The durable linked final outcome owns the interruption. Native
