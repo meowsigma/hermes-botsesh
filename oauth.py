@@ -458,7 +458,7 @@ class OAuthClient:
                 raise BotSeshError('listener_state_denied')
             return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
-            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
+            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id') if args.get(k)})})
         if op == 'working':
             return self.rpc(binding, 'working', {'room_id': room_id, 'status': 'Hermes is working…', **({'mention_number': args['target']} if args.get('target') is not None else {})})
         if op in ('verify', 'pending'):
@@ -519,7 +519,7 @@ class OAuthClient:
             # Native runtime notices use an explicit no-read server capability,
             # NEVER implicit-last-batch send_message semantics.
             if args.get('processed') is not True:
-                result = self.rpc(binding, 'hermes_notice', {'room_id': room_id, 'text': text, 'client_id': client_id, **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {})})
+                result = self.rpc(binding, 'hermes_notice', {'room_id': room_id, 'text': text, 'client_id': client_id, **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {}), **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
                 message = result.get('message') or {}
                 if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                     raise BotSeshError('send_not_confirmed_retry_same_intent')

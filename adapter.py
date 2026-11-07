@@ -399,7 +399,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if row.get('state') == 'failed' and row.get('failure_pending') is False:
                 return
             exact_code = row.get('failure_code') or code
-            payload = {'text': failure_notice(exact_code), 'reply_to': target, 'client_id': client_id}
+            payload = {'text': failure_notice(exact_code), 'reply_to': target, 'client_id': client_id, 'failure_code': exact_code}
             row.update(state='failed', failure_code=exact_code, failure_pending=True, updated_at=time.time())
             room.setdefault('failure_outbox', {}).setdefault(str(target), {'payload': payload, 'code': exact_code})
         self.client.store.update(save)
@@ -408,7 +408,10 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
     async def _flush_failures(self, room_id):
         for target, saved in list(self.client.store.room(room_id).get('failure_outbox', {}).items()):
             await self._post_payload(room_id, saved['payload'])
-            await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
+            # Only newly journaled typed notices carry the association. Never
+            # retrofit metadata under an old uncertain send UUID.
+            association = {'notice_client_id': saved['payload']['client_id']} if saved['payload'].get('failure_code') else {}
+            await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'], **association)
             def finish(data):
                 room = data['rooms'][room_id]
                 row = room['processing_receipts'][target]
