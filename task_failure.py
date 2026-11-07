@@ -82,6 +82,8 @@ def cant_do(reason, partial_notes=None):
             raise BotSeshError('task_already_settled')
         source = next((m for m in row.get('frozen', {}).get('batch', {}).get('messages', []) if m.get('number') == target), {})
         task_id = (source.get('addressing') or {}).get('taskId')
+        if not saved and not task_id and adapter.client.store.room(room_id).get('transport') != 'oauth':
+            raise BotSeshError('implicit_failure_requires_native_oauth')
         reference = ({k:v for k,v in saved['payload']['failure'].items() if k in ('task_id','message_number','message_version')} if saved
                      else {'task_id':task_id} if task_id else {'message_number':target, 'message_version':source.get('editCount')})
         failure = validate_failure({**reference, 'status': 'cant_do', 'reason': reason,
