@@ -468,7 +468,15 @@ class OAuthClient:
             return {'pending': None, 'participantId': binding['participant_id']}
         if op == 'check':
             inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
-            return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets']], 'replies': [], 'backlog': inbox['backlog']}
+            return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets'] if not target.get('takeover')], 'takeover_targets': [target for target in inbox['targets'] if target.get('takeover')], 'offers': inbox.get('offers', []), 'replies': [], 'backlog': inbox['backlog']}
+        if op in ('takeover_accept', 'takeover_pickup', 'takeover_claim', 'takeover_settle'):
+            action = op.removeprefix('takeover_')
+            payload = {'room_id': room_id, 'action': action, 'event_id': args['event_id']}
+            if action == 'claim':
+                if args.get('processed') is not True or args.get('receipt_id') not in self.store.room(room_id).get('oauth_receipts', {}):
+                    raise BotSeshError('processed_receipt_required')
+                payload.update(batch_id=args['receipt_id'], reason=args['reason'], processed=True)
+            return self.rpc(binding, 'hermes_takeover', payload)
         if op == 'read':
             value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100, **({'target_number': args['target_number']} if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
@@ -504,6 +512,22 @@ class OAuthClient:
                 receipts[receipt_id] = {'expires': time.time()+3600, 'numbers': [m['number'] for m in messages]}
             self.store.update(save_receipt)
             return result
+        if op == 'fail_task':
+            from .task_failure import validate_failure, confirm_failure
+            if set(args) - {'failure', 'receipt_id', 'client_id'}:
+                raise BotSeshError('invalid_task_failure')
+            failure = validate_failure(args.get('failure'))
+            client_id, receipt_id = args.get('client_id'), args.get('receipt_id')
+            try:
+                if str(uuid.UUID(client_id)) != client_id or uuid.UUID(client_id).version != 4:
+                    raise ValueError()
+            except (ValueError, TypeError, AttributeError):
+                raise BotSeshError('invalid_client_id') from None
+            if not receipt_id or receipt_id not in self.store.room(room_id).get('oauth_receipts', {}):
+                raise BotSeshError('receipt_scope')
+            result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
+                'client_id': client_id, 'output': {'failure': failure}})
+            return confirm_failure(result, failure['task_id'])
         if op == 'post':
             receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
             try:

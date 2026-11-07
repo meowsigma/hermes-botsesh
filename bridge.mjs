@@ -89,6 +89,28 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
         delete req.reply;
         return work();
       }
+      case 'fail_task': {
+        if(Object.keys(req).some(k=>!['op','room','client_id','receipt_id','failure','task_id','status','reason','partial_notes'].includes(k)) || req.failure && ['task_id','status','reason','partial_notes'].some(k=>Object.hasOwn(req,k)))throw new ClientError('Use one exclusive failure and its exact receipt/operation identity.','invalid_task_failure');
+        requireId(req.client_id);
+        const {failure}=parseRoomTurnOutput({failure:req.failure ?? {task_id:req.task_id,status:req.status,reason:req.reason,...(req.partial_notes===undefined?{}:{partial_notes:req.partial_notes})}});
+        if(failure.status!=='cant_do')throw new ClientError('This plugin operation reports only an explicit inability.','invalid_task_failure');
+        // The source comes from this exact frozen receipt. Server additionally checks
+        // live membership, current winner, source version, retry identity and room.
+        const record=await readRecord(req.receipt_id);
+        if(!record.batch.messages.some(m=>m.addressing?.taskId===failure.task_id))throw new ClientError('Failure task was not supplied in this receipt.','receipt_scope');
+        await client.verify();
+        if(record.participantId!==client.state.participantId)throw new ClientError('Receipt identity changed.','receipt_scope');
+        const key='plugin-failure-'+req.client_id,exact=JSON.stringify({failure,receipt_id:req.receipt_id});
+        const saved=await client.store.read(room.origin,key);
+        if(saved && (saved.boundRoom!==room.roomId || saved.exact!==exact))throw new ClientError('Retry the original failure and receipt.','pending_send_mismatch');
+        if(saved?.complete)return saved.result;
+        if(!saved)await client.store.write({version:1,origin:room.origin,roomId:key,boundRoom:room.roomId,exact});
+        const response=await client.reportTaskFailure(failure.task_id,{clientId:req.client_id,status:failure.status,reason:failure.reason,...(failure.partial_notes===undefined?{}:{partialNotes:failure.partial_notes})});
+        if(response?.taskId!==failure.task_id || response?.status!=='cant_do')throw new ClientError('Failure unconfirmed; retry the same intent.','task_failure_unconfirmed');
+        const result={failure:response,read_effect:'none'};
+        await client.store.write({version:1,origin:room.origin,roomId:key,boundRoom:room.roomId,exact,complete:true,result});
+        return result;
+      }
       case 'post': {
         requireId(req.client_id);
         if(typeof req.text!=='string' || !req.text.trim() || req.text.length>4000)throw new ClientError('Use 1–4000 characters.','invalid_text');

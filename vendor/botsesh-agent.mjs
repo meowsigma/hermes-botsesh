@@ -1693,6 +1693,13 @@ export class BotSeshAgent {
     if(!confirm)return review;
     return this.#request('POST',path+'/confirm',{digest:challenge.digest,humanId:challenge.humanId,token:challenge.token,approve:true},{signal});
   }
+  // TAKEOVER1 seam from the published B63 SDK: no read or reply side effects.
+  async reportTaskFailure(taskId,{clientId,status,reason,partialNotes}={}, {signal}={}) {
+    const {failure}=parseRoomTurnOutput({failure:{task_id:taskId,status,reason,...(partialNotes===undefined?{}:{partial_notes:partialNotes})}});
+    if(!UUID_V4.test(clientId ?? ''))throw new ClientError('Task failure requires one stable clientId UUID.','invalid_task_failure');
+    await this.#loadState();
+    return this.#request('POST',`/wake/tasks/${failure.task_id}/failure`,{clientId,status:failure.status,reason:failure.reason,...(partialNotes===undefined?{}:{partialNotes})},{signal});
+  }
   async smartWake(action,body,{signal}={}) {
     if(!['claim','pass','interests'].includes(action) && !/^tasks\/[a-f0-9-]+(?:\/ack)?$/.test(action))throw new ClientError('Invalid smart wake operation.','invalid_wake');
     await this.#loadState();return this.#request(body===undefined?'GET':'POST','/wake/'+action,body,{signal});
@@ -2648,7 +2655,12 @@ function validRoutineReport(v) {
 export function parseRoomTurnOutput(output) {
   const bad=()=>{throw new ClientError('Invalid room turn output: use one exact JSON object; no repair or partial effects.','invalid_runtime_answer');};
   let v;try{v=typeof output==='string'?JSON.parse(output):output;}catch{bad();}
-  if(!v || typeof v!=='object' || Array.isArray(v) || Object.keys(v).some(k=>!['reply','decision','decision_support','brief_edit','purpose_actions','draft_ready','file_refs','status','nothing_to_add','builds_on','routine_report'].includes(k)))bad();
+  if(!v || typeof v!=='object' || Array.isArray(v) || Object.keys(v).some(k=>!['failure','reply','decision','decision_support','brief_edit','purpose_actions','draft_ready','file_refs','status','nothing_to_add','builds_on','routine_report'].includes(k)))bad();
+  if(Object.hasOwn(v,'failure')){
+    const f=v.failure;
+    if(Object.keys(v).length!==1 || !f || typeof f!=='object' || Array.isArray(f) || Object.keys(f).some(k=>!['task_id','status','reason','partial_notes'].includes(k)) || typeof f.task_id!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(f.task_id) || !['out_of_usage','cant_do','error'].includes(f.status) || typeof f.reason!=='string' || !f.reason.trim() || f.reason.length>240 || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(f.reason) || f.partial_notes!==undefined && (typeof f.partial_notes!=='string' || f.partial_notes.length>4000))bad();
+    return v;
+  }
   if(v.routine_report!==undefined && (v.reply===undefined || !validRoutineReport(v.routine_report)))bad();
   const text=(s,max)=>typeof s==='string' && s.trim().length>0 && s.length<=max;
   if(v.decision_support!==undefined && (!v.decision || typeof v.decision_support!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v.decision_support)))bad();
@@ -2690,8 +2702,18 @@ export function parseOrdinaryAnswer(output) {
   return value;
 }
 export async function completeRoomTurn(client,job,{signal,report=()=>{}}={}) {
-  const intent=Object.fromEntries(Object.entries(job).filter(([k])=>['reply','decision','decision_support','brief_edit','purpose_actions','draft_ready','file_refs','status','nothing_to_add','builds_on','routine_report'].includes(k)));
+  const intent=Object.fromEntries(Object.entries(job).filter(([k])=>['failure','reply','decision','decision_support','brief_edit','purpose_actions','draft_ready','file_refs','status','nothing_to_add','builds_on','routine_report'].includes(k)));
   parseRoomTurnOutput(intent); // All schema validation precedes any effect.
+  if(job.failure){
+    const save=async()=>{client.state={...client.state,localJob:job};await client.store.write(client.state);};
+    if(!job.failureClientId){job={...job,failureClientId:job.clientId ?? job.eventId ?? randomUUID()};await save();}
+    if(!job.failureResponse){
+      const f=job.failure;
+      const response=await client.reportTaskFailure(f.task_id,{clientId:job.failureClientId,status:f.status,reason:f.reason,...(f.partial_notes===undefined?{}:{partialNotes:f.partial_notes})},{signal});
+      job={...job,failureResponse:response};await save();
+    }
+    return null;
+  }
   if(job.routine_report && job.replyNumber==null)await client.validateRoutineReport(job.routine_report,job.routineBindings,{signal});
   if(Object.hasOwn(job,'readBoundary')){client.state={...client.state,pendingRead:job.readBoundary};await client.store.write(client.state);}
   const readBoundary=Object.hasOwn(job,'readBoundary')?job.readBoundary:client.state.pendingRead;

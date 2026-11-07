@@ -99,9 +99,9 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(ctx.dispatch_tool.call_args.args[0], 'mcp__BotSesh__create_room')
         with patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             with self.assertRaises(BotSeshError): tools.create_room({}, ctx)
-    def test_schemas_only_five_non_destructive_tools(self):
+    def test_schemas_only_scoped_non_destructive_tools(self):
         names = {s['name'] for s in tools.SCHEMAS}
-        self.assertEqual(names, {'botsesh_create_room', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post'})
+        self.assertEqual(names, {'botsesh_create_room', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_cant_do', 'botsesh_takeover_claim'})
         for schema in tools.SCHEMAS:
             self.assertFalse(schema['parameters']['additionalProperties'])
     def test_guarded_error_never_echoes_request(self):

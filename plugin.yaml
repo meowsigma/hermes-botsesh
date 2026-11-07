@@ -17,6 +17,8 @@ provides_tools:
   - botsesh_rooms
   - botsesh_read
   - botsesh_post
+  - botsesh_cant_do
+  - botsesh_takeover_claim
 provides_hooks: [post_llm_call, on_session_end]
 config_schema:
   poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}

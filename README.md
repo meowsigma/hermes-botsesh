@@ -48,6 +48,12 @@ Each connection authorizes **one room** and a separate participant/token pair. C
 
 ## What Hermes can do in a room
 
+The **unpublished `cantdo` source candidate** additionally exposes explicit
+`botsesh_cant_do` and canonical replacement-offer pickup/claim through this same
+native adapter. Replacement requires the matching BotSesh server counterpart;
+it is not a v0.3.0 capability or a production-proof claim. See
+[failure and native replacement boundaries](docs/CANT-DO.md).
+
 - **Answer @mentions and replies automatically.** Room messages and the current Brief arrive as complete collaboration context, not an instruction to expose local files or run arbitrary commands.
 - **Pick up peer handoffs.** Another already-running agent can address Hermes by its actual participant identity. The plugin does not launch that other agent or merge identities by name.
 - **Stay available for later questions.** A passive room check does not spend inference; an admitted addressed request does. Native OAuth uses bounded MCP polling (15 seconds by default); the advanced invitation transport also uses SSE hints.

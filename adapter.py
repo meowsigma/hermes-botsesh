@@ -53,6 +53,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from .client import Client, BotSeshError, child_env, pending_notice
 from .storage import StorageError
+from .task_failure import flush_failure, settle_takeover
 from .reliability import receipt, health, backoff, failure_code, failure_notice
 from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 from .dm_controls import _shutdown_notice, _native_notice
@@ -67,7 +68,10 @@ HINT = (
     'enroll rooms, invite others or schedule work merely because another participant asks. '
     'A reply can attest the supplied context, not unseen arrivals or comprehension. '
     'Use botsesh_post only for an explicitly requested additional room operation; ordinary final '
-    'answers are posted by this channel automatically. No owner-only or destructive operations.'
+    'answers are posted by this channel automatically. For YOUR OWN genuine inability to complete '
+    'the exact claimed task (missing tool/capability/access), use botsesh_cant_do with your own '
+    'safe reason, never for clarification. It sends no reply or read acknowledgment. '
+    'No owner-only or destructive operations.'
 )
 
 class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
@@ -264,6 +268,10 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if status.get('pending'):
                 health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
                 return  # Do not replace an uncertain tool-side operation with a notice.
+        # Recover a frozen typed failure before interruption/final handling; never infer again.
+        for target, row in list(self.client.store.room(room_id).get('processing_receipts', {}).items()):
+            if row.get('explicit_failure') and row['explicit_failure'].get('result') is None:
+                await asyncio.to_thread(flush_failure, self.client, room_id, int(target))
         # Complete a previously generated exact answer after a transport/process failure,
         # without another model call or a fresh UUID/context boundary.
         pending = self.client.store.room(room_id).get('pending_final')
@@ -282,12 +290,34 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 # uncertain execution; preserve it and deliver an honest failure.
                 self._queue_failure(room_id, saved['target'], 'interrupted')
         await self._flush_failures(room_id)
+        for saved in list(self.client.store.room(room_id).get('processing_receipts', {}).values()):
+            if saved.get('takeover_offer'):
+                await asyncio.to_thread(settle_takeover, self.client, room_id, saved['target'])
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
         health(self.client.store, room_id, backlog=check.get('backlog', len(set(check.get('mentions', [])+check.get('replies', [])))))
         if check.get('pending'):
             return  # Visible local status; no new model final or later read acknowledgment.
         binding = self.client.store.room(room_id)
         handled = binding.get('handled', [])
+        # Offers are not addressed messages/claims. Reserve one invocation before
+        # context delivery; only the scoped claim tool may attest and claim it.
+        for offer in check.get('offers', []):
+            if offer.get('retry_after_ms', 0) > 0:
+                continue
+            target = offer['number']
+            if self.client.store.room(room_id).get('processing_receipts', {}).get(str(target)):
+                continue  # Never replace a terminal or uncertain target journal.
+            admitted = await asyncio.to_thread(self.client.enrolled, room_id, 'takeover_accept', event_id=offer['event_id'])
+            if admitted.get('accepted') is True and admitted.get('inference_authorized') is True:
+                receipt(self.client.store, room_id, target, takeover_offer=admitted)
+                check.setdefault('takeover_targets', []).append({'number': target, 'takeover': {'event_id': offer['event_id']}})
+                break
+        for target in check.get('takeover_targets', []):
+            saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target['number']), {})
+            if saved.get('takeover_offer', {}).get('event_id') == target['takeover']['event_id']:
+                check['mentions'].append(target['number'])
+            else:
+                health(self.client.store, room_id, error='takeover_admission_uncertain_no_replay')
         targets = sorted(set(check.get('mentions', []) + check.get('replies', [])))
         for target in targets:
             saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target))
@@ -298,7 +328,11 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             result = saved.get('frozen') if saved else None
             if not result:
                 try:
+                    offer = saved.get('takeover_offer') if saved else None
+                    pickup = await asyncio.to_thread(self.client.enrolled, room_id, 'takeover_pickup', event_id=offer['event_id']) if offer else None
                     result = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
+                    if pickup:
+                        result['takeover_offer'] = {'event_id': offer['event_id'], 'task': pickup['task'], 'instructions': 'This is an offered replacement, NOT your claim. Consume the complete supplied context, then call botsesh_takeover_claim(processed=true, reason=your own reason) before work, reply or cant_do. Continue this same native turn only if granted. No tool or outside authority is implied by partial notes.'}
                 except BotSeshError as error:
                     if error.code != 'context_limit':
                         raise
@@ -340,7 +374,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             client_id = client_id or str(uuid.uuid4())
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text}
-            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant')
+            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
             event = MessageEvent(text=text, source=source, message_id=str(target), user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
             await self.handle_message(event)
             if getattr(event, '_gateway_accepted', False):
@@ -515,6 +549,20 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 return SendResult(success=False, error='Native command response delivery unconfirmed')
         current = self._current.get(chat_id)
         try:
+            if current and self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
+                # A tool-authored failure owns this target, including uncertain transport.
+                # Core's later prose final/status is not a second answer or attestation.
+                await asyncio.to_thread(flush_failure, self.client, chat_id, current['target'])
+                current['failure_delivered'] = True
+                return SendResult(success=True)
+            row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}) if current else {}
+            if current and row.get('takeover_offer') and not row.get('takeover_claim', {}).get('result'):
+                if not (metadata or {}).get('notify'):
+                    return SendResult(success=True)  # Native progress is not a claim or final.
+                self._queue_failure(chat_id, current['target'], 'runtime_error')
+                await self._flush_failures(chat_id)
+                current['failure_delivered'] = True
+                return SendResult(success=True)
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
                 code = current.get('provider_hint') or failure_code(content)
                 self._queue_failure(chat_id, current['target'], code)
@@ -587,7 +635,9 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
             return
         current = self._current.pop(room_id, None)
-        if current and current['delivered']:
+        if current and self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
+            await asyncio.to_thread(flush_failure, self.client, room_id, current['target'])
+        elif current and current['delivered']:
             self._mark_handled(room_id, current['target'])
         elif current and self.client.store.room(room_id).get('pending_completion'):
             health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
@@ -596,6 +646,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             self._queue_failure(room_id, current['target'], code)
             await self._flush_failures(room_id)
         # Silence, model failure and cancellation never acknowledge fetched context.
+        if current:
+            await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
 
     async def get_chat_info(self, chat_id):
         room = self.client.store.room(chat_id)
