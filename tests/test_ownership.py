@@ -14,8 +14,9 @@ package = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = package
 spec.loader.exec_module(package)
 from hermes_ownership_test import tools
-from hermes_ownership_test.client import BotSeshError
+from hermes_ownership_test.client import Client, BotSeshError
 from hermes_ownership_test.oauth import OAuthClient
+from hermes_ownership_test.storage import Store
 
 class OwnershipTests(unittest.TestCase):
     def test_offer_requires_operator_request_and_denies_room_messages(self):
@@ -46,6 +47,66 @@ class OwnershipTests(unittest.TestCase):
         with patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(tools, 'Client', return_value=client):
             tools.offer_ownership({'room_id': 'room', 'user_requested': True}, Mock())
         client.logical_id.assert_called_once_with('ownership-offer', {'room_id': 'room'})
+
+    def test_default_offer_renews_only_after_definitive_expiry_or_revocation(self):
+        for ended_by in ('expired', 'revoked'):
+            for transport in ('advanced', 'oauth'):
+                with self.subTest(ended_by=ended_by, transport=transport), tempfile.TemporaryDirectory() as root:
+                    store = Store(root)
+                    binding = {'room_id': 'room', 'url': 'https://botsesh.com/b/room', 'active': True, 'transport': transport}
+                    store.update(lambda data: data['rooms'].update(room=binding))
+                    client = Client(store)
+                    offers, ended, calls = {}, set(), []
+                    def server(**args):
+                        operation = args['client_id']
+                        calls.append(operation)
+                        if operation in ended:
+                            raise BotSeshError('offer_ended', 410 if transport == 'advanced' else None, rejected=True)
+                        return offers.setdefault(operation, {'offer_id': operation, 'claim_link': 'https://botsesh.com/#' + operation})
+                    with patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(tools, 'Client', return_value=client), patch.object(client, 'call', side_effect=lambda op, **args: server(**args)), patch.object(OAuthClient, 'call', side_effect=lambda binding, op, **args: server(**args)):
+                        args = {'room_id': 'room', 'user_requested': True}
+                        first = tools.offer_ownership(args, Mock())
+                        self.assertEqual(tools.offer_ownership(args, Mock()), first, 'pending retries stay stable')
+                        ended.add(first['offer_id'])  # Server expiry or explicit revocation.
+                        second = tools.offer_ownership(args, Mock())
+                        self.assertNotEqual(second['offer_id'], first['offer_id'])
+                        self.assertEqual(calls, [first['offer_id']] * 3 + [second['offer_id']])
+                        self.assertEqual(tools.offer_ownership(args, Mock()), second)
+                        self.assertTrue(store.room('room')['active'], 'offer expiry is not lost room access')
+
+    def test_offer_never_rotates_uncertain_explicit_or_unrelated_errors(self):
+        for error, explicit in ((BotSeshError('operation_timeout_retry_same_intent'), False),
+                                (BotSeshError('offer_ended', 503), False),
+                                (BotSeshError('membership_revoked', 410), False),
+                                (BotSeshError('offer_ended', 410), True)):
+            with self.subTest(code=error.code, status=error.status, explicit=explicit):
+                client = Mock()
+                operation = str(uuid4())
+                client.logical_id.return_value = operation
+                client.enrolled.side_effect = error
+                args = {'room_id': 'room', 'user_requested': True, **({'client_id': operation} if explicit else {})}
+                with patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(tools, 'Client', return_value=client), self.assertRaises(BotSeshError):
+                    tools.offer_ownership(args, Mock())
+                client.enrolled.assert_called_once()
+                self.assertEqual(client.logical_id.call_count, 0 if explicit else 1)
+
+    def test_default_offer_retries_an_ended_id_at_most_once(self):
+        client = Mock()
+        client.logical_id.side_effect = [str(uuid4()), str(uuid4())]
+        client.enrolled.side_effect = BotSeshError('offer_ended', 410)
+        with patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(tools, 'Client', return_value=client), self.assertRaises(BotSeshError):
+            tools.offer_ownership({'room_id': 'room', 'user_requested': True}, Mock())
+        self.assertEqual(client.enrolled.call_count, 2)
+
+    def test_logical_id_rotation_preserves_a_concurrent_newer_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            client = Client(Store(root))
+            payload = {'room_id': 'room'}
+            old = client.logical_id('ownership-offer', payload)
+            new = client.logical_id('ownership-offer', payload, replace=old)
+            self.assertNotEqual(new, old)
+            self.assertEqual(client.logical_id('ownership-offer', payload, replace=old), new)
+            self.assertEqual(client.logical_id('ownership-offer', payload), new)
 
     def test_oauth_offer_and_revoke_are_pure_python_exact_scoped_rpc(self):
         client = OAuthClient(Mock())

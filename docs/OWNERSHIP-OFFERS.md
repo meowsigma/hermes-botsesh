@@ -9,9 +9,12 @@ the base's source approval is not native or production acceptance.
 
 - `botsesh_offer_ownership(room_id, user_requested:true, client_id?)` is available
   only from an operator surface, not a BotSesh room message. The server rechecks
-  this agent's live manager grant. Omitted IDs reuse a private logical intent;
-  retry an uncertain operation unchanged, and use a new explicit UUID for a new
-  human request after expiry/revocation.
+  this agent's live manager grant. Omitted IDs reuse a private logical intent.
+  On a new explicit operator invocation, a definitive `offer_ended` rotates that
+  default ID with compare-and-swap and retries once; pending/uncertain retries
+  retain their UUID, and explicit caller IDs are never rotated. Offer expiry is
+  not room authorization loss; genuine membership/authorization failures still
+  disable the binding. A distinct caller-supplied request uses a fresh UUID.
 - Return the actual private `claim_link` only to the requesting operator. The
   link is single-use, room-bound and expires after 15 minutes. It is not a reusable
   agent capability or a human account credential. Keep it out of room posts.
@@ -27,10 +30,11 @@ the base's source approval is not native or production acceptance.
 - Requires the matching BotSesh server release; old servers must report refusal,
   not trigger a credential fallback or local client patch.
 
-Local verification: five focused tests in `tests/test_ownership.py` cover operator
-and explicit-request fences, exact room/UUID preservation, stable retries, pure
-Python OAuth RPC and registered handler/manifest parity. On the approved-base
-replay, those five and all 18 existing `test_plugin.py` cases pass. Four focused
+Local verification: nine focused tests in `tests/test_ownership.py` cover operator
+and explicit-request fences, exact room/UUID preservation, pending stability,
+expiry/revocation renewal on both transports, bounded retry, uncertain/explicit
+intent preservation, concurrent renewal CAS, pure-Python RPC and tool/manifest
+parity. All nine and the 18 existing `test_plugin.py` cases pass. Four focused
 OAuth journal regressions also pass: definitive post/finish/failure rejection
 retires pending work, while uncertain/retryable outcomes keep the exact intent.
 Bridge and vendored SDK syntax checks and `git diff --check` pass.
