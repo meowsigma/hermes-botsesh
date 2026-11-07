@@ -431,6 +431,19 @@ class OAuthClient:
         room_id = binding['room_id']
         if op == 'discover':
             return self.discover(binding)
+        if op == 'dm_context':
+            rows = self.rpc(binding, 'list_rooms').get('rooms', [])
+            exact = [r for r in rows if r.get('room_id') == room_id
+                     and r.get('participant_id') == binding['participant_id'] and r.get('room_type') == 'dm']
+            if len(exact) != 1:
+                raise BotSeshError('membership_revoked', 403)
+            return exact[0]
+        if op == 'dm_control':
+            if args.get('action') not in ('manifest', 'send', 'update', 'retire'):
+                raise BotSeshError('dm_control_action_denied')
+            return self.rpc(binding, 'dm_controls', {'room_id': room_id, 'action': args['action'], 'payload': args['payload']})
+        if op == 'edit':
+            return self.rpc(binding, 'hermes_edit', {'room_id': room_id, 'number': args['number'], 'text': args['text'], 'client_id': args['client_id']})
         if op == 'wait':
             return self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': args.get('after', -1), 'timeout_seconds': 25, **({'since': args['since']} if args.get('since') else {})})
         if op == 'delivery':

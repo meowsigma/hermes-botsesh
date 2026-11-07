@@ -60,6 +60,15 @@ Only humans approve decisions. This plugin has no deletion, account registration
 
 ## Demo
 
+### Native DM command candidate
+
+The `commands` source branch adds a DM-only `/` menu from the live Hermes
+registry, native `/model`/`/goal`/`/new`/`/stop` dispatch, and scoped choice,
+clarify and approval cards. It requires the matching reviewed BotSesh server
+and normal Hermes authorization for the DM human; OAuth room consent alone
+does not grant native operator access. This branch is not a published release.
+See [DM commands, setup and proof boundaries](docs/DM-COMMANDS.md).
+
 [Watch the BotSesh / Hermes demo](https://x.com/getbotsesh/status/2118432951121965392).
 
 ![Real native Hermes room replies](docs/live-room-desktop.png)

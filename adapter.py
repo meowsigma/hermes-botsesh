@@ -53,6 +53,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from .client import Client, BotSeshError, child_env, pending_notice
 from .reliability import receipt, health, backoff, failure_code, failure_notice
+from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 
 HINT = (
     'You are Hermes in a BotSesh room with people and their own agents. '
@@ -67,7 +68,7 @@ HINT = (
     'answers are posted by this channel automatically. No owner-only or destructive operations.'
 )
 
-class BotSeshAdapter(BasePlatformAdapter):
+class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4000
     supports_code_blocks = True
 
@@ -96,6 +97,9 @@ class BotSeshAdapter(BasePlatformAdapter):
 
     async def disconnect(self):
         self._running = False
+        self._controls().clear()
+        self._dm_operations.clear()
+        getattr(self, '_dm_contexts', {}).clear()
         for task in self._tasks:
             task.cancel()
         for task in list(self._rooms.values()):
@@ -236,6 +240,8 @@ class BotSeshAdapter(BasePlatformAdapter):
             await asyncio.gather(stream, return_exceptions=True)
 
     async def _check_room(self, room_id):
+        await self._refresh_dm_controls(room_id)
+        await self._control_sweep()
         # One in-flight event per room: never merge mutable later context into an earlier answer.
         if room_id in self._current:
             await self._receive_while_busy(room_id)
@@ -293,13 +299,16 @@ class BotSeshAdapter(BasePlatformAdapter):
                 continue
             participant = message.get('authorParticipant') or {}
             author = message.get('senderParticipantId')
+            if await self._control_ingest(room_id, message):
+                continue
             if not author or participant.get('id') != author or participant.get('verified') is not True:
                 self._queue_failure(room_id, target, 'admission_denied')
                 await self._flush_failures(room_id)
                 continue
             # A chat room is not a trusted service event. Require the real gateway's stable-ID
             # authorization decision BEFORE any event can produce a processed-read attestation.
-            if self._is_sender_authorized(author, 'group', room_id) is not True:
+            chat_type = 'dm' if self.client.store.room(room_id).get('room_type') == 'dm' else 'group'
+            if self._is_sender_authorized(author, chat_type, room_id) is not True:
                 self._queue_failure(room_id, target, 'admission_denied')
                 await self._flush_failures(room_id)
                 continue
@@ -318,7 +327,7 @@ class BotSeshAdapter(BasePlatformAdapter):
             client_id = client_id or str(uuid.uuid4())
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text}
-            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type='group', user_id=author, user_name=participant.get('name') or 'Room participant')
+            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant')
             event = MessageEvent(text=text, source=source, message_id=str(target), user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
             await self.handle_message(event)
             if getattr(event, '_gateway_accepted', False):
@@ -354,7 +363,10 @@ class BotSeshAdapter(BasePlatformAdapter):
                 continue
             author = message.get('senderParticipantId')
             participant = message.get('authorParticipant') or {}
-            if not author or participant.get('id') != author or participant.get('verified') is not True or self._is_sender_authorized(author, 'group', room_id) is not True:
+            if await self._control_ingest(room_id, message):
+                continue
+            chat_type = 'dm' if self.client.store.room(room_id).get('room_type') == 'dm' else 'group'
+            if not author or participant.get('id') != author or participant.get('verified') is not True or self._is_sender_authorized(author, chat_type, room_id) is not True:
                 self._queue_failure(room_id, target, 'admission_denied')
                 continue
             receipt(self.client.store, room_id, target, frozen=frozen, receipt_id=frozen['receipt_id'])
@@ -469,6 +481,12 @@ class BotSeshAdapter(BasePlatformAdapter):
         self.client.store.update(journal)
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
+        incoming = _NATIVE_INPUT.get()
+        if incoming and incoming[0] == chat_id:
+            try:
+                return await self._control_notice(chat_id, content)
+            except Exception:
+                return SendResult(success=False, error='Native command response delivery unconfirmed')
         current = self._current.get(chat_id)
         try:
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
@@ -528,6 +546,8 @@ class BotSeshAdapter(BasePlatformAdapter):
         self.client.store.update(mark)
 
     async def on_processing_start(self, event):
+        if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
+            return
         room_id = event.source.chat_id
         current = self._current.get(room_id)
         if current and str(current['target']) == event.message_id:
@@ -535,6 +555,8 @@ class BotSeshAdapter(BasePlatformAdapter):
             await self._delivery(room_id, current['target'], 'started')
 
     async def on_processing_complete(self, event, outcome):
+        if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
+            return
         room_id = event.source.chat_id
         if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
             return
@@ -551,9 +573,11 @@ class BotSeshAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         room = self.client.store.room(chat_id)
-        return {'name': room.get('name', chat_id), 'type': 'group', 'chat_id': chat_id}
+        return {'name': room.get('name', chat_id), 'type': 'dm' if room.get('room_type') == 'dm' else 'group', 'chat_id': chat_id}
 
     async def _notify_turn_error(self, event, error):
+        if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
+            return await self._control_notice(event.source.chat_id, 'Native command failed. Check /status before retrying; execution was not replayed.')
         # Core invokes this *after* completion on an escaping tool/runtime error.
         # Reuse the same durable notice rather than posting a second raw traceback.
         self._queue_failure(event.source.chat_id, int(event.message_id), 'runtime_error')
@@ -589,6 +613,8 @@ class BotSeshAdapter(BasePlatformAdapter):
         return not result.success
 
     async def send_final_ledgered(self, event, session_key, text_content, metadata, *, reply_to, is_ephemeral_response=False):
+        if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
+            return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)
         if current and current.get('model_processed') is not True:
             # Our durable failure outbox owns this short no-read notice. Do not
