@@ -47,3 +47,11 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
             with patch('agent.i18n.t', side_effect=lambda key: key):
                 self.assertTrue((await self.adapter.send('a', key, metadata={'_interim_send': True})).success)
         self.assertEqual({p['text'] for p in self.posts.values()}, {'Hermes is shutting down.', 'Hermes is restarting.'})
+
+    async def test_native_setup_notice_has_fallback_and_formatted_localized_copy(self):
+        with patch('agent.i18n.t', side_effect=lambda key, **fields: key):
+            self.assertTrue((await self.adapter.send('a', 'gateway.notify.no_home_channel')).success)
+        self.assertNotIn('gateway.', next(iter(self.posts.values()))['text'])
+        with patch('agent.i18n.t', return_value='Localized BotSesh /sethome') as translator:
+            await self.adapter.send('a', 'gateway.notify.no_home_channel')
+            translator.assert_called_once_with('gateway.notify.no_home_channel', platform='BotSesh', sethome_cmd='/sethome')

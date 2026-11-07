@@ -23,6 +23,7 @@ _NATIVE_COPY = {
     'gateway.clarify.skip_hint': 'Reply "skip" to skip this question.',
     'gateway.shutdown.notice_restart': 'Hermes is restarting.',
     'gateway.shutdown.notice_shutdown': 'Hermes is shutting down.',
+    'gateway.notify.no_home_channel': 'No home channel is set for BotSesh. Use /sethome here to receive scheduled results and cross-platform messages, or ignore this notice.',
 }
 
 
@@ -31,7 +32,8 @@ def _native_translation(key: str) -> str:
     # Use its profile-scoped translator first; never infer just to translate UI.
     try:
         from agent.i18n import t
-        text = t(key)
+        fields = {'platform': 'BotSesh', 'sethome_cmd': '/sethome'} if key == 'gateway.notify.no_home_channel' else {}
+        text = t(key, **fields)
         if isinstance(text, str) and text.strip() and not text.startswith('gateway.'):
             return text
     except Exception:
