@@ -271,7 +271,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         # Recover a frozen typed failure before interruption/final handling; never infer again.
         for target, row in list(self.client.store.room(room_id).get('processing_receipts', {}).items()):
             if row.get('explicit_failure') and row['explicit_failure'].get('result') is None:
-                await asyncio.to_thread(flush_failure, self.client, room_id, int(target))
+                await self._flush_explicit_failure(room_id, int(target))
         # Complete a previously generated exact answer after a transport/process failure,
         # without another model call or a fresh UUID/context boundary.
         pending = self.client.store.room(room_id).get('pending_final')
@@ -443,6 +443,23 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         self.client.store.update(save)
         logger.error('BotSesh room %s target %s failed: %s; notice queued.', room_id, target, code)
 
+    async def _flush_explicit_failure(self, room_id, target):
+        try:
+            return await asyncio.to_thread(flush_failure, self.client, room_id, target)
+        except BotSeshError as error:
+            if error.terminal or not error.definitive:
+                raise  # An uncertain cant_do must retry its original intent.
+            self._queue_failure(room_id, target, 'runtime_error')
+            def retire(data):
+                room = data['rooms'][room_id]
+                row = room['processing_receipts'][str(target)]
+                row['rejected_failure'] = {**row.pop('explicit_failure'),
+                    'error': {'code': error.code, 'status': error.status}}
+                if room.get('pending_final', {}).get('target') == target:
+                    room.pop('pending_final', None)
+            self.client.store.update(retire)
+            await self._flush_failures(room_id)
+
     async def _flush_failures(self, room_id):
         for target, saved in list(self.client.store.room(room_id).get('failure_outbox', {}).items()):
             await self._post_payload(room_id, saved['payload'])
@@ -476,7 +493,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
         elif room.get('transport') == 'oauth':
             posts = [post for post in [*room.get('oauth_posts', {}).values(), *room.get('oauth_turns', {}).values()]
-                     if post['exact'].get('receipt_id') == receipt_id
+                     if not post.get('failed') and post['exact'].get('receipt_id') == receipt_id
                      and post['exact'].get('processed') is True
                      and ('output' not in post['exact'] or 'reply' in post['exact']['output'])
                      and (post['exact'].get('reply_to') == target
@@ -499,19 +516,26 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if posted:
             return posted
         row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target), {})
-        if row.get('final_expired'):
+        if row.get('final_expired') or row.get('final_rejected') or row.get('rejected_failure'):
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
         else:
             try:
                 return await self._post_payload(room_id, payload)
             except BotSeshError as error:
                 room = self.client.store.room(room_id)
-                if (error.code != 'receipt_expired' or room.get('pending_completion')
+                if error.terminal:
+                    raise  # Revoked access cannot authorize a fallback notice.
+                if error.definitive:
+                    self._queue_failure(room_id, target, 'runtime_error')
+                    self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(target)].update(
+                        final_rejected={'code': error.code, 'status': error.status}))
+                elif (error.code != 'receipt_expired' or room.get('pending_completion')
                         or room.get('oauth_posts', {}).get(payload['client_id'])):
                     raise  # Never discard an uncertain original send.
-                # Keep the deployed server's existing failure-code vocabulary.
-                self._queue_failure(room_id, target, 'runtime_error')
-                self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(target)].update(final_expired=True))
+                else:
+                    # Keep the deployed server's existing failure-code vocabulary.
+                    self._queue_failure(room_id, target, 'runtime_error')
+                    self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(target)].update(final_expired=True))
         # A missing, uncommitted receipt cannot be attested or regenerated. One
         # durable no-read failure retires it, including stale core-ledger retries.
         await self._flush_failures(room_id)
@@ -637,10 +661,14 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if current and self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
                 # A tool-authored failure owns this target, including uncertain transport.
                 # Core's later prose final/status is not a second answer or attestation.
-                await asyncio.to_thread(flush_failure, self.client, chat_id, current['target'])
+                await self._flush_explicit_failure(chat_id, current['target'])
                 current['failure_delivered'] = True
                 return SendResult(success=True)
             row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}) if current else {}
+            if current and row.get('rejected_failure'):
+                await self._flush_failures(chat_id)
+                current['failure_delivered'] = True
+                return SendResult(success=True)
             if current and row.get('takeover_offer') and not row.get('takeover_claim', {}).get('result'):
                 if not (metadata or {}).get('notify'):
                     return SendResult(success=True)  # Native progress is not a claim or final.
@@ -715,7 +743,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if current and await self._posted_reply(room_id, current['target'], current['receipt_id']):
             current['delivered'] = True
         if current and self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
-            await asyncio.to_thread(flush_failure, self.client, room_id, current['target'])
+            await self._flush_explicit_failure(room_id, current['target'])
         elif current and current['delivered']:
             self._mark_handled(room_id, current['target'])
         elif current and self.client.store.room(room_id).get('pending_completion'):
@@ -777,6 +805,12 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             posted = await self._posted_reply(event.source.chat_id, current['target'], current['receipt_id'])
             if posted:
                 return SendResult(success=True, message_id=str(posted['number'])), self
+            row = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(current['target']), {})
+            if row.get('explicit_failure') or row.get('rejected_failure'):
+                # Failure intent (including definitive rejection) owns this turn.
+                # Do not arm a normal prose final in the core's replay ledger.
+                return await self.send(event.source.chat_id, text_content, reply_to=reply_to,
+                                       metadata={**metadata, 'notify': True}), self
         if current and current.get('model_processed') is not True:
             # Our durable failure outbox owns this short no-read notice. Do not
             # put raw provider prose in a second, unrelated core replay ledger.

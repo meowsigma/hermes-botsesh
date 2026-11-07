@@ -18,10 +18,19 @@ BRIDGE = (Path(__file__).parent / 'bridge.mjs').resolve()
 TERMINAL_CODES = {'invalid_grant', 'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
-    def __init__(self, code, status=None, retry_after_ms=0, pending=None):
+    def __init__(self, code, status=None, retry_after_ms=0, pending=None, *, rejected=False):
         self.code, self.status, self.retry_after_ms = code, status, retry_after_ms
-        self.pending = pending
+        self.pending, self.rejected = pending, rejected
         super().__init__(f'BotSesh: {code}' + (f' (HTTP {status})' if status else '') + (f'; {pending_notice(pending)}' if pending else ''))
+
+    @property
+    def definitive(self):
+        # A parsed MCP rejection need not carry an HTTP status. Transport loss,
+        # malformed/unconfirmed success and retryable server failures are NOT a
+        # verdict on a mutation, so their original durable intent must survive.
+        if self.status in (408, 429) or isinstance(self.status, int) and self.status >= 500:
+            return False
+        return self.rejected or isinstance(self.status, int) and 400 <= self.status < 500
 
     @property
     def terminal(self):

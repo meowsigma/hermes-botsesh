@@ -108,6 +108,74 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
              patch.object(tools, 'calling_scope', return_value=('botsesh', room)):
             return tools.post(args, Mock())
 
+    async def test_rejected_cant_do_uses_failure_notice_and_admits_next_target(self):
+        from hermes_botsesh_test.adapter import _ADAPTERS
+        from hermes_botsesh_test.task_failure import cant_do
+        from gateway.session_context import set_session_vars, clear_session_vars
+        adapter, event = await self.begin()
+        _ADAPTERS.clear()
+        _ADAPTERS.add(adapter)
+        self.addCleanup(_ADAPTERS.discard, adapter)
+        task_id = str(uuid.uuid4())
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['3']['frozen']['batch']['messages'][0].update(
+            addressing={'taskId': task_id}))
+        original = OAuthClient.rpc
+        def reject(api, binding, name, args=None, **kwargs):
+            if name == 'finish_room_turn':
+                raise BotSeshError('invalid_task_failure', 400)
+            return original(api, binding, name, args, **kwargs)
+        with patch.object(OAuthClient, 'rpc', reject):
+            tokens = set_session_vars(platform='botsesh', chat_id='a', message_id='3')
+            try:
+                with self.assertRaises(BotSeshError) as error:
+                    cant_do('No image tool.')
+                self.assertEqual(error.exception.code, 'invalid_task_failure')
+            finally:
+                clear_session_vars(tokens)
+            self.model_ended(adapter)
+            result = await adapter.send('a', 'Do not turn rejection into a normal reply.', metadata={'notify': True})
+            self.assertTrue(result.success, result.error)
+            with patch('gateway.platforms.base.BasePlatformAdapter.send_final_ledgered', new_callable=AsyncMock) as native:
+                result, _ = await adapter.send_final_ledgered(event, 'native-session',
+                    'Do not replay a rejected failure as a prose final.', {'notify': True}, reply_to='3')
+                self.assertTrue(result.success)
+                native.assert_not_awaited()
+            self.assertNotIn('pending_final', self.client.store.room('a'))
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            row = self.client.store.room('a')['processing_receipts']['3']
+            self.assertEqual(row['state'], 'failed')
+            self.assertEqual(row['failure_code'], 'runtime_error')
+            self.assertFalse(row['failure_pending'])
+            self.assertNotIn('processed_cursor', self.client.store.room('a'))
+            self.assertEqual(len(self.messages), 1)
+            self.assertNotIn('Do not turn rejection', next(iter(self.messages.values()))['text'])
+            await adapter._check_room('a')
+            self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+
+    async def test_rejected_final_post_uses_one_notice_and_admits_next_target(self):
+        adapter, event = await self.begin()
+        self.model_ended(adapter)
+        original = OAuthClient.rpc
+        denied = []
+        def reject(api, binding, name, args=None, **kwargs):
+            if name == 'send_message':
+                denied.append(args)
+                raise BotSeshError('batch_stale', 409)
+            return original(api, binding, name, args, **kwargs)
+        with patch.object(OAuthClient, 'rpc', reject):
+            for _ in range(2):
+                result = await adapter.send('a', 'Rejected final bytes.', metadata={'notify': True})
+                self.assertTrue(result.success, result.error)
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            self.assertEqual(len(denied), 1)
+            self.assertEqual(len(self.messages), 1)
+            room = self.client.store.room('a')
+            self.assertNotIn('pending_final', room)
+            self.assertNotIn('processed_cursor', room)
+            self.assertEqual(room['processing_receipts']['3']['state'], 'failed')
+            await adapter._check_room('a')
+            self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+
     async def test_tool_post_then_final_settles_both_adapters_and_admits_later_turn(self):
         for room in ('a', 'b'):
             with self.subTest(room=room):

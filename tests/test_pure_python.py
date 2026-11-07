@@ -101,10 +101,13 @@ class OAuthPython(unittest.TestCase):
         self.posts = {}
         self.calls = []
         self.lose = False
+        self.real_rpc = oauth.OAuthClient.rpc
         def rpc(binding, name, args=None, **kwargs):
             self.calls.append((name, args))
             if name == 'list_rooms':
                 return {'rooms': [{'room_id': 'one', 'participant_id': 'bot'}]}
+            if name == 'hermes_inbox':
+                return {'targets': [{'number': 7}], 'has_more': False, 'backlog': 1}
             if name in ('send_message', 'hermes_notice'):
                 message = self.posts.setdefault(args['client_id'], {'number': 0, 'authorParticipant': {'id': 'bot'},
                     'text_sha256': hashlib.sha256(args['text'].encode()).hexdigest()})
@@ -147,6 +150,129 @@ class OAuthPython(unittest.TestCase):
         self.assertEqual(len(self.posts), 1)
         self.assertIsNone(self.api.pending('one'))
         self.assertEqual([a['client_id'] for n, a in self.calls if n == 'send_message'], [self.exact['client_id']] * 2)
+
+    def test_definitive_post_rejection_does_not_block_new_mentions(self):
+        with patch.object(oauth.OAuthClient, 'rpc', side_effect=BotSeshError('batch_stale', 409)) as rpc:
+            with self.assertRaises(BotSeshError):
+                self.client.enrolled('one', 'post', **self.exact)
+            rpc.assert_called_once()
+        for _ in range(3):
+            check = self.client.enrolled('one', 'check')
+            self.assertIsNone(check['pending'])
+            self.assertEqual(check['mentions'], [7])
+        self.assertNotIn('pending_completion', self.store.room('one'))
+        self.assertIn(self.batch, self.store.room('one')['oauth_receipts'])
+        # A retired identity remains bound to its original rejected intent.
+        with self.assertRaises(BotSeshError) as error:
+            self.client.enrolled('one', 'retry', client_id=self.exact['client_id'])
+        self.assertEqual((error.exception.code, error.exception.status), ('batch_stale', 409))
+        self.assertFalse(self.posts)
+        with self.assertRaises(BotSeshError) as error:
+            self.client.enrolled('one', 'post', **{**self.exact, 'text': 'changed'})
+        self.assertEqual(error.exception.code, 'pending_send_mismatch')
+
+    def test_definitive_failure_and_finish_rejections_do_not_block_new_mentions(self):
+        failure = {'task_id': str(uuid.uuid4()), 'status': 'cant_do', 'reason': 'No image tool.'}
+        for op, args in (('fail_task', {'failure': failure}),
+                         ('finish', {'output': {'nothing_to_add': True}, 'processed': True})):
+            with self.subTest(op=op):
+                cid = str(uuid.uuid4())
+                with patch.object(oauth.OAuthClient, 'rpc', side_effect=BotSeshError('invalid_task_failure', 400)) as rpc:
+                    with self.assertRaises(BotSeshError):
+                        self.client.enrolled('one', op, receipt_id=self.batch, client_id=cid, **args)
+                    rpc.assert_called_once()
+                for _ in range(3):
+                    check = self.client.enrolled('one', 'check')
+                    self.assertIsNone(check['pending'])
+                    self.assertEqual(check['mentions'], [7])
+                with self.assertRaises(BotSeshError) as error:
+                    self.client.enrolled('one', 'retry', client_id=cid)
+                self.assertEqual((error.exception.code, error.exception.status), ('invalid_task_failure', 400))
+        self.assertNotIn('pending_completion', self.store.room('one'))
+        self.assertIn(self.batch, self.store.room('one')['oauth_receipts'])
+        self.assertNotIn('processed_cursor', self.store.room('one'))
+
+    def test_retryable_and_unconfirmed_outcomes_keep_original_intent_pending(self):
+        for op in ('post', 'finish'):
+            for error in (BotSeshError('rate_limited', 429, rejected=True),
+                          BotSeshError('internal_error', 500, rejected=True),
+                          BotSeshError('unavailable', 503),
+                          BotSeshError('request_timeout', 408),
+                          BotSeshError('connection_failed_retry_same_intent'),
+                          BotSeshError('invalid_mcp_response')):
+                with self.subTest(op=op, error=error.code):
+                    cid = str(uuid.uuid4())
+                    self.store.update(lambda d: d['rooms']['one'].update(oauth_posts={}, oauth_turns={},
+                        oauth_receipts={self.batch: {'numbers': [0, 3], 'expires': 0}}))
+                    args = {**self.exact, 'client_id': cid} if op == 'post' else {
+                        'output': {'nothing_to_add': True}, 'processed': True,
+                        'receipt_id': self.batch, 'client_id': cid}
+                    with patch.object(oauth.OAuthClient, 'rpc', side_effect=error):
+                        with self.assertRaises(BotSeshError):
+                            self.client.enrolled('one', op, **args)
+                    check = self.client.enrolled('one', 'check')
+                    self.assertEqual(check['pending']['client_id'], cid)
+                    self.assertEqual(check['mentions'], [])
+                    if op == 'finish':
+                        with patch.object(oauth.OAuthClient, 'rpc', return_value={'read_checkpoint': 0}) as rpc:
+                            self.client.enrolled('one', 'retry', client_id=cid)
+                            self.assertEqual(rpc.call_args.args[2]['client_id'], cid)
+                    else:
+                        self.client.enrolled('one', 'retry', client_id=cid)
+                        self.assertEqual(self.calls[-1][1]['client_id'], cid)
+                    self.assertIsNone(self.api.pending('one'))
+
+    def test_unconfirmed_mutation_result_stays_pending_without_read_ack(self):
+        failure = {'task_id': str(uuid.uuid4()), 'status': 'cant_do', 'reason': 'No tool.'}
+        for op, extra in (('post', self.exact),
+                          ('finish', {'output': {'nothing_to_add': True}, 'processed': True}),
+                          ('fail_task', {'failure': failure})):
+            with self.subTest(op=op):
+                self.store.update(lambda d: d['rooms']['one'].update(oauth_posts={}, oauth_turns={}))
+                cid = str(uuid.uuid4())
+                args = {**extra, 'receipt_id': self.batch, 'client_id': cid}
+                with patch.object(oauth.OAuthClient, 'rpc', return_value={}):
+                    with self.assertRaises(BotSeshError) as error:
+                        self.client.enrolled('one', op, **args)
+                self.assertIn('retry_same_intent', error.exception.code)
+                self.assertEqual(self.api.pending('one')['client_id'], cid)
+                self.assertIn(self.batch, self.store.room('one')['oauth_receipts'])
+                self.assertNotIn('processed_cursor', self.store.room('one'))
+
+    def test_uncertain_then_rejected_retry_clears_pending_completion(self):
+        self.lose = True
+        with self.assertRaises(BotSeshError):
+            self.client.enrolled('one', 'post', **self.exact)
+        self.client.enrolled('one', 'check')
+        self.assertIn('pending_completion', self.store.room('one'))
+        with patch.object(oauth.OAuthClient, 'rpc', side_effect=BotSeshError('batch_stale', 409)):
+            with self.assertRaises(BotSeshError):
+                self.client.enrolled('one', 'retry', client_id=self.exact['client_id'])
+        self.assertEqual(self.client.enrolled('one', 'check')['mentions'], [7])
+        self.assertNotIn('pending_completion', self.store.room('one'))
+
+    def test_mcp_rejection_without_http_status_is_definitive_but_malformed_result_is_not(self):
+        malformed = False
+        def wire(origin, path, **kwargs):
+            payload = kwargs['payload']
+            if malformed:
+                return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {}}
+            return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {
+                'isError': True, 'structuredContent': {'code': 'batch_stale'}}}
+        with patch.object(oauth.OAuthClient, 'rpc', self.real_rpc), \
+             patch.object(oauth.OAuthClient, '_access', return_value='test-only'), \
+             patch.object(oauth, '_http', side_effect=wire):
+            with self.assertRaises(BotSeshError) as error:
+                self.client.enrolled('one', 'post', **self.exact)
+            self.assertTrue(error.exception.definitive)
+            self.assertIsNone(error.exception.status)  # Do not invent an HTTP400.
+            self.assertIsNone(self.api.pending('one'))
+            malformed = True
+            cid = str(uuid.uuid4())
+            with self.assertRaises(BotSeshError) as error:
+                self.client.enrolled('one', 'post', **{**self.exact, 'client_id': cid})
+            self.assertFalse(error.exception.definitive)
+            self.assertEqual(self.api.pending('one')['client_id'], cid)
 
     def test_missing_foreign_receipt_and_malformed_identity_fail_without_effect(self):
         for changed in ({'receipt_id': 'foreign'}, {'client_id': str(uuid.uuid1())}, {'client_id': ' ' + self.exact['client_id']}, {'reply_to': 5}):

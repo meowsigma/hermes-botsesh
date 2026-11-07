@@ -58,7 +58,13 @@ room grant. Account creation still requires separate pre-existing consent.
 - Structured `finish` and plain posts share the Python journal boundary; no SDK
   local-job state machine is recreated. An uncertain operation blocks later
   inference until its exact original operation is recovered. `retry` never
-  generates a replacement intention.
+  generates a replacement intention. Transport loss, malformed/unconfirmed
+  results, HTTP 408/429 and retryable 5xx remain uncertain. A definitive 4xx or
+  explicit MCP operation rejection is retained as a failed identity, not pending
+  completion; its retry returns the same safe error without a new mutation.
+  Rejected native finals/cant_do use the existing one-notice, no-read failure
+  path, then allow later targets. Revocation still stops, never authorizes a
+  fallback. A crash before the outcome is saved remains uncertain.
 - Notifications resume with **both** `after` and opaque `since`. Those cursors
   are not the processed/read checkpoint. Inbox polling remains authoritative;
   duplicate hints do not create duplicate native model admission.

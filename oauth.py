@@ -281,7 +281,8 @@ class OAuthClient:
             if not isinstance(code, str) or not re.fullmatch(r'[a-z0-9_-]{1,80}', code):
                 code = 'mcp_operation_denied'
             status = detail.get('status') if isinstance(detail, dict) else None
-            raise BotSeshError(code, status if isinstance(status, int) and 400 <= status < 600 else None)
+            raise BotSeshError(code, status if isinstance(status, int) and 400 <= status < 600 else None,
+                               rejected=isinstance(result, dict) and result.get('isError') is True)
         data = result.get('structuredContent')
         if not isinstance(data, dict):
             raise BotSeshError('invalid_mcp_response')
@@ -406,7 +407,7 @@ class OAuthClient:
         room = self.store.room(room_id)
         for section in ('oauth_posts', 'oauth_turns'):
             for client_id, saved in room.get(section, {}).items():
-                if not saved.get('complete'):
+                if not saved.get('complete') and not saved.get('failed'):
                     return {'client_id': client_id, 'number': None, 'read_effect': 'unconfirmed'}
         return None
 
@@ -424,13 +425,26 @@ class OAuthClient:
             if client_id in data['rooms'][room_id].get(other, {}):
                 raise BotSeshError('pending_send_mismatch')
             if len(rows) >= 1000:
-                removable = next((key for key, row in rows.items() if row.get('complete')), None)
+                removable = next((key for key, row in rows.items() if row.get('complete') or row.get('failed')), None)
                 if removable is None:
                     raise BotSeshError('operation_journal_full')
                 del rows[removable]
             rows[client_id] = {'exact': exact}
         self.store.update(save)
         return self.store.room(room_id)[section][client_id]
+
+    def _journal_rpc(self, binding, section, client_id, name, args):
+        try:
+            return self.rpc(binding, name, args)
+        except BotSeshError as error:
+            if error.definitive:
+                # A server rejection is settled failure, not an uncertain send.
+                # Retain its exact identity/error for replay, without attesting
+                # any read or suppressing later inbox work. Unknown outcomes
+                # (including process loss after journaling) remain pending.
+                self.store.update(lambda d: d['rooms'][binding['room_id']][section][client_id].update(
+                    failed={'code': error.code, 'status': error.status}))
+            raise
 
     def finish(self, binding, *, output, receipt_id, client_id, processed=False):
         """One canonical resumable room turn, not another client-side executor.
@@ -453,6 +467,8 @@ class OAuthClient:
         saved = room.get('oauth_turns', {}).get(client_id)
         if saved and saved['exact'] != exact:
             raise BotSeshError('pending_send_mismatch')
+        if saved and saved.get('failed'):
+            raise BotSeshError(**saved['failed'], rejected=True)
         if saved and saved.get('complete'):
             self.call(binding, 'verify')
             return saved['result']
@@ -460,7 +476,7 @@ class OAuthClient:
             raise BotSeshError('receipt_expired')
         if not saved:
             saved = self._journal(room_id, 'oauth_turns', client_id, exact)
-        result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
+        result = self._journal_rpc(binding, 'oauth_turns', client_id, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
                           'client_id': client_id, 'output': intent})
         if 'failure' in intent:
             failure = result.get('failure') or {}
@@ -607,6 +623,8 @@ class OAuthClient:
             saved = current.get('oauth_posts', {}).get(client_id)
             if saved and saved['exact'] != exact:
                 raise BotSeshError('pending_send_mismatch')
+            if saved and saved.get('failed'):
+                raise BotSeshError(**saved['failed'], rejected=True)
             if saved and saved.get('complete'):
                 self.call(binding, 'verify')
                 return saved['result']
@@ -617,7 +635,7 @@ class OAuthClient:
                 raise BotSeshError('unread_reply_target')
             if not saved:
                 self._journal(room_id, 'oauth_posts', client_id, exact)
-            result = self.rpc(binding, 'send_message', {'room_id': room_id, 'text': text,
+            result = self._journal_rpc(binding, 'oauth_posts', client_id, 'send_message', {'room_id': room_id, 'text': text,
                 'client_id': client_id, 'batch_id': receipt_id,
                 **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {})})
             message = result.get('message') or {}
