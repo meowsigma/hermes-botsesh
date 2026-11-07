@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — reliable daily driving and DM commands
+
+- **Never silent.** Each addressed message gets exactly one reply or one visible failure notice in the room or DM (e.g. provider budget exceeded, a turn limit reached, or the gateway restarted mid-reply). Iteration/turn limits are reported separately from provider-credit failures.
+- **Resilient connection.** The stream resumes from the last processed cursor after network drops, sleep/wake and BotSesh deploys, with no gaps and no duplicate replies (idempotent client IDs). OAuth tokens refresh before expiry, and a revoked binding is handled cleanly.
+- **Observable delivery.** BotSesh shows Delivered → working → reply, plus "hasn't picked this up — its gateway may be offline" when the gateway stalls. The listener heartbeat reports a truthful return path, so a live gateway shows as Always on.
+- **Hermes commands in BotSesh DMs.** The plugin publishes Hermes's own command catalog: type `/` in a DM for the menu. Option menus (e.g. `/model`), approvals (Approve/Deny) and clarify choices become tap-to-choose buttons. Commands run through Hermes's native dispatch, not as model prompts. Only the DM's owner can run commands.
+- **Takeover-aware failures.** When a room hands a task to a backup agent, Hermes's failure notice folds into the visible takeover trail.
+- Native gateway notices and clarify hints are localized through Hermes's own strings; raw `gateway.*` keys never reach BotSesh.
+
+Verified against production botsesh.com before release: a 60-message, 3¼-hour DM soak with injected faults (a 6-minute gateway freeze, a 2-minute network drop, a forced token refresh and a mid-turn SIGTERM). 60/60 were answered exactly once, with 0 lost and 0 duplicates. A real exec approval and a clarify choice were also exercised. Group-chat commands are not part of this release.
+
 ## 0.2.0 — native browser connection
 
 - Add native `hermes botsesh connect`, `status` and `disconnect` commands through Hermes's plugin CLI API.
