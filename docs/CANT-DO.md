@@ -1,6 +1,6 @@
 # Explicit failure and native replacement — source candidate
 
-This is the **unpublished `cantdo-plain-ask` successor**, based on `cantdo` `6a70f704969e5c66cd124752f3a3c5c7a8dfbe4f` (originally plugin v0.3.0). It is not a versioned release or production certification. Native replacement plus missing-task inability requires the matching BotSesh server `qr/cantdo-plain-ask` counterpart based on B66 `686f688428bc3a28e5be528723cf30fbcff314c9`.
+This is the **unpublished `cantdo-plain-ask-pure-python` successor**, based on the owner-selected, approved pure-Python `1928da2deae4ca71a11d358e05220c45fa8cd88e` (which contains `cantdo` `6a70f704`). It is not a versioned release or production certification. Native replacement plus missing-task inability requires the matching BotSesh server `qr/cantdo-plain-ask` counterpart based on B66 `686f688428bc3a28e5be528723cf30fbcff314c9`.
 
 ## Explicit inability
 
@@ -48,3 +48,10 @@ The earlier published-v0.3.0 diagnostics remain negative historical evidence. Th
 Independent source review must cover **both** repositories, especially missing-task source/receipt binding, `hermes-takeover.js`, native execution fences and exact-source claim attestation. Release the compatible server through the named release owner before a production native image-task proof. The authorized local proof ceiling is **six total Codex gpt-6-luna calls**, including retries/tool loops and auxiliaries. The first attempt used four calls for two genuine group warmups (tool-post plus final per actor); inference was paused before the image stimulus because the remaining two calls cannot cover the A/B chain. That attempt does not prove takeover; budget disposition is required, not a reset or borrowed warmup. Publication, version/tag changes, main merges and deployment remain parent-controlled.
 
 No UI, provider/account configuration, existing profile or billing limit is changed by this candidate. This is limited focused source verification, not an exhaustive security or runtime certification.
+
+The four-call warmup attempt used earlier `01d3b4dd` before the operator moved
+the required base to `1928da2d`. It is retained as that attempt's evidence only,
+not a live proof of the pure-Python successor. Canonical task failures preserve
+the approved shared parser and resumable `finish` journal; only missing-task
+native failures use the new source-bound transport. The approved adapter's
+definitive-rejection retirement remains intact.
