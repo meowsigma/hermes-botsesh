@@ -525,9 +525,16 @@ class OAuthClient:
                 raise BotSeshError('invalid_client_id') from None
             if not receipt_id or receipt_id not in self.store.room(room_id).get('oauth_receipts', {}):
                 raise BotSeshError('receipt_scope')
-            result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
-                'client_id': client_id, 'output': {'failure': failure}})
-            return confirm_failure(result, failure['task_id'])
+            if 'task_id' in failure:
+                result = self.rpc(binding, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
+                    'client_id': client_id, 'output': {'failure': failure}})
+            else:
+                if failure['message_number'] not in self.store.room(room_id)['oauth_receipts'][receipt_id]['numbers']:
+                    raise BotSeshError('receipt_scope')
+                result = self.rpc(binding, 'hermes_cant_do', {'room_id':room_id, 'batch_id':receipt_id,
+                    'client_id':client_id, 'number':failure['message_number'], 'message_version':failure['message_version'],
+                    'reason':failure['reason'], **({'partial_notes':failure['partial_notes']} if 'partial_notes' in failure else {})})
+            return confirm_failure(result, failure.get('task_id', failure))
         if op == 'post':
             receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
             try:

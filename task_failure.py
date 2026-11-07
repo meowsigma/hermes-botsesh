@@ -8,8 +8,12 @@ TASK_ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 
 
 def validate_failure(failure):
-    if (not isinstance(failure, dict) or set(failure) - {'task_id', 'status', 'reason', 'partial_notes'}
-            or not isinstance(failure.get('task_id'), str) or not TASK_ID.fullmatch(failure['task_id']) or failure.get('status') != 'cant_do'):
+    if not isinstance(failure, dict) or set(failure) - {'task_id', 'message_number', 'message_version', 'status', 'reason', 'partial_notes'}:
+        raise BotSeshError('invalid_task_failure')
+    task = isinstance(failure.get('task_id'), str) and bool(TASK_ID.fullmatch(failure['task_id']))
+    source = all(type(failure.get(k)) is int and 0 <= failure[k] <= 9007199254740991 for k in ('message_number', 'message_version'))
+    if (failure.get('status') != 'cant_do' or not (task and not any(k in failure for k in ('message_number','message_version'))
+            or source and 'task_id' not in failure)):
         raise BotSeshError('invalid_task_failure')
     reason = failure.get('reason')
     if (not isinstance(reason, str) or not reason.strip() or len(reason.encode('utf-16-le')) // 2 > 240
@@ -24,7 +28,13 @@ def validate_failure(failure):
 def confirm_failure(result, task_id):
     failure = result.get('failure') if isinstance(result, dict) else None
     if (not isinstance(result, dict) or result.get('read_effect') != 'none' or not isinstance(failure, dict)
-            or failure.get('taskId') != task_id or failure.get('status') != 'cant_do'):
+            or failure.get('status') != 'cant_do' or not isinstance(failure.get('taskId'), str)
+            or not TASK_ID.fullmatch(failure['taskId'])):
+        raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
+    if isinstance(task_id, dict):
+        if failure.get('source') != {'number':task_id['message_number'], 'version':task_id['message_version']}:
+            raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
+    elif failure['taskId'] != task_id:
         raise BotSeshError('task_failure_unconfirmed_retry_same_intent')
     return result
 
@@ -38,7 +48,8 @@ def flush_failure(client, room_id, target):
     result = saved.get('result')
     if result is None:
         result = client.enrolled(room_id, 'fail_task', **saved['payload'])
-        confirm_failure(result, saved['payload']['failure']['task_id'])
+        reference = saved['payload']['failure']
+        confirm_failure(result, reference.get('task_id', reference))
     def finish(data):
         row = data['rooms'][room_id]['processing_receipts'][str(target)]
         row['explicit_failure']['result'] = result
@@ -70,8 +81,10 @@ def cant_do(reason, partial_notes=None):
         if current.get('delivered') or row.get('state') in ('replied', 'failed') and not saved:
             raise BotSeshError('task_already_settled')
         source = next((m for m in row.get('frozen', {}).get('batch', {}).get('messages', []) if m.get('number') == target), {})
-        task_id = saved['payload']['failure']['task_id'] if saved else (source.get('addressing') or {}).get('taskId')
-        failure = validate_failure({'task_id': task_id or '', 'status': 'cant_do', 'reason': reason,
+        task_id = (source.get('addressing') or {}).get('taskId')
+        reference = ({k:v for k,v in saved['payload']['failure'].items() if k in ('task_id','message_number','message_version')} if saved
+                     else {'task_id':task_id} if task_id else {'message_number':target, 'message_version':source.get('editCount')})
+        failure = validate_failure({**reference, 'status': 'cant_do', 'reason': reason,
                                     **({'partial_notes': partial_notes} if partial_notes is not None else {})})
         payload = {'failure': failure, 'receipt_id': current['receipt_id'],
                    'client_id': adapter.client.logical_id('cant-do', {'room': room_id, 'target': target, 'receipt_id': current['receipt_id']})}
