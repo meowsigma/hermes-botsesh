@@ -31,8 +31,9 @@ reviewed BotSesh server before distributing this plugin: it requires
    Command routing itself does not turn them into model prompts or change their
    native semantics. `/new` and `/stop` invalidate existing cards immediately.
 
-The v1 manifest is capped at 128 commands (85 commands/aliases in the tested
-empty-home core). Skill/bundle slash invocations still use native dispatch;
+The v1 manifest is capped at 128 commands (83 commands/aliases in the tested
+empty-home core, excluding platform-ping `/start` and Telegram-only `/topic`).
+Skill/bundle slash invocations still use native dispatch;
 this manifest does not inventory every installed skill or bundle. On an oversized
 command namespace, publication refuses rather than silently truncating it;
 native `/commands` remains available through a typed authorized DM command.
@@ -69,6 +70,13 @@ reach the installed `BasePlatformAdapter.handle_message` / GatewayRunner as exac
 DM text with `allow_gateway_control=True`; ordinary room/model context remains
 wrapped and untrusted. Unknown and incomplete commands receive guidance.
 
+Known source-only carryover: live DM identity discovery currently runs on each
+poll. A failure disables callbacks and blocks that poll, including ordinary DM
+processing; it does not degrade to stale identity or authorize controls from the
+saved room projection. Keep the documented server-first release order. Reducing
+this dependency requires a separate safe transport fallback, not treating a
+failed identity check as fresh authority.
+
 Native control output uses the explicit no-read notice route, including while a
 normal model turn is running. It cannot mutate that turn's immutable context,
 record a model failure, claim successful processing, or advance its read cursor.
@@ -90,11 +98,12 @@ PYTHONPATH=/path/to/hermes-agent /path/to/hermes-agent/venv/bin/python \
   -m pytest tests/controls -q
 ```
 
-- Eleven focused tests construct the real native GatewayRunner, wire the actual
+- Twelve focused tests construct the real native GatewayRunner, wire the actual
   BotSeshAdapter and SQLite SessionStore, and exercise model picker → callback →
   persisted model → `/status`, goal set/show, new confirmation/session rotation,
   busy status/clarify/typed answers, unknown/incomplete commands, stale-card
-  invalidation, durable replay suppression and no inferred native authority.
+  invalidation, durable replay suppression, platform-specific manifest filtering
+  and no inferred native authority.
 - Transport/server projections and offline model catalog are test fixtures.
   Native `/goal` kickoff is captured with core's own command sink so no inference
   runs. Busy guards are owned by the test task, not a running model.

@@ -208,6 +208,12 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('receipt_id', post)
             self.assertNotIn('processed', post)
 
+    async def test_manifest_omits_platform_start_and_telegram_topic(self):
+        from hermes_botsesh_test.command_catalog import build_manifest
+        names = {row['name'] for row in build_manifest()}
+        self.assertTrue({'model', 'goal', 'new', 'reset', 'stop', 'status'}.issubset(names))
+        self.assertTrue({'start', 'topic'}.isdisjoint(names))
+
     async def test_unknown_command_uses_native_helpful_response(self):
         with patch('hermes_botsesh_test.command_transport.build_manifest', side_effect=ValueError('catalog exceeds v1 limit')):
             await self.command(10, '/not-a-real-native-command')

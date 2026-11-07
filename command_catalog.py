@@ -45,6 +45,10 @@ def build_manifest():
         commands[name] = row
 
     for command in _gateway_available_commands():
+        # /start acknowledges platform bot pings; /topic manages Telegram's
+        # native DM topics. Neither is an actionable BotSesh DM menu entry.
+        if command.name in ('start', 'topic'):
+            continue
         options = SUBCOMMANDS.get('/' + command.name, ())
         description = command.describe()
         add(command.name, description, command.args_hint, options)
