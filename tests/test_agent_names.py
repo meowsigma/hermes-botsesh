@@ -25,8 +25,11 @@ class NameTests(unittest.TestCase):
         with patch('hermes_cli.profiles.current_profile_name', return_value='garden-profile'):
             self.assertEqual(oauth.preferred_name(), 'garden-profile')
             self.assertEqual(oauth.preferred_name('Scout'), 'Scout')
-        with patch('hermes_cli.profiles.current_profile_name', return_value='custom'):
-            self.assertEqual(oauth.preferred_name(), 'Hermes')
+        for profile in ('custom', 'default', None):
+            with self.subTest(profile=profile), patch('hermes_cli.profiles.current_profile_name', return_value=profile):
+                self.assertEqual(oauth.preferred_name(), 'Hermes')
+        # Explicit --name is authored input, even if it matches a profile sentinel.
+        self.assertEqual(oauth.preferred_name('default'), 'default')
         for value in ('', 'a'*41, '@Scout', 'Bad\u200bname', 'line\nfeed', '🪴'*21):
             with self.assertRaises(original.BotSeshError):
                 oauth.preferred_name(value)

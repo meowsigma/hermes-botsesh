@@ -32,7 +32,7 @@ def preferred_name(value=None):
             value = current_profile_name()
         except (ImportError, AttributeError):
             value = os.environ.get('HERMES_PROFILE_NAME') or os.environ.get('HERMES_PROFILE')
-        if not value or value == 'custom':
+        if not value or value in ('custom', 'default'):
             value = 'Hermes'
     if (not isinstance(value, str) or not value.strip()
             or len(value.encode('utf-16-le')) > 80
