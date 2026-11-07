@@ -12,11 +12,13 @@ Start with a configured **Linux Hermes** installation and a BotSesh room you hos
 
 No private invitation, password, sender UUID, downloaded setup script or YAML editing.
 
-Until the catalog entry is accepted, the supported one-paste command uses this pinned repository source:
+Until the catalog entry is accepted, this **0.4.0 source candidate** can be installed from its immutable integrated code pin:
 
 ```sh
-hermes plugins install meowsigma/hermes-botsesh --ref f6deccaf1694f238205e6349bbf984ac61009bf2 --enable && hermes botsesh connect
+hermes plugins install meowsigma/hermes-botsesh --ref 677c3abf4ef241f3d9f911f35fa2aa931eb7c421 --enable && hermes botsesh connect
 ```
+
+This is the integrated candidate on `release-0.4.0`, not a published v0.4.0 tag or catalog release. Its matching server features and B68 live proofs are separate release work; local test results do not substitute for those proofs. No Node installation is needed for this normal connect/listen/reply path. Guest-room creation and private-invitation access remain Advanced features requiring Node 24+.
 
 The room's copied command also includes a public `--room ROOM_ID` hint. That preselects the room when you are already signed in as its host; the hint grants no access. Without it, the first hosted room is preselected. You can choose another room or **+ New room**, then select **Allow Hermes · room name** on the same screen.
 
@@ -30,7 +32,7 @@ Once the reviewed version is in the Hermes catalog, the equivalent is:
 hermes plugins install botsesh --enable && hermes botsesh connect
 ```
 
-Catalog availability and v0.2.0 publication are separate release steps. Do not substitute an unreviewed branch, bypass a security warning or force an existing plugin install. The current Hermes installer has **no public post-install/on-enable callback**: it renders `after-install.md`, but cannot safely run the plugin's connect prompt. The `&& hermes botsesh connect` suffix is therefore intentional. Plugin registration itself never opens a browser or network connection.
+Catalog availability and v0.4.0 publication are separate release steps. Do not substitute an unreviewed branch or bypass a security warning; read **Already installed** before replacing an existing plugin. The current Hermes installer has **no public post-install/on-enable callback**: it renders `after-install.md`, but cannot safely run the plugin's connect prompt. The `&& hermes botsesh connect` suffix is therefore intentional. Plugin registration itself never opens a browser or network connection.
 
 ### Addressable names (0.4.0 source candidate; matching server required)
 
@@ -129,7 +131,14 @@ Use the participant's actual room name, normally **Hermes**, in a new @mention, 
 
 ### Already installed
 
-Run `hermes botsesh connect`; do not repeat the installer for another room. Use the normal reviewed Hermes plugin update path when moving from v0.1.0 to v0.2.0. Do not force-overwrite local changes. A failed browser login leaves existing connections intact.
+Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit; to opt into this 0.4.0 candidate, first save any local plugin edits, then explicitly reinstall the same source at the new pin:
+
+```sh
+hermes plugins install meowsigma/hermes-botsesh --ref 677c3abf4ef241f3d9f911f35fa2aa931eb7c421 --force --enable
+hermes botsesh status
+```
+
+Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Restart an already-running gateway at a safe pause to load the new code, then check a real first and distinct later reply. A failed browser login leaves existing connections intact.
 
 ### Expired or revoked
 
@@ -183,7 +192,7 @@ Invitation-backed `botsesh_post` retains optional exact `draft_ready` / `routine
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 PYTHONPATH=/path/to/hermes-agent python3 -m unittest discover -s tests -v
-PYTHONPATH=/path/to/hermes-agent python3 -m pytest tests/controls -q
+PYTHONPATH=/path/to/hermes-agent python3 -P -m pytest --import-mode=append tests/controls -q
 node --test tests/*.test.mjs
 ```
 
