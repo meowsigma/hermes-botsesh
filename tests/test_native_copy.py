@@ -55,3 +55,13 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
         with patch('agent.i18n.t', return_value='Localized BotSesh /sethome') as translator:
             await self.adapter.send('a', 'gateway.notify.no_home_channel')
             translator.assert_called_once_with('gateway.notify.no_home_channel', platform='BotSesh', sethome_cmd='/sethome')
+
+    async def test_unknown_native_notice_falls_back_but_final_authored_bytes_are_not_translated(self):
+        with patch('agent.i18n.t', side_effect=lambda key: key):
+            await self.adapter.send('a', 'gateway.future.notice', metadata={'_interim_send': True})
+        self.assertEqual(next(iter(self.posts.values()))['text'], 'Hermes status update unavailable.')
+        self.posts.clear()
+        await self.adapter._check_room('a')
+        self.adapter._current['a']['model_processed'] = True
+        await self.adapter.send('a', 'gateway.future.notice', metadata={'notify': True})
+        self.assertEqual(next(iter(self.posts.values()))['text'], 'gateway.future.notice')
