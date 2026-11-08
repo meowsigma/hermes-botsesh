@@ -312,7 +312,11 @@ def handle(args, client):
         if args.dead:
             dead, retained = [], []
             for rid, binding in client.store.read()['rooms'].items():
-                if binding.get('state') in ('invalid_grant', 'room_deleted', 'room_expired'):
+                # One invalid_grant refresh disables the whole consented grant,
+                # including DMs later in this snapshot. Read the current marker
+                # so those descendants are not stranded behind missing tokens.
+                binding = client.store.read()['rooms'].get(rid, binding)
+                if binding.get('state') in ('invalid_grant', 'room_deleted', 'room_expired', 'authorization_revoked', 'revoked'):
                     dead.append(rid)
                     continue
                 try:

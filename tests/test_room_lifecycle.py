@@ -100,6 +100,16 @@ class LifecycleUnit(unittest.TestCase):
         with patch('hermes_botsesh_test.oauth.OAuthClient.call', side_effect=errors), patch.object(lifecycle, 'forget', return_value={}) as forget, contextlib.redirect_stdout(io.StringIO()):
             lifecycle.handle(argparse.Namespace(botsesh_action='forget', room=None, dead=True), self.client)
         self.assertEqual(forget.call_args.args[1], ids[:3])
+        # A failed rotating refresh removes the shared token and marks all of
+        # its rooms. Descendants must prune from that fresh durable marker.
+        self.store.update(lambda d: d.update(rooms={rid: {'room_id': rid, 'transport': 'oauth', 'active': True} for rid in ids[:2]}))
+        def invalidate(binding, op):
+            self.store.update(lambda d: [r.update(active=False, state='authorization_revoked') for r in d['rooms'].values()])
+            raise BotSeshError('invalid_grant', 400)
+        with patch('hermes_botsesh_test.oauth.OAuthClient.call', side_effect=invalidate) as call, patch.object(lifecycle, 'forget', return_value={}) as forget, contextlib.redirect_stdout(io.StringIO()):
+            lifecycle.handle(argparse.Namespace(botsesh_action='forget', room=None, dead=True), self.client)
+        self.assertEqual(forget.call_args.args[1], ids[:2])
+        self.assertEqual(call.call_count, 1)
 
     def test_passive_oauth_discovery_cannot_revive_a_forgotten_root(self):
         from hermes_botsesh_test.oauth import OAuthClient
