@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — use the normal Hermes lifecycle
+
+- Remove the plugin restart command, checkpoint/rollback subsystem and its obsolete probes. First connect into an already-running gateway and plugin-code updates use Hermes's normal profile-scoped restart after active work finishes. An active adapter picks up later room connections without restarting. Channel status remains a transport-health check, not proof that newly installed code is running.
+
 ## 0.5.1 — Hermes-managed sign-in (catalog build)
 
 This is the build submitted to the Hermes plugin catalog. Hermes owns sign-in, token storage and refresh; the plugin uses only public Hermes APIs (`hermes plugins validate`: ok, 0 warnings). It includes every user-facing fix in 0.5.2 (owner DMs, honest status, profile prompt, one reply, no wasted calls after "can't do", manual restart).

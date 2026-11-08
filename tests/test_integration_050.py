@@ -3,12 +3,12 @@ import argparse
 import contextlib
 import io
 
-import os
+
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import test_oauth as original
-from botsesh_oauth_test import cli, ops_restart, room_lifecycle
+from botsesh_oauth_test import cli, room_lifecycle
 
 
 class Integration050(unittest.TestCase):
@@ -34,19 +34,6 @@ class Integration050(unittest.TestCase):
         self.assertFalse(access['password_required'])
         self.assertEqual((binding['oauth_id'], binding['auth_version']), ('rooms', 2))
 
-    def test_selected_restart_home_crosses_subprocess_boundary_without_launcher_pin(self):
-        target = self.home / 'profiles' / 'night'
-        target.mkdir(parents=True)
-        with patch.dict(os.environ, {'HERMES_PROFILE': 'old', 'HERMES_PROFILE_NAME': 'old'}), \
-             patch.object(ops_restart, 'profile_context', return_value=(target, 'night')), \
-             patch.object(ops_restart.shutil, 'which', return_value='/fixture/hermes'), \
-             patch.object(ops_restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
-            ops_restart.lifecycle_restart(timeout=12)
-        self.assertEqual(run.call_args.args[0], ['/fixture/hermes', '-p', 'night', 'gateway', 'restart', '--detach'])
-        self.assertEqual(run.call_args.kwargs['env']['HERMES_HOME'], str(target))
-        self.assertNotIn('HERMES_PROFILE', run.call_args.kwargs['env'])
-        self.assertNotIn('HERMES_PROFILE_NAME', run.call_args.kwargs['env'])
-        self.assertEqual(run.call_args.kwargs['timeout'], 12)
 
     def test_unified_cli_retains_every_command_and_flags(self):
         parser = argparse.ArgumentParser(prog='hermes botsesh')
@@ -59,7 +46,6 @@ class Integration050(unittest.TestCase):
             'invite': ['one'], 'invites': ['one'], 'revoke-invite': ['one', 'invitation-id'],
             'rotate-password': ['one'], 'forget': ['--dead'],
             'send': ['--room', 'one', 'exact text'], 'status': ['--json'],
-            'restart-gateway': ['--when-idle'],
         }
         for command, flags in cases.items():
             with self.subTest(command=command):

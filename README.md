@@ -43,17 +43,10 @@ hermes botsesh status
 hermes gateway status
 ```
 
-**Automatic idle restart and auto-revert are unavailable in 0.5.1.** The old 0.5.0 gate queried a private control socket and core SQLite admission schema; catalog cleanup removed those unsupported dependencies. Public status omits asynchronous delegations and cannot prove that every session/admission is idle. `hermes botsesh restart-gateway --when-idle` therefore refuses without restarting and explains why. A checkpoint is still a private source/config recovery copy, not an automatic rollback promise.
+If the gateway was already running at first connect, finish active work, run `hermes -p PROFILE gateway restart --detach`, then `hermes -p PROFILE botsesh status`; a stopped gateway starts normally.
+After a plugin-code update, use the same core restart to load the new adapter; hot plugin rewiring does not replace platform adapters.
+Later room connections need no restart. Hermes owns bounded drain/confirmation; the plugin has no restart, checkpoint or auto-revert command. See [operations](docs/OPERATIONS.md).
 
-If an existing gateway needs the plugin loaded, quiesce new input and finish active turns, delegations, queued requests and pending sends. In **your own terminal**, replace `PROFILE` with the connection's profile and run the single maintenance command, then verify recovery:
-
-```sh
-hermes -p PROFILE gateway restart --detach
-hermes -p PROFILE gateway status
-hermes -p PROFILE botsesh status
-```
-
-Do not add `--yes`, `--interrupt` or `--all`. Exit 0 alone is not channel-health proof: check a new BotSesh channel lifecycle and fresh live-room polling. This is operator-quiesced maintenance, not an automatic idle guarantee. See [Needs a Hermes API](#needs-a-hermes-api) and [operations](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
 
@@ -170,9 +163,7 @@ unsupported extensions **off**, without pretending they work:
 - **Slash-confirm buttons:** native text `/approve`, `/always` and `/cancel`
   remain available. Request-bound execution-approval cards and clarify/flat
   choices still work through public APIs.
-- **Automatic idle restart/auto-revert:** disabled until a public complete
-  live-work + durable-admission probe exists. Checkpoint/status remain usable;
-  a runtime snapshot is not an idle fence or proof of successful execution.
+
 - **Inherited language-pack copy:** plugin notices use plugin-owned English;
   authored question/answer bytes and unknown localized native text stay exact.
   A public translation accessor is needed for dynamic core/plugin language packs.
@@ -223,18 +214,15 @@ hermes botsesh status
 
 “Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
 
-For a gateway predating installation or a plugin update, arrange operator-controlled maintenance; this catalog build refuses **`restart-gateway --when-idle`** because complete public work/queue probes are unavailable. Before updating plugin code, **`hermes botsesh restart-gateway --checkpoint`** can still preserve its old code/config. No automatic restart or auto-revert is claimed. See [operations and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
 
 Use the participant's actual assigned room name in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
 
 ### Already installed
 
-For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install stays at its exact commit: save local edits and a pre-update source checkpoint, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not repeat installation just to change rooms.
+For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install stays at its exact commit: preserve local edits and normal recovery copies, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not repeat installation just to change rooms. Follow the lifecycle note in Quick start after changing plugin bytes.
 
 ```sh
-hermes botsesh restart-gateway --checkpoint
-# Apply the reviewed update through the native plugin installer.
-# Arrange local maintenance; automatic idle restart is unavailable here.
+hermes plugins update botsesh
 hermes botsesh status
 ```
 
