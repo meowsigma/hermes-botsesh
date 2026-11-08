@@ -27,6 +27,19 @@ class RuntimeFixTests(OpsTests):
         self.assertIn('hermes -p fixture botsesh status', output.getvalue())
         self.assertIn('not an automatic idle restart', output.getvalue())
 
+    def test_pid_rung_can_be_a_multiplex_owner_without_local_runtime(self):
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        live = {'pid': 123, 'start_time': 42, 'updated_at': stamp,
+                'platforms': {'fixture:botsesh': {'state': 'connected', 'writer_pid': 123,
+                    'writer_start_time': 42, 'updated_at': stamp}}}
+        with patch.object(status, 'profile_context', return_value=(self.home, 'fixture')), \
+             patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(
+                 running=True, probe_error=False, pid=123, source='pid', runtime=None)), \
+             patch('gateway.status.read_runtime_status', return_value=None), \
+             patch('gateway.status.multiplexer_liveness_for_profile', return_value=(123, live)), \
+             patch('gateway.status.get_process_start_time', return_value=42):
+            self.assertEqual(status.gateway_snapshot()['channel'], 'up')
+
     def test_connected_platform_transition_is_not_a_heartbeat(self):
         stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         live = {'pid': 123, 'start_time': 42, 'updated_at': stamp,
@@ -71,6 +84,7 @@ class FinalReadFixTests(FinalAfterPostTests):
 def load_tests(loader, tests, pattern):
     import unittest
     return unittest.TestSuite([
+        RuntimeFixTests('test_pid_rung_can_be_a_multiplex_owner_without_local_runtime'),
         RuntimeFixTests('test_connected_platform_transition_is_not_a_heartbeat'),
         RuntimeFixTests('test_idle_restart_refusal_prints_exact_selected_profile_command'),
         FinalReadFixTests('test_read_during_turn_keeps_frozen_receipt_and_one_greeting')])
