@@ -154,15 +154,19 @@ class OpsTests(unittest.TestCase):
 
     def test_live_gateway_platform_requires_writer_and_exact_profile(self):
         from types import SimpleNamespace
-        identify = {'pid':123, 'start_time':'ticks', 'instance_id':'instance', 'profile':'default', 'served_profiles':[]}
-        live = {'answering_pid':123, 'platforms':{'fixture:botsesh': {'state':'connected', 'writer_pid':123, 'writer_start_time':'ticks'}}}
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        live = {'pid':123, 'start_time':42, 'updated_at':stamp,
+                'platforms':{'fixture:botsesh': {'state':'connected', 'writer_pid':123, 'writer_start_time':42, 'updated_at':stamp},
+                             'botsesh': {'state':'disconnected', 'writer_pid':123, 'writer_start_time':42, 'updated_at':stamp}}}
         with patch.object(status, 'profile_context', return_value=(self.home, 'fixture')), \
-             patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(running=True, probe_error=False, pid=123)), \
-             patch('hermes_cli.gateway_runtime.discover_gateway_endpoint', return_value=SimpleNamespace(endpoint=SimpleNamespace(control_home=None, supervisor='none'))), \
-             patch('gateway.control_socket.query_gateway_control', side_effect=lambda home, verb, **kw: identify if verb=='identify' else live):
+             patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(running=True, probe_error=False, pid=123, source='multiplexer', runtime=live)), \
+             patch('gateway.status.get_process_start_time', return_value=42):
             self.assertEqual(status.gateway_snapshot()['channel'], 'up')
             live['platforms']['fixture:botsesh']['writer_pid'] = 999
             self.assertEqual(status.gateway_snapshot()['channel'], 'down')
+            live['platforms']['fixture:botsesh']['writer_pid'] = 123
+            live['updated_at'] = '2000-01-01T00:00:00Z'
+            self.assertEqual(status.gateway_snapshot()['channel'], 'unknown')
 
     def test_wait_active_then_inbox_then_restart_and_max_wait(self):
         self.store.update(lambda d: d['rooms'].clear())
