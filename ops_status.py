@@ -20,7 +20,7 @@ def gateway_snapshot():
     answer = {'running': None, 'profile': profile, 'channel': 'unknown', 'since': None,
               'pid': None, 'control_home': str(home), 'instance': None}
     try:
-        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint, control_home_for
         from gateway.control_socket import query_gateway_control
         from gateway.status import resolve_gateway_liveness
         liveness = resolve_gateway_liveness(profile_dir=home, use_cache=False)
@@ -29,7 +29,9 @@ def gateway_snapshot():
         discovery = discover_gateway_endpoint(home, timeout=2.0)
         if discovery.endpoint is None:
             return answer
-        control = Path(discovery.endpoint.control_home)
+        # Native standalone endpoints deliberately leave control_home unset.
+        # Let core resolve it; multiplexed profiles still use their live owner.
+        control = control_home_for(home, discovery.endpoint)
         identify = query_gateway_control(control, 'identify', timeout=2.0)
         live = query_gateway_control(control, 'status', timeout=2.0)
         if not identify or not live or identify.get('pid') != live.get('answering_pid'):
@@ -38,7 +40,7 @@ def gateway_snapshot():
                       process_start=identify.get('start_time'),
                       instance=identify.get('instance_id') or identify.get('start_time'),
                       served_profiles=identify.get('served_profiles') or [{'profile_id': str(home)}],
-                      owner_profile=identify.get('profile'))
+                      owner_profile=identify.get('profile'), supervisor=discovery.endpoint.supervisor)
         platforms = live.get('platforms') or {}
         native = platforms.get(profile + ':botsesh')
         if native is None and (identify.get('profile') == profile or control.resolve() == home.resolve()):

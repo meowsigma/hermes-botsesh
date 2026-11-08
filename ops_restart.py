@@ -124,11 +124,11 @@ def wait_idle(client, config, *, max_wait, interval=1, check_inbox=True, allow_s
         sleep(min(interval, max(0, deadline-clock())))
 
 
-def lifecycle_restart(*, timeout):
+def lifecycle_command(arguments, *, timeout):
     binary = shutil.which('hermes')
     if not binary:
         raise BotSeshError('hermes_cli_unavailable')
-    print('Restarting via supported `hermes gateway restart` (no --yes/--interrupt, no --all).', flush=True)
+
     try:
         # profile_scope is a task-local override, not a subprocess environment.
         # Carry the selected native home through the supported lifecycle CLI.
@@ -139,7 +139,7 @@ def lifecycle_restart(*, timeout):
         # An explicit default also prevents a sticky active_profile from
         # redirecting a default/custom-home maintenance operation elsewhere.
         selected = profile if profile and profile != 'custom' else 'default'
-        result = subprocess.run([binary, '-p', selected, 'gateway', 'restart'], stdin=subprocess.DEVNULL,
+        result = subprocess.run([binary, '-p', selected, 'gateway', *arguments], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=timeout,
                                 env=env)
     except (OSError, subprocess.TimeoutExpired):
@@ -147,6 +147,38 @@ def lifecycle_restart(*, timeout):
     # Do not reflect arbitrary gateway output, which can include private session names.
     if result.returncode:
         raise BotSeshError('gateway_restart_refused_or_failed')
+
+
+def lifecycle_restart(*, timeout):
+    # Without --detach a manual gateway's replacement runs INSIDE this bounded
+    # subprocess and is killed at its timeout. Core keeps service/supervisor
+    # ownership and profile-only hot restart semantics with this flag as well.
+    print('Restarting via supported `hermes gateway restart --detach` (no --yes/--interrupt, no --all).', flush=True)
+    lifecycle_command(['restart', '--detach'], timeout=timeout)
+
+
+def ensure_running(*, timeout, snapshot=gateway_snapshot):
+    """Failure-path safety net, not a claim of channel/room health.
+
+    Core ensure respects supervisor ownership and refuses conflicting owners;
+    never install a service, escape a supervisor or guess a signal here.
+    """
+    def confirmed():
+        live = snapshot()
+        return (live.get('running') is True and live.get('pid') is not None
+                and live.get('process_start') is not None and bool(live.get('instance')))
+    if not confirmed():
+        print('WARNING: gateway is not confirmed running; recovering through supported `hermes gateway ensure`.', flush=True)
+        try:
+            lifecycle_command(['ensure', '--json', '--timeout', str(timeout)], timeout=timeout + 5)
+        except BotSeshError:
+            # A CLI failure is not process proof in either direction. Read back
+            # the exact profile owner even after a deadline/nonzero result.
+            pass
+        if not confirmed():
+            print('ERROR: GATEWAY RUNNING STATE UNCONFIRMED after supported recovery; check `hermes gateway status`. Checkpoint retained.', flush=True)
+            raise BotSeshError('gateway_recovery_running_unconfirmed')
+    print('WARNING: failed candidate; gateway process CONFIRMED RUNNING. Channel/room recovery is reported separately.', flush=True)
 
 
 def liveness_baseline(client, config, runtime):
@@ -250,7 +282,7 @@ def restore(client, saved, attempted):
 
 
 def restart_gateway(client, config, args, *, idle=wait_idle, restart=lifecycle_restart,
-                    health=wait_healthy, rollback=restore):
+                    health=wait_healthy, rollback=restore, recover=ensure_running):
     if args.checkpoint:
         checkpoint(client, config, source=True)
         print('Saved private pre-change BotSesh config and plugin-source checkpoint. Apply the update, then use restart-gateway --when-idle.')
@@ -266,25 +298,36 @@ def restart_gateway(client, config, args, *, idle=wait_idle, restart=lifecycle_r
     before['liveness_baseline'] = liveness_baseline(client, config, before)
     before['restart_at'] = time.time()
     try:
-        restart(timeout=args.restart_timeout)
-        print(f'Checking BotSesh channel for up to {args.health_timeout}s...', flush=True)
-        success = health(client, config, before, timeout=args.health_timeout)
-    except BotSeshError:
-        success = False
-    if success:
-        client.store.update(lambda d: d.pop('restart_checkpoint', None))
-        print('Gateway restarted; new channel lifecycle and pre-restart live room/home_channel baseline verified. Pre-existing warnings remain visible in `hermes botsesh status`.')
-        return
-    print('Candidate not healthy. Waiting for active work to finish before scoped auto-revert...', flush=True)
-    # No server inbox gate here: the unhealthy candidate may be unable to drain
-    # it. Never drop or restore the durable room/token/session stores.
-    recovery_before = idle(client, config, max_wait=args.max_wait, check_inbox=False, allow_stopped=True)
-    recovery_before['liveness_baseline'] = before['liveness_baseline']
-    restored = rollback(client, saved, attempted)
-    print('Reverted checkpointed BotSesh config' + (' and plugin source.' if saved.get('source') else ' (config-only checkpoint; plugin code was not changed).'), flush=True)
-    recovery_before['restart_at'] = time.time()
-    restart(timeout=args.restart_timeout)
-    if health(client, restored, recovery_before, timeout=args.health_timeout):
-        client.store.update(lambda d: d.pop('restart_checkpoint', None))
-        raise BotSeshError('candidate_failed_auto_revert_healthy')
-    raise BotSeshError('auto_revert_done_channel_still_unhealthy_check_gateway_status')
+        try:
+            restart(timeout=args.restart_timeout)
+            print(f'Checking BotSesh channel for up to {args.health_timeout}s...', flush=True)
+            success = health(client, config, before, timeout=args.health_timeout)
+        except BotSeshError:
+            success = False
+        if success:
+            client.store.update(lambda d: d.pop('restart_checkpoint', None))
+            print('Gateway restarted; new channel lifecycle and pre-restart live room/home_channel baseline verified. Pre-existing warnings remain visible in `hermes botsesh status`.')
+            return
+        print('Candidate not healthy. Waiting for active work to finish before scoped auto-revert...', flush=True)
+        # No server inbox gate here: the unhealthy candidate may be unable to
+        # drain it. Never restore the durable room/token/session stores.
+        recovery_before = idle(client, config, max_wait=args.max_wait, check_inbox=False, allow_stopped=True)
+        recovery_before['liveness_baseline'] = before['liveness_baseline']
+        restored = rollback(client, saved, attempted)
+        print('Reverted checkpointed BotSesh config' + (' and plugin source.' if saved.get('source') else ' (config-only checkpoint; plugin code was not changed).'), flush=True)
+        recovery_before['restart_at'] = time.time()
+        try:
+            restart(timeout=args.restart_timeout)
+        except BotSeshError:
+            # A failed/expired lifecycle client may already have stopped its
+            # old owner. Ensure a running replacement before checking health.
+            recover(timeout=args.restart_timeout)
+        if health(client, restored, recovery_before, timeout=args.health_timeout):
+            client.store.update(lambda d: d.pop('restart_checkpoint', None))
+            raise BotSeshError('candidate_failed_auto_revert_healthy')
+        raise BotSeshError('auto_revert_done_channel_still_unhealthy_check_gateway_status')
+    except Exception:
+        # Also cover restore conflicts and unavailable idle probes after a
+        # partial lifecycle operation, without overwriting concurrent edits.
+        recover(timeout=args.restart_timeout)
+        raise

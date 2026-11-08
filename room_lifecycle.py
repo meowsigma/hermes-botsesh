@@ -16,6 +16,7 @@ from .storage import Store
 from .room_turn import require_client_id
 
 SCOPES = ['people:invite', 'password:rotate']
+NO_ROOM_PASSWORD = 'No room password: anyone with the link can join. Run rotate-password to set one.'
 ACTIONS = {'create-room', 'rooms', 'room-info', 'invite', 'invites', 'revoke-invite',
            'rotate-password', 'forget', 'send'}
 
@@ -35,6 +36,7 @@ def creation_result(store, result):
     saved = remember_access(store, result['room_id'], result['share_link'])
     return {**result, 'join_url': saved['join_url'], 'password': saved['password'],
             'password_required': saved['password_required'],
+            **({'password_notice': NO_ROOM_PASSWORD} if saved['password_required'] is False else {}),
             'credential_recovery': 'hermes botsesh room-info ' + result['room_id'] + ' --show-password'}
 
 
@@ -57,6 +59,8 @@ def room_info(store, room_id, show_password=False):
     result['password_stored'] = saved is not None
     if saved is not None:
         result['password_required'] = saved.get('password_required')
+        if saved.get('password_required') is False:
+            result['password_notice'] = NO_ROOM_PASSWORD
         if show_password:
             result['password'] = saved['password']
     elif show_password:

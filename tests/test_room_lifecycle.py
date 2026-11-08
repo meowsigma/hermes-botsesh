@@ -35,12 +35,18 @@ class LifecycleUnit(unittest.TestCase):
     def test_room_info_redaction_and_compaction_safe_creation_record(self):
         result = lifecycle.creation_result(self.store, {'room_id': ROOM, 'share_link': 'https://botsesh.com/b/' + ROOM})
         self.assertIsNone(result['password'])
+        self.assertEqual(result['password_notice'], lifecycle.NO_ROOM_PASSWORD)
+        ctx = Mock()
+        ctx.session_surface.return_value = 'cli'
+        with patch.object(tools, 'Client', return_value=self.client), patch.object(self.client, 'create', return_value=result):
+            self.assertEqual(tools.create_room({'name': 'Local unit'}, ctx)['password_notice'], lifecycle.NO_ROOM_PASSWORD)
         self.assertEqual(result['join_url'], 'https://botsesh.com/b/' + ROOM)
         self.assertIn('--show-password', result['credential_recovery'])
         restarted = Store(self.store.root)
         info = lifecycle.room_info(restarted, ROOM, True)
         self.assertIsNone(info['password'])
         self.assertFalse(info['password_required'])
+        self.assertEqual(info['password_notice'], lifecycle.NO_ROOM_PASSWORD)
         self.assertNotIn('password', lifecycle.room_info(restarted, ROOM))
         self.assertEqual(stat.S_IMODE(lifecycle.private_store(self.store).path.stat().st_mode), 0o600)
 
@@ -59,6 +65,7 @@ class LifecycleUnit(unittest.TestCase):
             self.assertEqual(calls[0], calls[1])
             self.assertEqual(result['password'], calls[0]['password'])
             self.assertEqual(lifecycle.room_info(self.store, ROOM, True)['password'], result['password'])
+            self.assertNotIn('password_notice', lifecycle.room_info(self.store, ROOM, True))
             self.assertNotIn(result['password'], json.dumps(lifecycle.room_info(self.store, ROOM)))
             self.api.rotate(ROOM)
             self.assertNotEqual(calls[1]['client_id'], calls[2]['client_id'])

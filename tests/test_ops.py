@@ -158,7 +158,7 @@ class OpsTests(unittest.TestCase):
         live = {'answering_pid':123, 'platforms':{'fixture:botsesh': {'state':'connected', 'writer_pid':123, 'writer_start_time':'ticks'}}}
         with patch.object(status, 'profile_context', return_value=(self.home, 'fixture')), \
              patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(running=True, probe_error=False, pid=123)), \
-             patch('hermes_cli.gateway_runtime.discover_gateway_endpoint', return_value=SimpleNamespace(endpoint=SimpleNamespace(control_home=str(self.home)))), \
+             patch('hermes_cli.gateway_runtime.discover_gateway_endpoint', return_value=SimpleNamespace(endpoint=SimpleNamespace(control_home=None, supervisor='none'))), \
              patch('gateway.control_socket.query_gateway_control', side_effect=lambda home, verb, **kw: identify if verb=='identify' else live):
             self.assertEqual(status.gateway_snapshot()['channel'], 'up')
             live['platforms']['fixture:botsesh']['writer_pid'] = 999
@@ -207,11 +207,33 @@ class OpsTests(unittest.TestCase):
     def test_restart_cli_uses_lifecycle_no_signals_force_or_all(self):
         with patch.object(restart, 'profile_context', return_value=(self.home, 'fixture')), patch.object(restart.shutil, 'which', return_value='/fixture/hermes'), patch.object(restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             restart.lifecycle_restart(timeout=42)
-        self.assertEqual(run.call_args.args[0], ['/fixture/hermes','-p','fixture','gateway','restart'])
+        self.assertEqual(run.call_args.args[0], ['/fixture/hermes','-p','fixture','gateway','restart','--detach'])
         self.assertIs(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
         self.assertEqual(run.call_args.kwargs['env']['HERMES_HOME'], str(self.home))
         self.assertNotIn('HERMES_PROFILE', run.call_args.kwargs['env'])
         self.assertNotIn('HERMES_PROFILE_NAME', run.call_args.kwargs['env'])
+
+    def test_failure_recovery_ensures_then_reads_back_exact_owner(self):
+        live = {**self.runtime, 'process_start': 42}
+        with patch.object(restart, 'lifecycle_command') as command:
+            restart.ensure_running(timeout=12, snapshot=Mock(side_effect=[{'running': False}, live]))
+        command.assert_called_once_with(['ensure', '--json', '--timeout', '12'], timeout=17)
+        with patch.object(restart, 'lifecycle_command', side_effect=BotSeshError('gateway_restart_refused_or_failed')):
+            with self.assertRaises(BotSeshError) as error:
+                restart.ensure_running(timeout=12, snapshot=lambda: {'running': False})
+        self.assertEqual(error.exception.code, 'gateway_recovery_running_unconfirmed')
+
+    def test_restore_conflict_still_confirms_running_without_overwriting(self):
+        restart.checkpoint(self.client, self.cfg)
+        args = argparse.Namespace(checkpoint=False, when_idle=True, max_wait=2, restart_timeout=2, health_timeout=2)
+        recover = Mock()
+        rollback = Mock(side_effect=BotSeshError('rollback_conflict_preserved_concurrent_changes'))
+        with self.assertRaises(BotSeshError) as error:
+            restart.restart_gateway(self.client, self.cfg, args, idle=lambda *a, **kw: dict(self.runtime),
+                restart=Mock(), health=lambda *a, **kw: False, rollback=rollback, recover=recover)
+        self.assertEqual(error.exception.code, 'rollback_conflict_preserved_concurrent_changes')
+        recover.assert_called_once_with(timeout=2)
+        self.assertIn('restart_checkpoint', self.store.read())
 
     def test_restart_preserves_preexisting_dead_rooms_and_home_without_reverting(self):
         restart.checkpoint(self.client, self.cfg)
@@ -245,7 +267,7 @@ class OpsTests(unittest.TestCase):
         rollback = Mock(return_value={})
         health = Mock(side_effect=[False, True])
         with self.assertRaises(BotSeshError) as error:
-            restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health)
+            restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health, recover=Mock())
         self.assertEqual(error.exception.code, 'candidate_failed_auto_revert_healthy')
         self.assertEqual(relaunch.call_count, 2); rollback.assert_called_once()
         self.assertFalse(idle.call_args.kwargs['check_inbox']); self.assertTrue(idle.call_args.kwargs['allow_stopped'])
@@ -314,7 +336,7 @@ class OpsTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), patch.object(status, 'gateway_snapshot', side_effect=lambda: self.runtime), \
              patch.object(oauth.OAuthClient, 'rpc', side_effect=rpc):
             with self.assertRaises(BotSeshError) as error:
-                restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health)
+                restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health, recover=Mock())
         self.assertEqual(error.exception.code, 'candidate_failed_auto_revert_healthy')
         self.assertEqual(stages, ['candidate', 'recovery'])
         self.assertEqual([b['rooms'] for b in baselines], [['one'], ['one']])
