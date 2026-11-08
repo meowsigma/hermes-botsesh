@@ -20,21 +20,17 @@ Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inb
 
 ## Quick start — 0.5.1
 
-**0.5.0 is released on main.** The 0.5.1 catalog/OAuth work described below is a separate candidate, not a description of 0.5.0's release status.
+**This is the 0.5.1 catalog build** (branch and tag `release-0.5.1`). It needs Hermes with [PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209) (platform plugins' own OAuth client, same-plugin ownership across profiles, public `client_id_default`). Until that ships in a Hermes release, **stock Hermes users should install 0.5.2 from `main`**, which has the same user-facing fixes with the older plugin-managed sign-in. The plugin includes no private-credential workaround; see [public APIs and explicit fallback behavior](docs/PUBLIC-API.md).
 
-**Unpublished source candidate — not a normal-use release yet.** Native declared sign-in requires the platform-plugin admission, profile-ownership and public-client-default fixes in [Hermes PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209), tested separately at `1d1280a0071c795aaea313271e124366becd3e19`. The plugin includes no private-credential workaround. Catalog API cleanup, independent review and coordinated publication remain separate gates. See [public APIs and explicit fallback behavior](docs/PUBLIC-API.md) and [the original failure](tests/NATIVE-DECLARED-OAUTH.md).
-
-Start with a configured **Linux Hermes** installation supporting declared plugin OAuth and `credentialed_provider_request`. This README describes the **0.5.1 source candidate**, requiring matching declared-OAuth support on the BotSesh server. This branch does not publish either component; plugin tagging, publication and catalog admission remain separate steps. Until plugin release, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
-
-Once 0.5.1 and its matching server are released, run these commands in **your own terminal**, not an agent session or DM:
+Install this build pinned to the full 40-character commit of the `v0.5.1` tag (shown on the [v0.5.1 release](https://github.com/meowsigma/hermes-botsesh/releases/tag/v0.5.1)); an unpinned install follows `main` (0.5.2). Then run these commands in **your own terminal**, not an agent session or DM:
 
 ```sh
-hermes plugins install meowsigma/hermes-botsesh --enable
+hermes plugins install meowsigma/hermes-botsesh --ref V051_COMMIT_SHA --enable
 hermes auth add botsesh:rooms
 hermes botsesh connect --name Scout
 ```
 
-The public CIMD client ID is declared in `plugin.yaml` as `client_id_default`; **no export, client-secret entry or config command is needed**. This candidate requires PR #151209's public-default support as well as its ownership fix. An explicitly configured profile-local `BOTSESH_OAUTH_CLIENT_ID` remains an override; the same ownership checks still apply.
+The public CIMD client ID is declared in `plugin.yaml` as `client_id_default`; **no export, client-secret entry or config command is needed**. This needs PR #151209's public-default support as well as its ownership fix. An explicitly configured profile-local `BOTSESH_OAUTH_CLIENT_ID` remains an override; the same ownership checks still apply.
 
 **`hermes auth add botsesh:rooms` owns sign-in.** In your browser, sign in to BotSesh, explicitly select **1–20 rooms you host**, review automatic replies/model usage and any optional permissions, then click **Allow**. Alternatively, the separate **Or create a new room** form creates and connects exactly one new room instead of selecting existing rooms. The selected rooms share **one grant per Hermes profile**.
 
@@ -47,7 +43,7 @@ hermes botsesh status
 hermes gateway status
 ```
 
-**Automatic idle restart and auto-revert are unavailable in this candidate.** The old 0.5.0 gate queried a private control socket and core SQLite admission schema; catalog cleanup removed those unsupported dependencies. Public status omits asynchronous delegations and cannot prove that every session/admission is idle. `hermes botsesh restart-gateway --when-idle` therefore refuses without restarting and explains why. A checkpoint is still a private source/config recovery copy, not an automatic rollback promise.
+**Automatic idle restart and auto-revert are unavailable in 0.5.1.** The old 0.5.0 gate queried a private control socket and core SQLite admission schema; catalog cleanup removed those unsupported dependencies. Public status omits asynchronous delegations and cannot prove that every session/admission is idle. `hermes botsesh restart-gateway --when-idle` therefore refuses without restarting and explains why. A checkpoint is still a private source/config recovery copy, not an automatic rollback promise.
 
 If an existing gateway needs the plugin loaded, quiesce new input and finish active turns, delegations, queued requests and pending sends. In **your own terminal**, replace `PROFILE` with the connection's profile and run the single maintenance command, then verify recovery:
 
