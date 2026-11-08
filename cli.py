@@ -34,6 +34,8 @@ def setup(parser):
         else:
             item.add_argument('--prune', action='store_true', help='Revoke only verified ghosts belonging to this gateway/account')
             item.add_argument('--yes', action='store_true', help='Explicitly confirm ghost revocation without a prompt')
+    from .room_lifecycle import setup as setup_lifecycle
+    setup_lifecycle(sub)
 
 
 def configure(binding):
@@ -81,6 +83,9 @@ def _handle_profile(args, profile):
     from hermes_cli.auth_constants import AuthError
     try:
         client = Client()
+        from .room_lifecycle import ACTIONS, handle as handle_lifecycle
+        if args.botsesh_action in ACTIONS:
+            return handle_lifecycle(args, client)
         oauth = OAuthClient(client.store)
         if args.botsesh_action in ('rename', 'seats'):
             from .identity import handle_identity

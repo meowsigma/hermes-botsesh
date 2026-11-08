@@ -74,7 +74,7 @@ class GuestManagerClient:
         self.store = store
         self.private = Store(store.credentials / 'python-guest')
 
-    def create(self, name, purpose=None, client_id=None, *, origin=None):
+    def create(self, name, purpose=None, client_id=None, *, origin=None, lifecycle_scopes=None):
         from .oauth import checked_origin
         origin = checked_origin(DEFAULT_ORIGIN if origin is None else origin)
         if (not isinstance(name, str) or not name.strip() or len(name.strip().encode('utf-16-le')) > 160
@@ -84,6 +84,13 @@ class GuestManagerClient:
         if client_id is not None:
             require_client_id(client_id)
         payload = {'name': name, 'purpose': purpose if purpose is not None else ''}
+        if lifecycle_scopes is not None:
+            from .room_lifecycle import SCOPES
+            if (not isinstance(lifecycle_scopes, list) or not lifecycle_scopes
+                    or len(set(lifecycle_scopes)) != len(lifecycle_scopes)
+                    or any(s not in SCOPES for s in lifecycle_scopes)):
+                raise BotSeshError('invalid_lifecycle_scopes')
+            payload['lifecycle_scopes'] = lifecycle_scopes
         # Preserve pending/committed Advanced SDK intent across upgrades: a
         # different private connection would create a second room. Recover that
         # exact legacy operation through its original Advanced store instead.
@@ -110,12 +117,16 @@ class GuestManagerClient:
                         raise BotSeshError('client_id_conflict')
                 intents[intent_key] = {'origin': origin, 'request': request}
             saved = intents[intent_key]
+            if saved.get('forgotten'):
+                raise BotSeshError('room_forgotten_use_new_creation_client_id')
             operation = saved.get('request', {}).get('client_id')
             require_client_id(operation)
             expected = {**payload, 'client_id': client_id if client_id is not None else operation, 'connection_key': key}
             if saved.get('origin') != origin or saved.get('request') != expected:
                 raise BotSeshError('private_creation_state_invalid')
         intent = self.private.update(prepare)['creations'][intent_key]
+        if intent.get('forgotten'):
+            raise BotSeshError('room_forgotten_use_new_creation_client_id')
         if intent.get('room_id'):
             binding = self.store.read()['rooms'].get(intent['room_id'])
             if binding and not binding.get('active'):
@@ -160,7 +171,8 @@ class GuestManagerClient:
                 return  # Do not reset local progress or state on a retry.
             registry['rooms'][room_id] = binding
         self.store.update(enroll)
-        return {**{key: data[key] for key in PUBLIC_CREATE}, 'management_only': True}
+        from .room_lifecycle import creation_result
+        return creation_result(self.store, {**{key: data[key] for key in PUBLIC_CREATE}, 'management_only': True})
 
     def _credential(self, binding):
         from .oauth import checked_origin

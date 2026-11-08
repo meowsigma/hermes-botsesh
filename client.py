@@ -152,6 +152,8 @@ class Client:
         self.store.update(lambda d: d['rooms'].update({room_id: {'url': url, 'room_id': room_id, 'name': result.get('displayName', result.get('name', 'BotSesh')), 'participant_id': result['participantId'], 'active': True, 'state': 'joined'}}))
         return {'state': 'joined', 'room_id': room_id, 'participant_id': result['participantId'], 'url': url}
 
-    def create(self, name='BotSesh room', purpose=None, client_id=None):
+    def create(self, name='BotSesh room', purpose=None, client_id=None, *, lifecycle_scopes=None):
         from .guest_manager import GuestManagerClient
+        if lifecycle_scopes is not None:
+            return GuestManagerClient(self.store).create(name, purpose, client_id, lifecycle_scopes=lifecycle_scopes)
         return GuestManagerClient(self.store).create(name, purpose, client_id)

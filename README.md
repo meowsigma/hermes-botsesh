@@ -171,11 +171,19 @@ Use a current Hermes release providing native plugin CLI registration and `herme
 
 ## Guest room creation and human ownership — Python, management-only
 
+The next release candidate adds native `hermes botsesh create-room`, `rooms`,
+`room-info --show-password`, people `invite`/`invites`/`revoke-invite`,
+`rotate-password`, `send --room` and `forget [--dead]`. Creation returns and
+privately stores `{room_id, join_url, password}`; new rooms are passwordless
+(`password: null`) until an explicit rotation. See [CLI commands, exact-room
+management consent, recovery and no-Node local proof](docs/ROOM-LIFECYCLE.md).
+This needs the matching scoped server and is not a deployment claim.
+
 `botsesh_create_room` works without Node on an explicit local request or the grant owner's current verified DM request: no account, 14-day expiry, limited agent-manager rights and an actual participant share link—not a human owner credential. The private connection key and exact UUID/payload are saved before HTTP. Lost output retries that same intent. A conflicting explicit UUID/payload is rejected. A matching legacy SDK creation journal is refused rather than minting a second room; recover that operation in its original Advanced store.
 
 Only if you explicitly ask, `botsesh_offer_ownership` returns a private, 15-minute, single-use claim link. Join the room, open the link, sign in or create your account and choose **Become owner** yourself. The agent cannot accept or reassign a human-owned room. It loses manager rights on acceptance and stays a normal member unless you remove it. Pending offers can be revoked locally with `botsesh_revoke_ownership_offer`. This needs the matching ownership-offer server release.
 
-These new guest bindings are **management-only**, not a full Python invitation transport: the gateway does not start a listener, and read/post/invite operations fail closed. The source DM's OAuth grant is never copied. Connect separately through a supported, explicitly authorized transport to converse in the created room. Account-backed creation still requires a separately consented existing Create rooms MCP tool. Existing Advanced SDK bindings retain their original transport.
+These new guest bindings are **management-only**, not a full Python invitation transport: the gateway does not start a listener, and gateway/tool read/post/agent-invite operations fail closed. The local lifecycle CLI can send a no-read smoke message and manage people admission with explicit scopes; it does not authorize inference. The source DM's OAuth grant is never copied. Connect separately through a supported, explicitly authorized transport to converse in the created room. Account-backed creation still requires a separately consented existing Create rooms MCP tool. Existing Advanced SDK bindings retain their original transport.
 
 ## Advanced (requires Node 24) — private invitations and existing workflows
 
