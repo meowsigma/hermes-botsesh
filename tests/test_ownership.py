@@ -53,7 +53,7 @@ class OwnershipTests(unittest.TestCase):
             for transport in ('advanced', 'oauth'):
                 with self.subTest(ended_by=ended_by, transport=transport), tempfile.TemporaryDirectory() as root:
                     store = Store(root)
-                    binding = {'room_id': 'room', 'url': 'https://botsesh.com/b/room', 'active': True, 'transport': transport}
+                    binding = {'room_id': 'room', 'url': 'https://botsesh.com/b/room', 'active': True, 'transport': transport, 'auth_version': 2}
                     store.update(lambda data: data['rooms'].update(room=binding))
                     client = Client(store)
                     offers, ended, calls = {}, set(), []
@@ -111,7 +111,7 @@ class OwnershipTests(unittest.TestCase):
     def test_oauth_offer_and_revoke_are_pure_python_exact_scoped_rpc(self):
         client = OAuthClient(Mock())
         client.rpc = Mock(return_value={'state': 'ownership_offered'})
-        binding = {'room_id': 'exact-room'}
+        binding = {'room_id': 'exact-room', 'auth_version': 2}
         operation = str(uuid4())
         client.call(binding, 'offer_ownership', client_id=operation, user_requested=True)
         client.rpc.assert_called_once_with(binding, 'offer_ownership', {'room_id': 'exact-room', 'client_id': operation, 'user_requested': True})

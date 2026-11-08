@@ -24,7 +24,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         self.client = Client(Store(Path(tmp.name) / 'private'))
         self.client.store.update(lambda d: d['rooms'].update({room: {
             'room_id': room, 'url': 'https://botsesh.com/b/' + room,
-            'transport': 'oauth', 'active': True, 'participant_id': 'bot-' + room,
+            'transport': 'oauth', 'auth_version': 2, 'active': True, 'participant_id': 'bot-' + room,
         } for room in ('a', 'b')}))
         self.targets = {'a': [3, 5], 'b': [3, 5]}
         self.messages, self.requests, self.revoked = {}, [], set()

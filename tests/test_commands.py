@@ -123,7 +123,7 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.client = Client(Store(self.home / 'plugin'))
         self.client.store.update(lambda data: data['rooms'].update({'native-dm': dict(
             active=True, url='https://botsesh.com/b/native-dm', name='Native DM',
-            transport='oauth', room_type='dm', participant_id='agent-participant')}))
+            transport='oauth', auth_version=2, room_type='dm', participant_id='agent-participant')}))
         self.client.enrolled = self.transport
         with patch('hermes_botsesh_test.adapter.Client', return_value=self.client):
             self.adapter = BotSeshAdapter(PlatformConfig())

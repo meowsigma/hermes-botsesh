@@ -35,7 +35,7 @@ async def run():
         os.environ['HERMES_HOME']=directory
         store=Store(Path(directory)/'plugin-data/botsesh')
         binding={'room_id':initial['room_id'],'url':'https://botsesh.com/b/'+initial['room_id'],'origin':'https://botsesh.com',
-                 'participant_id':initial['participant_id'],'oauth_id':'fixture-transport','transport':'oauth','active':True,'name':'LOCAL FIXTURE'}
+                 'participant_id':initial['participant_id'],'oauth_id':'rooms','transport':'oauth','auth_version':2,'active':True,'name':'LOCAL FIXTURE'}
         store.update(lambda d:d['rooms'].update({initial['room_id']:binding}))
         platform_registry.register(PlatformEntry(name='botsesh',label='BotSesh',adapter_factory=BotSeshAdapter,check_fn=lambda:True))
         adapter=BotSeshAdapter(PlatformConfig());adapter.client=Client(store)

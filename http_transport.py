@@ -65,37 +65,36 @@ def decode_response(raw, content_type, *, request_id=None):
     return value
 
 
-def post(origin, path, *, form=None, payload=None, bearer=None):
+def provider_request(origin, method, path, *, payload=None):
+    """All OAuth HTTP goes through core's documented credentialed request API."""
     import httpx
-    from .oauth import checked_origin
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+    from .oauth import checked_origin, OAUTH_ID
     checked_origin(origin)
-    if path not in ('/oauth/token', '/oauth/revoke', '/mcp'):
+    lifecycle = re.fullmatch(r'/api/agent/rooms/[A-Za-z0-9_-]{32}/lifecycle/(people-invites(?:/[0-9a-fA-F-]{36}/revoke)?|rotate-password|messages)', path)
+    if not ((path == '/mcp' and method == 'POST') or (lifecycle and method in ('GET', 'POST'))):
         raise BotSeshError('endpoint_denied')
-    headers = {'Accept': 'application/json, text/event-stream' if path == '/mcp' else 'application/json'}
-    if bearer:
-        headers['Authorization'] = 'Bearer ' + bearer
     try:
-        with httpx.Client(timeout=35, follow_redirects=False, trust_env=False) as client:
-            with client.stream('POST', origin + path, headers=headers, data=form, json=payload) as response:
-                raw = bytearray()
-                for part in response.iter_bytes():
-                    raw.extend(part)
-                    if len(raw) > MAX_BYTES:
-                        raise BotSeshError('response_limit')
-                status = response.status_code
-                content_type = response.headers.get('content-type', '')
-                retry = retry_after_ms(response.headers.get('retry-after', '0'))
+        response = credentialed_provider_request(OAUTH_ID, method, origin + path,
+            json=payload, headers={'Accept': 'application/json, text/event-stream' if path == '/mcp' else 'application/json'}, timeout=35)
+    except ProviderNotSignedIn:
+        raise BotSeshError('sign_in_required_run_hermes_auth_add_botsesh_rooms', 401) from None
+    except AuthError as error:
+        code = error.code if isinstance(error.code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', error.code) else 'oauth_request_failed'
+        raise BotSeshError(code) from None
     except httpx.HTTPError:
         raise BotSeshError('connection_failed_retry_same_intent') from None
-    if status == 200 and path == '/oauth/revoke':
-        return {}
-    # Keep the real denial status even when a proxy returns HTML, so revoked
-    # credentials stop rather than retrying malformed error prose forever.
+    status, raw = response.status, response.body
+    if len(raw) > MAX_BYTES:
+        raise BotSeshError('response_limit')
+    retry = retry_after_ms(response.headers.get('retry-after', '0'))
     try:
-        value = decode_response(raw, content_type, request_id=(payload or {}).get('id') if 200 <= status < 300 else None)
+        value = decode_response(raw, response.headers.get('content-type', ''),
+                                request_id=(payload or {}).get('id') if 200 <= status < 300 else None)
     except (ValueError, TypeError, UnicodeError):
         raise BotSeshError('invalid_server_response' if 200 <= status < 300 else 'request_denied', status, retry) from None
     if not 200 <= status < 300:
-        code = value.get('error')
+        code = value.get('code', value.get('error'))
         raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied', status, retry)
     return value

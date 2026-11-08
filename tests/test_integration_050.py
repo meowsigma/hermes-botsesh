@@ -1,5 +1,7 @@
 """Merged profile/room/operations seams; local doubles, no service restart."""
 import argparse
+import contextlib
+import io
 
 import os
 import unittest
@@ -13,21 +15,16 @@ class Integration050(unittest.TestCase):
     setUp = original.OAuthTests.setUp
     tearDown = original.OAuthTests.tearDown
 
-    def test_reconnect_keeps_profile_paste_journal_and_restores_explicit_room(self):
+    def test_reconnect_keeps_profile_journal_and_restores_explicit_room(self):
         journal = {'delivered': {'complete': True}}
         self.store.update(lambda d: (d['rooms']['one'].update(oauth_posts=journal),
                                      d.setdefault('forgotten_rooms', {}).update(one=True, other=True)))
         room = dict(room_id='one', name='One', participant_id='bot', display_name='Scout',
                     gateway_profile='goonbot', password_required=False)
-        fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
-        with patch.object(original.oauth, 'login', return_value=fields) as login, \
-             patch.object(self.client, 'rpc', side_effect=[{'rooms': [room]},
-                 {'participant': {'id': 'bot', 'name': 'Scout'}}, {'rooms': [room]}]):
-            binding = self.client.connect(name='Scout', profile='goonbot', paste_redirect=True)
-        self.assertEqual(login.call_args.kwargs['timeout'], 300)
-        self.assertTrue(login.call_args.kwargs['paste_redirect'])
-        self.assertEqual(login.call_args.kwargs['profile'], 'goonbot')
-        self.assertEqual(login.call_args.kwargs['previous']['participant_id'], 'bot')
+        with patch.object(self.client, 'rpc', side_effect=[{'profile': 'goonbot'}, {'rooms': [room]}, {'rooms': [room]}]) as rpc:
+            binding = self.client.connect(name='Scout', profile='goonbot')
+        self.assertEqual([c.args[1] for c in rpc.call_args_list], ['hermes_initialize', 'list_rooms', 'list_rooms'])
+        self.assertEqual(rpc.call_args_list[0].args[2]['gateway_profile'], 'goonbot')
         self.assertEqual(binding['participant_id'], 'bot')
         self.assertEqual(self.store.room('one')['oauth_posts'], journal)
         self.assertEqual(self.store.read()['forgotten_rooms'], {'other': True})
@@ -35,7 +32,7 @@ class Integration050(unittest.TestCase):
         self.assertEqual(access['join_url'], 'https://botsesh.com/b/one')
         self.assertIsNone(access['password'])
         self.assertFalse(access['password_required'])
-        self.assertEqual([r['id'] for r in original.oauth._rows()], [binding['oauth_id']])
+        self.assertEqual((binding['oauth_id'], binding['auth_version']), ('rooms', 2))
 
     def test_selected_restart_home_crosses_subprocess_boundary_without_launcher_pin(self):
         target = self.home / 'profiles' / 'night'
@@ -55,7 +52,7 @@ class Integration050(unittest.TestCase):
         parser = argparse.ArgumentParser(prog='hermes botsesh')
         cli.setup(parser)
         cases = {
-            'connect': ['--profile', 'goonbot', '--no-browser', '--paste-redirect', '--set-home'],
+            'connect': ['--profile', 'goonbot', '--set-home'],
             'disconnect': ['one'], 'rename': ['Scout', '--room', 'one', '--profile', 'goonbot'],
             'seats': ['--prune', '--yes', '--profile', 'goonbot'],
             'create-room': ['Planning'], 'rooms': [], 'room-info': ['one', '--show-password'],
@@ -69,7 +66,9 @@ class Integration050(unittest.TestCase):
                 parsed = parser.parse_args([command, *flags])
                 self.assertEqual(parsed.botsesh_action, command)
                 self.assertIn(command, parser.format_help())
-        self.assertEqual(parser.parse_args(['connect']).timeout, 300)
+        for removed in ('--no-browser', '--paste-redirect', '--timeout', '--dev-origin'):
+            with self.subTest(removed=removed), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(['connect', removed])
         self.assertIn('Command groups:', parser.format_help())
         self.assertIn('hermes -p PROFILE', parser.format_help())
 

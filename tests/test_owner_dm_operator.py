@@ -20,7 +20,7 @@ from owner_dm_test.client import BotSeshError
 
 class OwnerDmTests(unittest.TestCase):
     def setUp(self):
-        self.binding = {'active': True, 'room_type': 'dm', 'transport': 'oauth', 'room_id': 'dm',
+        self.binding = {'active': True, 'room_type': 'dm', 'transport': 'oauth', 'auth_version': 2, 'room_id': 'dm',
                         'participant_id': 'agent', 'oauth_id': 'grant', 'oauth_root': 'source', 'origin': 'https://botsesh.com'}
         self.identity = {key: self.binding.get(key) for key in ('participant_id', 'oauth_id', 'oauth_root', 'origin')}
         self.identity.update(membership_id='member', human_id='human')

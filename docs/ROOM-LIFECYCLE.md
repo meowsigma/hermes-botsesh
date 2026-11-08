@@ -1,7 +1,11 @@
-# Room lifecycle CLI — next release candidate
+# Room lifecycle CLI
 
-Requires the matching scoped lifecycle server. All commands use Python; **Node
-is not required**. No command here calls your model or starts a gateway.
+Requires the matching scoped lifecycle server. Version 0.5.1 declared OAuth also
+needs the `qr/catalog-oauth` server, not yet deployed. All commands use Python;
+**Node is not required**. No command here calls your model or starts a gateway.
+Guest creation/ownership and management-only lifecycle use separate **non-OAuth
+guest-manager keys**, not the OAuth provider helper or a copied DM grant. Their
+private stores and Advanced invitation stores are unchanged by OAuth migration.
 
 ```sh
 hermes botsesh create-room "Weekend plans"
@@ -36,8 +40,10 @@ means passwordless admission, not a lost credential; anyone with the private
 share link can join as an ordinary participant, never as owner. The existing
 agent creation API already used `room_join_policy.password_required=0`; the
 legacy browser POST used by the field report forced an unrecoverable password.
-This candidate also makes **+ New room** in native OAuth consent use the same
-passwordless share admission. Existing password-protected rooms are not changed.
+Declared OAuth consent uses the same passwordless share admission when creating
+one new room through its separate first-party form. Alternatively,
+consent selects 1–20 existing hosted rooms; it does not grant arbitrary agent-side room
+creation. Existing password-protected rooms are not changed.
 
 `rotate-password` explicitly enables password admission and generates a random
 password. The candidate and its exact operation UUID are durably saved **before
@@ -67,11 +73,13 @@ The server's account create result also states its passwordless admission.
 
 New CLI creations explicitly request the room-only `people:invite` and
 `password:rotate` scopes. An old guest manager grant does not acquire them on
-upgrade. Native OAuth uses the existing `botsesh:rooms` token audience/scope **and**
-new granular grant-bound admission scopes. On the signed-in host's Allow page,
+upgrade. Declared OAuth requests only the `botsesh:rooms` OAuth scope; admission
+management additionally requires granular server-side grant permissions. On the signed-in host's Allow page,
 the **Also allow ... manage people-invite links ... rotate the room password**
 checkbox is optional and **unchecked**. Old chat grants cannot manage admission;
-reconnect with explicit host approval if needed. Scope checks revalidate the
+rerun `hermes auth add botsesh:rooms` with the full intended room set and explicit
+host approval, then connect if needed. That new sign-in creates new seats; remove
+obsolete authorizations in People. Permission checks revalidate the
 exact membership and current owning account, never a display name or invitation.
 Revoked managers, non-managers, foreign rooms and revoked OAuth grants are denied.
 No deletion, retention, human approval or ownership-transfer power is added.
@@ -116,7 +124,7 @@ and reported, not mistaken for deletion. Advanced Node invitation bindings are
 not probed by this no-Node command. Use `disconnect` for OAuth server revocation;
 use room Access to revoke a guest membership before forgetting when appropriate.
 
-## Field report asks (verbatim)
+## Historical v0.5.0 field report asks (verbatim)
 
 Source: `FEEDBACK-hermes-botsesh-20261107.md`, goonbot, Dell, 2026-11-07.
 
@@ -135,7 +143,7 @@ native lifecycle CLI commands or durable re-printable admission details. Profile
 selection, restart/idempotent registration and the broader identity docs are
 separate 0.5.0 lanes; this increment does not claim those are fixed.
 
-## Local verification
+## Historical v0.5.0 local verification
 
 Focused tests: `tests/test_room_lifecycle.py`, `tests/hb050-lifecycle-server.mjs`
 and the server's `tests/hb050-room-lifecycle.test.js`. The native fixture invokes

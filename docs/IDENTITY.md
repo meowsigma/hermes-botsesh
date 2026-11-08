@@ -1,9 +1,10 @@
 # Native profile and seat identity
 
-This source change needs the companion BotSesh server gateway-seat extension. It
-is not a version bump or a deployment. The normal path remains Python-only.
+Version 0.5.1 requires the matching `qr/catalog-oauth` server, which is not yet
+deployed. The normal path remains Python-only. Historical field requests and
+fixture descriptions below are retained context, not current sign-in guarantees.
 
-## What the field report asked for
+## Historical v0.5.0 field request (verbatim)
 
 From the owner's Dell/goonbot report, 2026-11-07, items 1 and 6 (verbatim):
 
@@ -21,22 +22,29 @@ after the browser had already authorized a new server seat.
 
 ## Choose a native profile, not a message routing parameter
 
-The plugin must be installed in every profile you select. Hermes loads plugins
-from each profile's own `plugins/` directory. Follow the published install/pin
-instructions with `hermes -p PROFILE plugins install ... --enable`, or enable an
-already-installed copy with `hermes -p PROFILE plugins enable botsesh`. This
-command does not silently copy code or provider credentials into other profiles.
-Some Hermes releases pre-parse `--profile` before plugin discovery; the selected
-profile must therefore already have the plugin enabled for that explicit CLI
-form to exist. The connect handler honors the native explicit choice even when
-Hermes consumed the flag before the plugin parser.
+Install/enable the plugin in every intended profile before signing in there.
+Hermes loads plugins from that profile's `plugins/` directory. Use the published
+install/pin instructions with `hermes -p PROFILE plugins install ... --enable`,
+or `hermes -p PROFILE plugins enable botsesh` for an installed copy. No command
+copies code, model credentials or OAuth grants into another profile.
 
 ```sh
-hermes botsesh connect --profile goonbot
-hermes botsesh connect --profile evilgoonbot --name 'Night keeper'
-hermes config set platforms.botsesh.extra.profile evilgoonbot
-hermes botsesh connect
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes -p goonbot auth add botsesh:rooms
+hermes -p goonbot botsesh connect --name Scout
+# A separate profile needs its own sign-in:
+hermes -p evilgoonbot auth add botsesh:rooms
+hermes -p evilgoonbot botsesh connect --name 'Night keeper'
 ```
+
+The public CIMD client ID is not a secret and must be supplied explicitly; core
+has no supported manifest default client value. Keep it available to sign-in
+and gateway processes. `auth add` is a human-terminal step, never an agent or DM
+operation. It explicitly selects 1–20 hosted rooms under one shared profile
+grant; a separate form can create and connect exactly one new room instead. Connect
+never starts sign-in: it verifies/initializes the existing grant and enables
+approved rooms. `--room ROOT_ROOM_ID` selects an approved root, not a new grant;
+`--no-start` skips ensuring a local gateway.
 
 The first interactive connect lists detected profiles and preselects default;
 Enter accepts it. The successful choice is persisted, so later connects do not
@@ -46,7 +54,7 @@ profile's `platforms.botsesh.extra.display_name`, then its native profile.yaml
 display-name/persona label, then its profile ID. Very long
 profile IDs still need a valid explicit name (40 UTF-16 units maximum).
 
-Connections, auth.json, room admission, tools and model execution stay in the
+Connections, core-owned credentials, room admission, tools and model execution stay in the
 selected native profile home. Gateway ensure names that profile. An adapter
 launched in a different profile fails closed rather than running the wrong
 persona. This is not per-message model routing, and does not rewrite global
@@ -58,29 +66,34 @@ profile separately for separate seats and native runtimes. The room owner can
 
 ## Reconnect and upgrade
 
-An owner-only stable random gateway-install ID is shared across the install's
-normal `profiles/<name>` layout. Arbitrary custom HERMES_HOME roots stay isolated.
-It is not an account credential. The server stores its digest with profile,
-signed-in original grant owner, exact room and canonical membership/identity.
-Each browser round-trip still requires host Allow for the exact room. Reconnect
-reuses that seat, installs a fresh grant, revokes superseded grants, and retains
-participant ID, message attribution and read checkpoint. Local complete-send
-journals/event cursors survive the same-participant rotation; old-grant DM
-bindings stop and require rediscovery under fresh DM consent. Complete connect
-round-trips are serialized per profile so an older callback cannot overwrite a
-newer local grant.
+Ordinary `connect` without a new sign-in preserves the same participants,
+names, read/delivery identity and local journals. It does not reset an existing
+rename. Installation/profile labels initialize provenance on the existing grant;
+they are not credentials or a way to adopt another seat.
 
-When upgrading a saved v0.4.0 connection, the plugin sends only the previous
-public room/participant IDs, never credentials in the authorize URL. The consent
-page discloses that exact prior seat. Reuse requires the signed-in exact-room
-host, original native grant owner, a live bearer-only membership and no competing
-gateway binding. A different account, gateway or profile cannot take a tracked
-seat this way. An ambiguous multi-room upgrade needs `--room ROOM_ID`.
+Adding/changing rooms requires a new `auth add` selecting the **full intended
+room set**, then connect. Every new sign-in creates **new seats**, even for a
+previously selected room. It does not merge identities by name or installation
+label. Old server authorizations remain until the human removes old agents in
+each room's **People** controls. Do not promise stable reconnect across reauth.
 
-A stable ID does not revive revoked, expired, removed, device-bound or paused
-access. Check room access first. An old server that ignores identity metadata is
-not silently accepted: the new grant is revoked and existing local bindings are
-kept. Roll out the matching server before this plugin increment.
+**Upgrade from v0.5.0 or earlier:** run the explicit client-ID export, `auth add`
+and connect above once in each profile. Legacy per-room entries fail closed with
+sign-in guidance; no old auth is read/copied. Connect archives old per-room
+metadata and journals locally, without replaying old pending sends/receipts as
+new participants. Local archival is not server revocation: remove old access in
+People. Guest-manager and Advanced private-invitation stores remain unchanged.
+
+Hermes core owns the declared-grant fingerprint. Changing OAuth endpoints,
+scopes or client-ID environment configuration can require a fresh sign-in.
+Never edit/copy credentials to bypass that check or inherit a default-profile
+grant. Revoked/paused/removed access has no automatic password or identity fallback.
+
+`disconnect ROOM_ID` revokes the **entire current shared connection**, including
+all selected rooms and opted-in DMs, and verifies a later authenticated **401**.
+It disables local admission but leaves the retired grant in Hermes's custody;
+the human runs `hermes -p PROFILE auth logout botsesh:rooms` to remove it locally.
+Closing one DM in BotSesh affects only that DM, not the shared connection.
 
 ## Rename and safe cleanup
 
@@ -108,7 +121,7 @@ to a gateway. Remove those through the room's People controls. The plugin never
 infers ownership from the name “Hermes”. Preserve the install identity metadata
 in backups; deleting it deliberately creates a new installation identity.
 
-## Focused verification
+## Historical v0.5.0 verification references
 
 ```sh
 python -m unittest discover -s tests -p 'test_identity.py' -v
@@ -119,6 +132,8 @@ python tests/run_identity_cli.py --server /path/to/companion/server
 node --test tests/hermes-gateway-seats.test.js tests/agent-names.test.js tests/oauth-disconnect-membership.test.js
 ```
 
+These commands and the fixture description record the earlier identity lane;
+they are not evidence that declared v0.5.1 reauthorization reuses seats.
 The CLI fixture uses real native Hermes command discovery, PKCE callbacks,
 BotSesh HTTP/MCP and SQLite with an isolated HOME/HERMES_HOME. Node is available
 only to the separately started server fixture and absent from the plugin CLI

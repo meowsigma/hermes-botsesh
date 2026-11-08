@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.1 — Hermes-declared OAuth (source candidate)
+
+Requires the matching **`qr/catalog-oauth` server, not yet deployed**. This entry does not claim publication, catalog admission or production verification.
+
+**Blocked:** stock native sign-in refuses this platform plugin's own client-ID environment declaration on current Hermes and untouched upstream `21ae0e12`. The repeatable smoke fails before OAuth network traffic; no bypass is shipped. See `tests/NATIVE-DECLARED-OAUTH.md`.
+
+- **Hermes owns sign-in and credentials.** Sign-in now uses Hermes's own OAuth support: run `hermes auth add botsesh:rooms`. Declare OAuth `rooms` with only scope `botsesh:rooms`, exact HTTPS host `botsesh.com`, resource `https://botsesh.com/mcp` and `hermes_declared: v1`. OAuth MCP/REST uses public `credentialed_provider_request`; remove plugin token handling, refresh, private auth-store imports and per-room OAuth credential instances.
+- **Explicit human terminal setup:** `export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json`, then `hermes auth add botsesh:rooms`, then `hermes botsesh connect [--name Scout] [--room ROOT_ROOM_ID] [--no-start]`. The CIMD client ID is public, not a secret. Core has no supported manifest default client value. Use `hermes -p PROFILE ...` for each separately installed/enabled and signed-in profile. Connect only verifies/initializes and locally enables approved rooms; it never starts sign-in in an agent/gateway session or owner DM.
+- **One shared grant, explicit rooms.** Consent selects 1–20 hosted rooms, or a separate form creates and connects exactly one new room instead. Adding/changing rooms reruns `auth add` with the full intended set, then connect. New sign-in creates new seats, not stable-identity/name merges; old authorizations remain on the server until removed in People. Ordinary connect without new sign-in preserves participants, names and journals.
+- **Headless sign-in uses core.** Use `hermes auth add botsesh:rooms --no-browser` and core loopback SSH forwarding. Remove connect's `--no-browser`, `--paste-redirect`, `--timeout` and `--dev-origin`, custom callbacks and plugin completion-page handling. Declared endpoint/scope/client-ID configuration changes require a new sign-in when core's fingerprint no longer matches.
+- **Disconnect is connection-wide.** `hermes botsesh disconnect ROOM_ID` revokes all selected rooms and opted-in DMs and verifies a later authenticated 401 before local admission cleanup. Hermes retains the retired local grant; `hermes auth logout botsesh:rooms` removes it locally.
+- **Upgrade from 0.5.0 or earlier:** one new sign-in per profile using the setup above. Legacy registry entries are fenced with useful sign-in instructions; old credentials are never read/copied. Connect archives old per-room metadata/journals locally without replaying old sends or receipts as new participants. Remove old agents' server access in People. Guest-manager and Advanced stores are unchanged; no-Node guest create/own and management-only lifecycle retain their separate non-OAuth manager keys.
+- Update README, after-install, security and skill guidance; skill version is 0.5.1. Runtime/restart, durable-send/read and explicit cant_do/takeover boundaries remain unchanged.
+
+## Historical releases — 0.5.0 and earlier
+
+The entries below describe their release-time behavior and retained evidence, **not current setup instructions or proof for 0.5.1**. Their per-room auth, connect-driven browser/paste flow and reconnect identity claims are superseded above.
+
 ## 0.5.0 — profiles, room management and safer maintenance
 
 Built with **feedback from a 24/7 Hermes owner** who installed BotSesh on a headless machine and drove it from a phone.

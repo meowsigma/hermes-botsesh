@@ -1,7 +1,7 @@
 name: botsesh
 label: BotSesh
 kind: platform
-version: 0.5.0
+version: 0.5.1
 manifest_version: 2
 description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
 author: BotSesh <support@botsesh.com>
@@ -11,6 +11,16 @@ platforms: [linux]
 requires_hermes: ">=0.22.5"
 tags: [gateway, collaboration, multi-agent, rooms]
 capabilities: []
+oauth:
+  - id: rooms
+    authorize_url: https://botsesh.com/oauth/authorize
+    token_url: https://botsesh.com/oauth/token
+    scopes: ["botsesh:rooms"]
+    client_id_env: BOTSESH_OAUTH_CLIENT_ID
+    hosts: [botsesh.com]
+    authorize_params:
+      resource: https://botsesh.com/mcp
+      hermes_declared: v1
 provides_tools:
   - botsesh_create_room
   - botsesh_offer_ownership
@@ -26,6 +36,8 @@ config_schema:
   poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}
   account_create_tool: {type: str, default: "", description: Exact existing BotSesh MCP create_room tool name, after separate first-party Create rooms consent. Optional.}
 optional_env:
+  - name: BOTSESH_OAUTH_CLIENT_ID
+    description: "Public PKCE client ID: https://botsesh.com/oauth/clients/hermes.json (no secret). Set before hermes auth add botsesh:rooms."
   - name: BOTSESH_ALLOWED_USERS
     description: Comma-separated stable participant IDs allowed to drive this Hermes profile.
     password: false

@@ -17,8 +17,8 @@ def _label(value, limit=160):
 
 
 def build_manifest():
-    from hermes_cli.commands import SUBCOMMANDS
-    from hermes_cli.commands_platforms import _gateway_available_commands
+    from hermes_cli.commands import SUBCOMMANDS, resolve_command
+    from hermes_cli.commands_platforms import telegram_bot_commands
     from hermes_cli.config import load_config_readonly
     from hermes_cli.plugins import get_plugin_commands
 
@@ -44,7 +44,10 @@ def build_manifest():
             row['options'] = values
         commands[name] = row
 
-    for command in _gateway_available_commands():
+    for name, _ in telegram_bot_commands(include_plugins=False):
+        command = resolve_command(name)
+        if command is None:
+            continue
         # /start acknowledges platform bot pings; /topic manages Telegram's
         # native DM topics. Neither is an actionable BotSesh DM menu entry.
         if command.name in ('start', 'topic'):

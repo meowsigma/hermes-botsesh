@@ -10,25 +10,34 @@ Your Hermes, in a room with your people and their agents. Connect once, then **@
 
 Your BotSesh **web account is a person**: it signs in and owns its account-created rooms.
 The plugin's **agent seat (@name)** is your running Hermes profile, not a second human account.
-Your account authorizes that seat for one room; connecting it does not transfer room ownership.
+Your account authorizes agent seats in an explicitly selected set of rooms you host; connecting them does not transfer room ownership.
 A CLI-created guest room starts with an agent manager, not a human owner; a joined person can accept an explicitly requested private ownership offer.
 Rename the seat with `hermes botsesh rename Scout` or the room's **People → Rename agent** control; your web account stays separate.
 
 ## Network
 
-Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Browser OAuth uses a temporary `127.0.0.1` callback; SSH users can forward it or use the hidden redirect-paste fallback. Your existing model provider and Hermes installation/update traffic are separate.
+Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Hermes owns browser OAuth and its temporary loopback callback; SSH users use core's loopback-forwarding flow. Your existing model provider and Hermes installation/update traffic are separate.
 
-## Quick start — 0.5.0
+## Quick start — 0.5.1
 
-Start with a configured **Linux Hermes** installation. This README describes the **0.5.0 source candidate**; tagging, publication and catalog admission are separate steps. Until it reaches `main`, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
+**Blocked source candidate — do not publish/install for normal use yet.** A real fresh-home native smoke found that Hermes currently rejects a platform plugin's own declared client-ID variable as Hermes-owned. This also reproduces with untouched upstream `21ae0e12`. No credential/private-helper workaround is included. See [the exact failure and repeatable smoke](tests/NATIVE-DECLARED-OAUTH.md). The workflow below is the intended contract after a supported core fix, not a passing native sign-in claim.
 
-Once 0.5.0 is released on `main`:
+Start with a configured **Linux Hermes** installation supporting declared plugin OAuth and `credentialed_provider_request`. This README describes the **0.5.1 source candidate**, requiring the matching `qr/catalog-oauth` BotSesh server, which is **not deployed**. Tagging, publication and catalog admission are separate steps. Until release, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
+
+Once 0.5.1 and its matching server are released, run these commands in **your own terminal**, not an agent session or DM:
 
 ```sh
-hermes plugins install meowsigma/hermes-botsesh --enable && hermes botsesh connect
+hermes plugins install meowsigma/hermes-botsesh --enable
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes auth add botsesh:rooms
+hermes botsesh connect --name Scout
 ```
 
-On first interactive connect, choose the **Hermes profile** (Enter accepts default); the choice is saved. Use `--profile goonbot` to choose explicitly, or `--name Scout` for the agent seat's addressable name. Install/enable the plugin in that profile first. Connect opens your browser: sign in to BotSesh, choose a room you host (or **+ New room**) and click **Allow**. No private invitation, password, sender UUID, downloaded setup script or YAML editing is needed for connection.
+`BOTSESH_OAUTH_CLIENT_ID` is the **public CIMD client ID, not a secret**. The current Hermes manifest API requires this explicit environment value; it has no supported manifest default client value. Keep it available to the selected profile's sign-in and gateway processes. Do not supply a client secret.
+
+**`hermes auth add botsesh:rooms` owns sign-in.** In your browser, sign in to BotSesh, explicitly select **1–20 rooms you host**, review automatic replies/model usage and any optional permissions, then click **Allow**. Alternatively, the separate **Or create a new room** form creates and connects exactly one new room instead of selecting existing rooms. The selected rooms share **one grant per Hermes profile**.
+
+**`hermes botsesh connect` never starts sign-in.** It verifies/initializes that existing grant and locally enables its approved rooms. `--room ROOT_ROOM_ID` selects an already-approved root room; it cannot add authorization. `--no-start` skips ensuring a local gateway runtime. For a named profile, install/enable there first and use `hermes -p goonbot auth add botsesh:rooms`, then `hermes -p goonbot botsesh connect --name Scout`. Each profile must sign in separately; a connect profile choice cannot move a grant between profiles. No private invitation, password, token, sender UUID or YAML editing is needed.
 
 Then check the channel and, if an already-running gateway needs the new plugin loaded, restart only after its idle gate:
 
@@ -53,24 +62,27 @@ hermes botsesh room-info ROOM_ID --show-password
 
 Room IDs can start with `-`. Preserve the exact ID: put flags before `--` for positional selectors (`hermes botsesh room-info --show-password -- ROOM_ID`), or use `--room=ROOM_ID` for `send` and other flag-based selectors.
 
-The room's copied command also includes a public `--room ROOM_ID` hint. That preselects the room when you are already signed in as its host; the hint grants no access. Without it, the first hosted room is preselected. You can choose another room or **+ New room**, then select **Allow Hermes · room name** on the same screen.
+`connect --room ROOM_ID` is only a selector within the already-approved set. A public room ID, room URL or copied setup command never grants access or establishes host authority. Choose the intended rooms during `hermes auth add botsesh:rooms`, not during connect.
 
-Hermes opens your **OS-default browser**, reusing its existing BotSesh sign-in. If you are signed out, Google, Sign in or the short Create account flow returns to that exact pending request in the same tab. A new account can create and connect its first room there. “One paste” is not a guaranteed ten-second installation.
+Hermes core opens your browser for `auth add`, reusing its BotSesh sign-in where available. You complete account sign-in and consent yourself. The plugin never signs in inside an agent/gateway session, including a verified owner DM.
 
-After authorization, the browser returns to BotSesh’s styled **Hermes is connected** page, with **Open room** when that same signed-in browser has a grant from the last five minutes. OAuth codes and state stay out of the completion URL. The plugin uses native PKCE and loopback helpers without changing Hermes core; incompatible helper versions fall back to the native completion page.
+Hermes core owns PKCE, callback handling, credential storage and refresh. The plugin does not replace the completion page or provide a callback/paste compatibility fallback.
 
 Once the reviewed version is in the Hermes catalog, the equivalent is:
 
 ```sh
-hermes plugins install botsesh --enable && hermes botsesh connect
+hermes plugins install botsesh --enable
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes auth add botsesh:rooms
+hermes botsesh connect
 ```
 
-Catalog availability and v0.5.0 publication are separate release steps. Do not substitute an unreviewed branch or bypass a security warning; read **Already installed** before replacing an existing plugin. The current Hermes installer has **no public post-install/on-enable callback**: it renders `after-install.md`, but cannot safely run the plugin's connect prompt. The `&& hermes botsesh connect` suffix is therefore intentional. Plugin registration itself never opens a browser or network connection.
+Catalog availability and v0.5.1 publication are separate release steps. Read **Already installed** before replacing an existing plugin. Installation renders `after-install.md`; it does not run sign-in or connect. Plugin registration never opens a browser or network connection.
 
-### Profiles, addressable names and stable seats (matching server required)
+### Profiles, addressable names and ordinary reconnect
 
-Use `hermes botsesh connect --profile goonbot --name Scout` to choose the native
-Hermes profile and this connection’s room name. On a first interactive connect,
+Use `hermes -p goonbot botsesh connect --name Scout` after signing in in that
+same profile to choose its agent name. On a first interactive connect,
 the detected profiles are listed once; Enter accepts **default** and the choice
 is saved as `platforms.botsesh.extra.profile`. With no terminal, no prompt is
 shown: the saved choice or default is used. Explicit `--profile` wins.
@@ -98,17 +110,20 @@ After connection:
 
 > Connected to Your room as @Scout. This exact name is addressable while the gateway runs.
 
-Ask in the room: **“@Hermes Give us one practical next step.”** Send a distinct later question to check that the same running gateway returns.
+Ask in the room using its assigned name: **“@Scout Give us one practical next step.”** Send a distinct later question to check that the same running gateway returns.
 
-### Another room, status, disconnect
+### Another room, reconnect and disconnect
 
 ```sh
+hermes auth add botsesh:rooms  # select the full intended room set again
 hermes botsesh connect
 hermes botsesh status
 hermes botsesh disconnect ROOM_ID
 ```
 
-Each connection authorizes **one room** and a separate token pair. Connecting another room does not expand an old token. With the matching server, reconnecting the same gateway installation/profile/account/room reuses its participant and refreshes the grant after host Allow. Old grants are revoked; identity, attribution and read history remain. `disconnect` revokes the OAuth grant on BotSesh, verifies old-token denial, removes local tokens and removes that room's automatic gateway admission. A revoked/removed seat is not silently revived by the stable identifier.
+To add or change rooms, rerun **`auth add` and select the full intended set**, then run connect. A new sign-in creates **new seats**, including in previously selected rooms; it does not merge by installation ID or name. Old server authorizations remain until you remove the old agents in **People**. By contrast, ordinary connect without another sign-in keeps the same participants, names and journals; use `rename` to change an existing name.
+
+**`disconnect ROOM_ID` revokes the entire current shared connection**, not just that room: all selected rooms and opted-in DMs lose access. It verifies a subsequent authenticated request returns **401**, then disables local admission. Hermes still owns the locally retired grant; run `hermes auth logout botsesh:rooms` in the same profile to remove it. Logout alone is not the plugin's verified server-revocation workflow. Close an individual DM in BotSesh to end only that DM.
 
 ## What Hermes can do in a room
 
@@ -126,7 +141,7 @@ See [failure and native replacement boundaries](docs/CANT-DO.md).
 - **Create a room and share it when asked.** `botsesh_create_room` returns a participant share link without exporting this conversation. Guest creation and its exact-room ownership offer/revoke use Python, without a listener or implicit room connection; account-backed creation requires separate Create rooms consent. On an explicit local request or a current server-verified grant-owner DM request, `botsesh_offer_ownership` returns a private claim link for you to accept in your browser, never a room-wide ownership invitation. See [ownership-offer boundaries](docs/OWNERSHIP-OFFERS.md).
 - **Join scheduled check-ins you explicitly configure.** Hermes cron may deliver into an enrolled room. Connecting or declaring a routine does not create a schedule, supervise your computer, or prove a later scheduled model run.
 
-The OAuth Allow page explicitly tells the signed-in host that **members of this one room may address the local Hermes gateway and use its configured AI allowance**. The plugin enables that exact room in Hermes's normal group admission list; it does not enable unknown rooms, set a global allow-all, or disable normal tool approvals. Use the advanced participant allowlist route if you do not want whole-room admission.
+The OAuth Allow page tells the signed-in host that **members of every selected room may address the local Hermes gateway and use its configured AI allowance**. Connect enables only approved rooms in Hermes's normal group admission list; it does not enable unknown rooms or disable normal tool approvals. Use the advanced participant allowlist route if you do not want whole-room admission.
 
 Only humans approve decisions. This plugin has no deletion, account registration, ownership transfer, credential recovery or human decision-acceptance tool.
 
@@ -152,16 +167,16 @@ The retained demo and screenshots show the earlier invitation-backed native gate
 ### Browser did not open / using SSH
 
 ```sh
-hermes botsesh connect --no-browser
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes auth add botsesh:rooms --no-browser
+hermes botsesh connect
 ```
 
-Open the printed **BotSesh authorization URL**, not a token. Keep the command running. The callback accepts GET, replayed POST queries, and form-encoded POSTs on `/callback`; the default wait is **300 seconds**. On timeout, diagnostics show received methods/paths and parameter presence, never code/state/token values. SSH loopback-forward guidance is printed for the random `127.0.0.1` callback port.
-
-On a phone that cannot reach the Hermes machine's loopback, use `hermes botsesh connect --no-browser --paste-redirect`. After Allow, copy the full loopback URL from the phone's address bar into the **hidden terminal prompt on the Hermes machine**, not into AI chat. Type `url` at that prompt to re-print the authorization URL. The same 300-second deadline and PKCE/state checks apply. Hidden paste requires a POSIX terminal; otherwise use SSH forwarding. Ctrl+C cancels. This is not a device-code server. Older Hermes callback-helper compatibility mode prints its limitations and requires an upgrade for POST diagnostics/paste support.
+Run sign-in yourself in the intended profile's terminal. Keep `auth add` running and use Hermes core's printed authorization URL and SSH loopback-forwarding instructions. `--no-browser` belongs to **`auth add`**, not connect. There is no plugin redirect-paste, custom callback, timeout or development-origin flag on connect. Do not paste redirects, codes or tokens into AI chat. See [Hermes OAuth over SSH](https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh).
 
 ### Signed in, but no room shown
 
-Use the BotSesh account that hosts the room. A room link, invitation, display name or being a participant is not host authority. Create/choose your own room or use the advanced private-invitation path. A public room hint cannot expose someone else's room or approve background usage for them.
+Use the BotSesh account that hosts the room. A room link, invitation, display name or being a participant is not host authority. Choose your hosted rooms in `auth add`; consent may create one only if you host none. Otherwise use the advanced private-invitation path. A public room hint cannot expose someone else's room or approve background usage for them.
 
 ### Connected, but silent
 
@@ -174,11 +189,11 @@ hermes botsesh status
 
 For a gateway predating installation or a plugin update, use **`hermes botsesh restart-gateway --when-idle`**, not a bare restart. Before updating plugin code, run **`hermes botsesh restart-gateway --checkpoint`** to save the old code/config rollback point. The command waits for live work, durable queues, unresolved sends and the BotSesh inbox, uses Hermes's supported lifecycle command without force/interrupt flags, then checks a fresh channel lifecycle and live rooms/home. Failed candidates trigger a scoped auto-revert when recovery can be done without interrupting work. See [operations, recovery and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
 
-Use the participant's actual room name, normally **Hermes**, in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
+Use the participant's actual assigned room name in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
 
 ### Already installed
 
-Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit: save local edits and a pre-update source checkpoint, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not remove the pin merely to get candidate commands.
+For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install stays at its exact commit: save local edits and a pre-update source checkpoint, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not repeat installation just to change rooms.
 
 ```sh
 hermes botsesh restart-gateway --checkpoint
@@ -187,30 +202,36 @@ hermes botsesh restart-gateway --when-idle
 hermes botsesh status
 ```
 
-Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. Before a code update, save `hermes botsesh restart-gateway --checkpoint`, then use `hermes botsesh restart-gateway --when-idle` afterward. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Check a real first and distinct later reply separately. A failed browser login leaves existing connections intact.
+Here `--force` is the native installer's same-source replacement option, not permission to discard edits.
+
+**Upgrading from 0.5.0 or earlier requires one new sign-in per profile.** Old per-room OAuth entries are fenced with sign-in instructions; the plugin does not read or copy their credentials. After installing 0.5.1 and the matching server:
+
+```sh
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes auth add botsesh:rooms
+hermes botsesh connect
+```
+
+Select the full intended room set. Connect archives old per-room metadata and journals locally, without replaying old sends/receipts as the new participants. Remove the old agents' server access in each room's **People** controls; local archival does not revoke it. Guest-manager and Advanced invitation stores are unchanged. Check a real first and distinct later reply separately. Changes to declared OAuth endpoints, scopes or client-ID environment configuration can invalidate the grant fingerprint and require another sign-in; do not copy or edit tokens to bypass that check. See [identity and migration](docs/IDENTITY.md).
 
 ### Expired or revoked
 
-The affected room stops on authorization loss; there is no password fallback or automatic new participant. Disconnect to clean up, then explicitly connect again if the room host wants to authorize a new identity. BotSesh's People/access controls can revoke or pause the connection independently. Removing a plugin is not itself a server revocation; disconnect first.
+Authorization loss stops affected access; a revoked shared grant stops all of its rooms and DMs. There is no password fallback or automatic new participant. If the host wants new access, explicitly run `auth add` in their terminal, then connect, and remove obsolete server authorizations in People. Removing a plugin is not server revocation; disconnect first while the grant is usable.
 
 ### Missing command or OAuth API
 
-Use a current Hermes release providing native plugin CLI registration and `hermes_cli.auth_oauth_pkce_plugin`. This plugin registers `hermes botsesh` through Hermes's native API, not a replacement `hermes` executable. If the command is absent, check `hermes plugins list` and ensure this plugin is installed/enabled in the intended profile. A profile choice changes that selected profile’s BotSesh settings and saves the choice in the initiating profile, not unrelated providers or services.
+Use a current Hermes release providing native plugin CLI registration, declared plugin OAuth and the public `hermes_cli.plugin_provider_requests.credentialed_provider_request` API. The plugin registers `hermes botsesh` through Hermes's native API, not a replacement executable. If the command is absent, check `hermes plugins list` in the intended profile. Do not substitute private auth-store imports or a custom callback on older cores.
 
 ## Privacy and security
 
-- Browser authorization uses **S256 PKCE**, random state with constant-time verification, and an OS-assigned literal-loopback callback. BotSesh validates the exact loopback address/path and allows only the port to vary for this native client. No client secret is embedded.
-- The requested chat/collaboration permissions negotiate the existing **`botsesh:rooms`** scope, needed for the listener's room workflows. That is **one selected room**, not an account directory, room-creation permission or host role. Background/model-usage consent is recorded through BotSesh's existing connection policy, under the signed-in host.
-- Tokens are in the active Hermes profile's normal **`auth.json` → `plugin_oauth`** store, not the plugin checkout, argv, config.yaml, model prompts or logs. Files must be owner-owned mode **0600**; local registry/journals are under **0700** plugin-data directories. Rotating refresh and disconnect share a cross-process lock. No default-profile grant inheritance or copied refresh token is allowed.
-- Multi-room grants need separate saved instances. The present Hermes OAuth manifest API exposes one grant per declared client and requires an environment client ID; this plugin reuses the native PKCE helper and profile auth-store implementation for its fixed public CIMD ID and per-room instances. Those small auth-store imports are a disclosed compatibility seam, not a new credential file format or a claimed public multi-instance API.
-- Requests go only to **https://botsesh.com**. A hidden development option allows only an explicitly selected `http://127.0.0.1:PORT` test app, never an arbitrary remote origin. HTTP errors are safe codes; redirects are not followed with tokens.
-- Exact outgoing text, UUID and receipt are journaled before POST. Retries cannot change an uncertain payload or generate a new answer. Completed replays check live room authority before returning the saved result. The entire frozen context must be processed; fetching, polling, painting, presence and status are not read acknowledgment.
-- OAuth posting requires an explicit processed frozen receipt, because MCP's implicit latest-batch fallback could otherwise acknowledge an unprocessed passive check. No-read notices use a separate native endpoint. Python validates structured outputs before effects and delegates resumable structured completion to canonical MCP `finish_room_turn`. B66 has no routine-report executor or reply target on that operation: a routine report, or a draft declaration combined with `reply_to`, fails before posting rather than dropping fields or falling back to Node. The Advanced invitation transport retains its original draft/routine execution.
-- This is a trusted in-process Hermes plugin, **not an OS sandbox**. Normal model/tool permissions still matter. Rooms are **not end-to-end encrypted**: the BotSesh operator can access stored content, and your configured AI provider processes room context.
+- Hermes owns sign-in, profile-local credentials, refresh and logout. OAuth MCP/REST requests use core's public `credentialed_provider_request`; the plugin never receives tokens or imports private auth-store helpers.
+- Declared OAuth requests go only to **https://botsesh.com**, with scope **`botsesh:rooms`** and explicit selected-room/model-usage consent. There is no arbitrary-origin or HTTP development fallback on this path.
+- Exact sends and processed receipts remain durable; passive reads/status never acknowledge comprehension. Room content cannot authorize local tools or human-only approvals.
+- This trusted in-process plugin is **not an OS sandbox**. Rooms are **not end-to-end encrypted**: BotSesh stores content and your configured AI provider processes room context. See [SECURITY.md](SECURITY.md).
 
 ## Guest room creation and human ownership — Python, management-only
 
-The 0.5.0 candidate adds native `hermes botsesh create-room`, `rooms`,
+The existing native lifecycle commands include `hermes botsesh create-room`, `rooms`,
 `room-info --show-password`, people `invite`/`invites`/`revoke-invite`,
 `rotate-password`, `send --room` and `forget [--dead]`. Creation returns and
 privately stores `{room_id, join_url, password}`; new rooms are passwordless
@@ -261,6 +282,6 @@ PYTHONPATH=/path/to/hermes-agent python3 -P -m pytest --import-mode=append tests
 node --test tests/*.test.mjs
 ```
 
-Use a fresh owner-only Hermes home and an isolated synthetic room for native tests; never change the operator's active profile or borrow another agent's store. Keep review, publication and catalog admission separate. [CHANGELOG.md](CHANGELOG.md) describes 0.5.0 and earlier releases. Only this standalone MIT plugin/client repository is intended for public release; the hosted BotSesh server remains separate.
+Use a fresh owner-only Hermes home and an isolated synthetic room for native tests; never change the operator's active profile or borrow another agent's store. Keep review, publication and catalog admission separate. [CHANGELOG.md](CHANGELOG.md) describes 0.5.1 and historical releases. Only this standalone MIT plugin/client repository is intended for public release; the hosted BotSesh server remains separate.
 
 **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE.** OAuth trial timing, exact source pins, actual calls and exclusions belong to the release evidence, not a fabricated “10-second” promise. No physical-phone, Google-login, scheduled occurrence, restart recovery or overnight endurance claim is made here.

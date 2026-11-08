@@ -1,8 +1,11 @@
 # Operations: headless OAuth, truthful status, idle-aware restart
 
-This increment addresses the owner's **2026-11-07 goonbot field report**, items 3–5. It is not a claim of production or physical-phone verification.
+Current sign-in guidance below is for **0.5.1 declared OAuth**, requiring the
+matching `qr/catalog-oauth` server (not deployed). Status and idle-aware restart
+boundaries are unchanged. The retained field report and older fixtures are
+historical context, not proof for this candidate or a physical-phone claim.
 
-## Exact field asks
+## Historical v0.5.0 field asks (verbatim)
 
 > Callback listener answered `501` to the redirect when a client replayed the 302 as POST, then sat silently until the 180s timeout with no hint about what happened. Accept POST on /callback (or 301-redirect POST to a GET path), and on timeout print what was received.
 
@@ -14,21 +17,41 @@ This increment addresses the owner's **2026-11-07 goonbot field report**, items 
 
 > The "restart the gateway once to load the channel" note is in after-install.md, right behavior, but on a 24/7 inference box a bare "restart it normally" is how owners get an outage. Ship `hermes botsesh restart-gateway --when-idle` (drain + idle gate + auto-revert) or at minimum document the pattern. I had to write my own drain waiter (a Hermes skill template existed but wasn't discoverable from the plugin docs).
 
-## Already present in v0.4.0
+## Historical v0.5.0 scope note: already present in v0.4.0
 
 `connect --name` already selects an addressable profile-derived room name. The `botsesh_create_room` tool already exists, including Python guest creation and explicit ownership offers. These did **not** supply a `create-room` CLI, profile fan-out, idempotent reconnect identity, or idle-aware restart. Other HB050 lanes own those CLI/identity gaps; this lane does not change them or bump the release version.
 
-## Headless/phone authorization
+## Headless authorization — Hermes core
 
 ```sh
-hermes botsesh connect --no-browser
-# If browser loopback cannot reach the headless machine:
-hermes botsesh connect --no-browser --paste-redirect
+export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes auth add botsesh:rooms --no-browser
+hermes botsesh connect
 ```
 
-Default timeout: 300 seconds; `--timeout SECONDS` remains available. `/callback` accepts GET, POST replaying the query, and form-encoded POST bodies. Duplicate OAuth fields fail closed. Callback logging is disabled; diagnostics retain the latest 20 method/path + known-field presence observations, not query/body values or error descriptions.
+Run these yourself in the intended profile's terminal; use `hermes -p PROFILE`
+for both commands when named. Install/enable there first. The client ID is public,
+not a secret, but core requires it explicitly. Keep it available to sign-in and
+gateway processes. Never sign in from an agent/gateway session or owner DM.
 
-Phone mode has a hidden POSIX-terminal prompt. Type `url` to re-print the authorization URL. Paste the **current attempt's exact redirect URL**, including the random port. It verifies origin, port, path, state and duplicates before token exchange; PKCE still binds the code. Never paste into AI chat. The input reader is synchronous and restores terminal echo on success, timeout or cancellation; it cannot linger and steal a later shell command. Non-TTY and non-POSIX paste mode refuse safely. Use loopback SSH forwarding there. Cores whose private callback-helper signatures changed retain native fallback with an explicit warning; upgrade those cores for this increment's POST diagnostics/paste behavior.
+Keep `auth add` running and follow core's authorization URL and SSH loopback
+forwarding instructions. `--no-browser` belongs to core's `auth add`, not connect.
+There is no plugin callback, redirect-paste, timeout or HTTP development fallback.
+Do not paste redirects, codes or tokens into AI chat. See
+[Hermes OAuth over SSH](https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh).
+
+Consent selects 1–20 hosted rooms under one profile grant; a separate form may
+create and connect exactly one new room instead. Connect only verifies/initializes the
+existing grant and enables approved rooms. Adding rooms or migrating from
+0.5.0 needs new sign-in; select the full intended set. New sign-in creates new
+seats and leaves old server authorizations for manual People removal. Ordinary
+connect without new sign-in preserves participants/names/journals. See
+[upgrade and identity](IDENTITY.md).
+
+`disconnect ROOM_ID` revokes the **whole shared connection**, all selected rooms
+and opted-in DMs, and verifies a subsequent authenticated 401. The human can then
+remove the retired local grant with `hermes auth logout botsesh:rooms`; the
+plugin never opens the credential store or performs its own refresh/logout.
 
 ## Status and home room
 
@@ -76,7 +99,11 @@ Hermes currently exposes a live-work probe and lifecycle refusal, but **not an a
 
 Checkpoints contain Python runtime/manifest and Advanced bridge/vendor files, not a full git/installation/dependency transaction. Same-source plugin code updates are the supported rollback scope; moving install paths, changing dependencies or upgrading Hermes itself needs its own existing lifecycle/backup procedure. Source rollback leaves newly introduced, unreferenced files in place, and refuses unsafe paths. Shared source used by several profiles must be updated by its one operator/integration owner, not competing per-profile updaters.
 
-## Verification boundary
+## Historical v0.5.0 verification boundary
+
+The following retained results describe predecessor OPS code, including the
+removed custom callback/paste implementation. They are not instructions to run
+that login path or verification of v0.5.1 declared OAuth.
 
 The focused OPS suite uses real loopback GET/POST callbacks, hidden pseudo-terminal input, status/work/socket doubles, real isolated config/source restoration, read-only SQLite queue probes and simulated successful-restart/failed-candidate/recovery sequences. Regression fixtures retain the deleted/inaccessible and invalid-grant rooms and dead home: pending local work still delays restart, pre-existing dead state does not trigger rollback, a newly lost live room does, and recovery must restore the original live set. Successive connect checkpoints are restored to verify earlier rooms survive; explicit source checkpoints remain unchanged. A separate subprocess uses the installed native `python -m hermes_cli.main` CLI with isolated HOME/HERMES_HOME, **an empty PATH (no Node)** and a real local OAuth/MCP fixture: connect via POST, persist configuration, and read status back.
 

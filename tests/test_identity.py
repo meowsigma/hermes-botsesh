@@ -74,16 +74,25 @@ class SeatLifecycle(unittest.TestCase):
 
     def test_full_connect_roundtrips_are_serialized(self):
         live, peak = 0, 0
-        def connect(**kwargs):
+        room = dict(room_id='one', name='One', participant_id='bot', display_name='Scout', gateway_profile='default')
+        def rpc(binding, name, args=None):
             nonlocal live, peak
-            live += 1
-            peak = max(peak, live)
-            time.sleep(.02)
-            live -= 1
-            return {'ok': True}
-        with patch.object(self.client, '_connect', side_effect=connect):
+            if name == 'hermes_initialize':
+                live += 1
+                peak = max(peak, live)
+                time.sleep(.02)
+                return {'profile': 'default'}
+            self.assertEqual(name, 'list_rooms')
+            # End the critical section only on the second list for each connect.
+            rpc.lists += 1
+            if rpc.lists % 2 == 0:
+                live -= 1
+            return {'rooms': [room]}
+        rpc.lists = 0
+        with patch.object(self.client, 'rpc', side_effect=rpc):
             with ThreadPoolExecutor(max_workers=2) as pool:
-                self.assertEqual(list(pool.map(lambda _: self.client.connect(), range(2))), [{'ok': True}]*2)
+                results = list(pool.map(lambda _: self.client.connect(profile='default'), range(2)))
+        self.assertEqual([r['participant_id'] for r in results], ['bot', 'bot'])
         self.assertEqual(peak, 1)
 
     def test_wrong_native_profile_adapter_refuses_before_listening(self):
@@ -95,30 +104,27 @@ class SeatLifecycle(unittest.TestCase):
             self.assertFalse(asyncio.run(adapter.connect()))
         self.assertFalse(adapter._running)
 
-    def test_reconnect_three_preserves_same_seat_journal_and_only_new_grant(self):
+    def test_reconnect_three_preserves_same_seat_journal_without_renaming(self):
         self.store.update(lambda d: d['rooms']['one'].update(event_cursor={'after': 17, 'since': 'cursor'}, oauth_posts={'exact': {'complete': True}}))
         room = dict(room_id='one', name='One', participant_id='bot', display_name='goonbot', gateway_profile='goonbot')
         for index in range(3):
-            fields = {'access_token': str(index)*43, 'refresh_token': str(index+3)*43, 'expires_in': 300}
-            with patch.object(original.oauth, 'login', return_value=fields), patch.object(self.client, 'rpc', side_effect=[
-                    {'rooms': [room]}, {'participant': {'id': 'bot', 'name': 'goonbot'}}, {'rooms': [room]}]):
+            with patch.object(self.client, 'rpc', side_effect=[{'profile': 'goonbot'}, {'rooms': [room]}, {'rooms': [room]}]) as rpc:
                 saved = self.client.connect(name='goonbot', profile='goonbot')
             self.assertEqual(saved['participant_id'], 'bot')
-            self.assertEqual(len(original.oauth._rows()), 1)
-            self.assertEqual(original.oauth._rows()[0]['access_token'], fields['access_token'])
+            self.assertEqual([c.args[1] for c in rpc.call_args_list], ['hermes_initialize', 'list_rooms', 'list_rooms'])
+            self.assertEqual((saved['auth_version'], saved['oauth_id']), (2, 'rooms'))
         self.assertEqual(self.store.room('one')['event_cursor'], {'after': 17, 'since': 'cursor'})
         self.assertEqual(self.store.room('one')['oauth_posts'], {'exact': {'complete': True}})
 
     def test_mismatched_gateway_profile_denies_before_name_or_local_overwrite(self):
         room = dict(room_id='one', name='One', participant_id='bot', display_name='other', gateway_profile='foreign')
-        fields = {'access_token': 'B'*43, 'refresh_token': 'S'*43}
-        with patch.object(original.oauth, 'login', return_value=fields), patch.object(original.oauth, '_http', return_value={}) as revoke, patch.object(self.client, 'rpc', return_value={'rooms': [room]}) as rpc:
+        before = self.store.read()
+        with patch.object(self.client, 'rpc', return_value={'profile': 'foreign', 'rooms': [room]}) as rpc:
             with self.assertRaises(original.BotSeshError) as error:
                 self.client.connect(profile='goonbot')
         self.assertEqual(error.exception.code, 'gateway_identity_not_confirmed_update_server')
         self.assertEqual(rpc.call_count, 1)
-        revoke.assert_called_once()
-        self.assertEqual(original.oauth._rows()[0]['id'], 'owned')
+        self.assertEqual(self.store.read(), before)
 
     def test_gateway_install_id_stable_across_two_native_profile_scopes(self):
         from hermes_cli.config import get_hermes_home
@@ -129,7 +135,7 @@ class SeatLifecycle(unittest.TestCase):
             with identity.profile_scope('evilgoonbot'):
                 self.assertEqual(get_hermes_home(), target)
                 self.assertEqual(identity.gateway_install_id(), first)
-                self.assertEqual(original.oauth._auth_path(), target / 'auth.json')
+                self.assertEqual(original.Store().root, target / 'plugin-data/botsesh')
             self.assertEqual(get_hermes_home(), self.home)
         self.assertEqual((self.home / 'plugin-data/botsesh-identity/rooms.json').stat().st_mode & 0o777, 0o600)
 

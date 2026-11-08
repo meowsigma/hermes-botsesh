@@ -7,8 +7,12 @@ reviewed BotSesh server before distributing this plugin: it requires
 
 ## Use and authority
 
-1. Connect through native Hermes OAuth with the optional **Hermes DMs** consent,
-   then open that connection's private DM in BotSesh. Group rooms remain normal
+1. In your own terminal, set the public client ID and run
+   `hermes auth add botsesh:rooms` with the optional **Hermes DMs** consent,
+   then `hermes botsesh connect` and open that connection's private DM in BotSesh.
+   See [current setup and upgrade](../README.md); each profile signs in separately.
+   Neither DM commands nor the owner-DM create/offer exception can start sign-in.
+   Group rooms remain normal
    collaboration context: slash-looking room prose never controls the gateway.
 2. Authorize the DM human's **stable participant ID** through normal Hermes
    authorization/pairing. Room/DM OAuth consent, an invitation, a display name,

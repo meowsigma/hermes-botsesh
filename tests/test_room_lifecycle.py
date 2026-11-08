@@ -87,29 +87,29 @@ class LifecycleUnit(unittest.TestCase):
 
     def test_forget_cleans_exact_config_preserves_foreign_rooms_and_credential(self):
         other = 'O' * 32
-        self.store.update(lambda d: d['rooms'].update({other: {'room_id': other, 'active': True, 'oauth_id': 'shared', 'transport': 'oauth'}}))
-        self.store.update(lambda d: d['rooms'][ROOM].update(oauth_id='shared', transport='oauth'))
+        self.store.update(lambda d: d['rooms'].update({other: {'room_id': other, 'active': True, 'oauth_id': 'rooms', 'transport': 'oauth', 'auth_version': 2}}))
+        self.store.update(lambda d: d['rooms'][ROOM].update(oauth_id='rooms', transport='oauth', auth_version=2))
         lifecycle.remember_access(self.store, ROOM, 'https://botsesh.com/b/' + ROOM)
         cfg = {'platforms': {'botsesh': {'extra': {'group_allowed_chats': [ROOM, other]}, 'home_channel': {'chat_id': ROOM}}}}
-        with patch('hermes_cli.config.load_config', return_value=cfg), patch('hermes_cli.config.set_config_value') as set_cfg, patch('hermes_botsesh_test.oauth._save') as save:
+        with patch('hermes_cli.config.load_config', return_value=cfg), patch('hermes_cli.config.set_config_value') as set_cfg, patch('hermes_cli.plugin_provider_requests.credentialed_provider_request') as request:
             lifecycle.forget(self.client, [ROOM])
         self.assertEqual(set_cfg.call_args_list[0].args, ('platforms.botsesh.extra.group_allowed_chats', json.dumps([other])))
         self.assertEqual(set_cfg.call_args_list[1].args, ('platforms.botsesh.home_channel', '{}'))
-        save.assert_not_called()
+        request.assert_not_called()
         self.assertNotIn(ROOM, self.store.read()['rooms'])
         self.assertIn(other, self.store.read()['rooms'])
         self.assertNotIn(ROOM, lifecycle.private_store(self.store).read()['rooms'])
 
     def test_forget_dead_retains_transients_and_ordinary_forbidden(self):
         ids = ['A' * 32, 'B' * 32, 'C' * 32, 'D' * 32]
-        self.store.update(lambda d: d.update(rooms={rid: {'room_id': rid, 'transport': 'oauth', 'active': True} for rid in ids}))
+        self.store.update(lambda d: d.update(rooms={rid: {'room_id': rid, 'transport': 'oauth', 'auth_version': 2, 'active': True} for rid in ids}))
         errors = [BotSeshError('room_missing', 404), BotSeshError('room_deleted', 410), BotSeshError('invalid_grant', 400), BotSeshError('upstream_busy', 503)]
         with patch('hermes_botsesh_test.oauth.OAuthClient.call', side_effect=errors), patch.object(lifecycle, 'forget', return_value={}) as forget, contextlib.redirect_stdout(io.StringIO()):
             lifecycle.handle(argparse.Namespace(botsesh_action='forget', room=None, dead=True), self.client)
         self.assertEqual(forget.call_args.args[1], ids[:3])
-        # A failed rotating refresh removes the shared token and marks all of
-        # its rooms. Descendants must prune from that fresh durable marker.
-        self.store.update(lambda d: d.update(rooms={rid: {'room_id': rid, 'transport': 'oauth', 'active': True} for rid in ids[:2]}))
+        # A shared grant denial marks its rooms. Descendants must prune from
+        # that fresh durable marker without trying a separate sign-in.
+        self.store.update(lambda d: d.update(rooms={rid: {'room_id': rid, 'transport': 'oauth', 'auth_version': 2, 'active': True} for rid in ids[:2]}))
         def invalidate(binding, op):
             self.store.update(lambda d: [r.update(active=False, state='authorization_revoked') for r in d['rooms'].values()])
             raise BotSeshError('invalid_grant', 400)
@@ -121,12 +121,12 @@ class LifecycleUnit(unittest.TestCase):
     def test_passive_oauth_discovery_cannot_revive_a_forgotten_root(self):
         from hermes_botsesh_test.oauth import OAuthClient
         dm = 'D' * 32
-        binding = {'room_id': dm, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'oauth_root': ROOM}
+        binding = {'room_id': dm, 'origin': 'https://botsesh.com', 'oauth_id': 'rooms', 'oauth_root': ROOM, 'auth_version': 2, 'transport': 'oauth', 'participant_id': 'dm-seat'}
         self.store.update(lambda d: d.update(rooms={dm: {**binding, 'active': True}}, forgotten_rooms={ROOM: True}))
         rooms = [{'room_id': ROOM, 'participant_id': 'root-seat', 'name': 'Root', 'display_name': 'Hermes'},
                  {'room_id': dm, 'participant_id': 'dm-seat', 'name': 'DM', 'display_name': 'Hermes', 'source_room_id': ROOM, 'room_type': 'dm'}]
         oauth = OAuthClient(self.store)
-        with patch.object(oauth, 'rpc', return_value={'rooms': rooms}), patch.object(oauth, '_credential', return_value={'id':'shared','extra':{}}), patch('hermes_botsesh_test.oauth._save'):
+        with patch.object(oauth, 'rpc', return_value={'rooms': rooms}):
             oauth.discover(binding)
         self.assertNotIn(ROOM, self.store.read()['rooms'])
         self.assertIn(dm, self.store.read()['rooms'])

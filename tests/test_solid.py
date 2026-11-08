@@ -18,7 +18,7 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.client=Client(Store(Path(self.tmp.name)/'private'))
-        self.client.store.update(lambda d:d['rooms'].update({rid:{'room_id':rid,'active':True,'name':rid,'url':'https://botsesh.com/b/'+rid,'transport':'oauth'} for rid in ('a','b')}))
+        self.client.store.update(lambda d:d['rooms'].update({rid:{'room_id':rid,'active':True,'name':rid,'url':'https://botsesh.com/b/'+rid,'transport':'oauth','auth_version':2} for rid in ('a','b')}))
         platform_registry.register(PlatformEntry(name='botsesh',label='BotSesh',adapter_factory=BotSeshAdapter,check_fn=lambda:True))
         self.addCleanup(platform_registry.unregister,'botsesh')
         self.posts={};self.calls=[];self.targets={'a':[3,5],'b':[2]}

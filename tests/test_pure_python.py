@@ -49,40 +49,33 @@ class ParserParity(unittest.TestCase):
             with self.subTest(bad=bad[:30]), self.assertRaises(ValueError):
                 http_transport.decode_response(bad, 'text/event-stream', request_id='request')
 
-    def test_http_bounded_stream_no_redirect_proxy_or_error_prose(self):
-        import httpx
-        original = httpx.Client
-        requests = []
-        status, body, headers = 200, b'{"hello":"world"}', {'content-type': 'application/json'}
-        def handler(request):
-            requests.append(request)
-            return httpx.Response(status, content=body, headers=headers)
-        def client(**kwargs):
-            self.assertFalse(kwargs['follow_redirects'])
-            self.assertFalse(kwargs['trust_env'])
-            return original(**kwargs, transport=httpx.MockTransport(handler))
-        with patch('httpx.Client', side_effect=client):
-            self.assertEqual(oauth._http('https://botsesh.com', '/mcp', payload={'id': 'x'}, bearer='private'), {'hello': 'world'})
-            self.assertEqual(requests[-1].headers['authorization'], 'Bearer private')
-            status, body, headers = 429, b'{"error":"slow_down","private":"do not echo"}', {'retry-after': '2.5'}
-            with self.assertRaises(BotSeshError) as error:
-                oauth._http('https://botsesh.com', '/mcp')
-            self.assertEqual((error.exception.code, error.exception.status, error.exception.retry_after_ms), ('slow_down', 429, 2500))
-            self.assertNotIn('do not echo', str(error.exception))
-            status, body = 401, b'<html>private</html>'
-            with self.assertRaises(BotSeshError) as error:
-                oauth._http('https://botsesh.com', '/mcp')
-            self.assertTrue(error.exception.terminal)
-            status, body = 200, b'x' * (http_transport.MAX_BYTES + 1)
-            with self.assertRaises(BotSeshError) as error:
-                oauth._http('https://botsesh.com', '/mcp')
-            self.assertEqual(error.exception.code, 'response_limit')
-            status, body, headers = 302, b'', {'location': 'https://foreign.invalid'}
-            with self.assertRaises(BotSeshError):
-                oauth._http('https://botsesh.com', '/mcp')
-        for origin, path in [('https://foreign.invalid', '/mcp'), ('https://botsesh.com', '/arbitrary')]:
-            with self.assertRaises(BotSeshError):
-                oauth._http(origin, path)
+    def test_public_helper_bounded_response_retry_and_no_error_prose(self):
+        from hermes_cli.plugin_provider_requests import ProviderResponse
+        seam = 'hermes_cli.plugin_provider_requests.credentialed_provider_request'
+        with patch(seam, return_value=ProviderResponse(200, {'content-type': 'application/json'}, b'{"hello":"world"}')) as request:
+            self.assertEqual(http_transport.provider_request('https://botsesh.com', 'POST', '/mcp', payload={'id': 'x'}), {'hello': 'world'})
+            request.assert_called_once_with('rooms', 'POST', 'https://botsesh.com/mcp', json={'id': 'x'},
+                headers={'Accept': 'application/json, text/event-stream'}, timeout=35)
+        for status, body, headers, code in (
+                (429, b'{"error":"slow_down","private":"do not echo"}', {'retry-after': '2.5'}, 'slow_down'),
+                (401, b'<html>private</html>', {}, 'request_denied'),
+                (200, b'x' * (http_transport.MAX_BYTES + 1), {}, 'response_limit'),
+                (302, b'', {'location': 'https://foreign.invalid'}, 'request_denied')):
+            with self.subTest(status=status), patch(seam, return_value=ProviderResponse(status, headers, body)):
+                with self.assertRaises(BotSeshError) as error:
+                    http_transport.provider_request('https://botsesh.com', 'POST', '/mcp')
+                self.assertEqual(error.exception.code, code)
+                self.assertNotIn('private', str(error.exception))
+                self.assertNotIn('do not echo', str(error.exception))
+                if status == 429:
+                    self.assertEqual((error.exception.status, error.exception.retry_after_ms), (429, 2500))
+                if status == 401:
+                    self.assertTrue(error.exception.terminal)
+        with patch(seam) as request:
+            for origin, path in [('https://foreign.invalid', '/mcp'), ('https://botsesh.com', '/arbitrary')]:
+                with self.assertRaises(BotSeshError):
+                    http_transport.provider_request(origin, 'POST', path)
+            request.assert_not_called()
 
 
 class OAuthPython(unittest.TestCase):
@@ -92,7 +85,7 @@ class OAuthPython(unittest.TestCase):
         self.store = Store(Path(self.tmp.name) / 'private')
         self.client = Client(self.store)
         self.api = oauth.OAuthClient(self.store)
-        self.binding = {'room_id': 'one', 'participant_id': 'bot', 'transport': 'oauth', 'active': True,
+        self.binding = {'room_id': 'one', 'participant_id': 'bot', 'transport': 'oauth', 'auth_version': 2, 'active': True,
                         'url': 'https://botsesh.com/b/one', 'origin': 'https://botsesh.com'}
         self.store.update(lambda d: d['rooms'].update(one=self.binding))
         self.batch = str(uuid.uuid4())
@@ -253,15 +246,14 @@ class OAuthPython(unittest.TestCase):
 
     def test_mcp_rejection_without_http_status_is_definitive_but_malformed_result_is_not(self):
         malformed = False
-        def wire(origin, path, **kwargs):
+        def wire(origin, method, path, **kwargs):
             payload = kwargs['payload']
             if malformed:
                 return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {}}
             return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {
                 'isError': True, 'structuredContent': {'code': 'batch_stale'}}}
         with patch.object(oauth.OAuthClient, 'rpc', self.real_rpc), \
-             patch.object(oauth.OAuthClient, '_access', return_value='test-only'), \
-             patch.object(oauth, '_http', side_effect=wire):
+             patch.object(http_transport, 'provider_request', side_effect=wire):
             with self.assertRaises(BotSeshError) as error:
                 self.client.enrolled('one', 'post', **self.exact)
             self.assertTrue(error.exception.definitive)
@@ -361,7 +353,7 @@ class PagingAndCursor(unittest.IsolatedAsyncioTestCase):
     async def test_reconnect_keeps_after_and_since_not_a_read_cursor(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / 'private')
-            store.update(lambda d: d['rooms'].update(one={'room_id': 'one', 'transport': 'oauth', 'active': True}))
+            store.update(lambda d: d['rooms'].update(one={'room_id': 'one', 'transport': 'oauth', 'auth_version': 2, 'active': True}))
             client = Client(store)
             platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
             self.addCleanup(platform_registry.unregister, 'botsesh')
@@ -391,7 +383,7 @@ class PagingAndCursor(unittest.IsolatedAsyncioTestCase):
             encoded = json.dumps(value, ensure_ascii=False)
             parts = [encoded[:20], encoded[20:]]
             calls = []
-            def wire(origin, path, **kwargs):
+            def wire(origin, method, path, **kwargs):
                 payload = kwargs['payload']
                 args = payload['params']['arguments']
                 calls.append(args)
@@ -402,17 +394,17 @@ class PagingAndCursor(unittest.IsolatedAsyncioTestCase):
                 else:
                     data = {'json_fragment': parts[1], 'next_cursor': None}
                 return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {'structuredContent': data}}
-            with patch.object(oauth, '_http', side_effect=wire):
-                self.assertEqual(api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'}, token='private'), value)
+            with patch.object(http_transport, 'provider_request', side_effect=wire):
+                self.assertEqual(api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'}), value)
             self.assertEqual(calls, [{'room_id': 'one'}, {'room_id': 'one', 'cursor': 'first'}, {'room_id': 'one', 'cursor': 'second'}])
-            def loop(origin, path, **kwargs):
+            def loop(origin, method, path, **kwargs):
                 payload = kwargs['payload']
                 return {'jsonrpc': '2.0', 'id': payload['id'], 'result': {'structuredContent': {'next_cursor': 'first', 'json_fragment': '{}'}}}
-            with patch.object(oauth, '_http', side_effect=loop), self.assertRaises(BotSeshError) as error:
-                api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'}, token='private')
+            with patch.object(http_transport, 'provider_request', side_effect=loop), self.assertRaises(BotSeshError) as error:
+                api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'})
             self.assertEqual(error.exception.code, 'context_limit')
-            with patch.object(oauth, '_http', return_value={'jsonrpc': '2.0', 'id': 'foreign', 'result': {}}), self.assertRaises(BotSeshError) as error:
-                api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'}, token='private')
+            with patch.object(http_transport, 'provider_request', return_value={'jsonrpc': '2.0', 'id': 'foreign', 'result': {}}), self.assertRaises(BotSeshError) as error:
+                api.rpc({'origin': 'https://botsesh.com'}, 'catchup', {'room_id': 'one'})
             self.assertEqual(error.exception.code, 'invalid_mcp_response')
 
 

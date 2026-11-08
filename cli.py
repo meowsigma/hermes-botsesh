@@ -20,16 +20,13 @@ def setup(parser):
         'Use COMMAND --help for room selectors and explicit mutation options.'
     )
     sub = parser.add_subparsers(dest='botsesh_action', required=True, title='commands', metavar='COMMAND')
-    connect = sub.add_parser('connect', help='Sign in in your browser and approve one room')
-    connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
-    connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')
+    connect = sub.add_parser('connect', help='Enable approved rooms after hermes auth add botsesh:rooms')
     connect.add_argument('--set-home', action='store_true', help='Set home_channel to this newly connected, verified room')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
     connect.add_argument('--room', help='Public room ID hint; access still requires the signed-in host’s Allow')
     connect.add_argument('--name', help='Addressable agent name (defaults to the selected profile name)')
     connect.add_argument('--profile', help='Hermes profile for this seat; saved after connection')
-    connect.add_argument('--timeout', type=int, default=300, choices=range(15, 601), metavar='SECONDS')
-    connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
+
     status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
     status.add_argument('--set-home', metavar='ROOM_ID', help='Explicitly replace home_channel with a live, allowed room')
@@ -39,7 +36,7 @@ def setup(parser):
     restart.add_argument('--health-timeout', type=int, default=60, choices=range(1, 601), metavar='SECONDS')
     restart.add_argument('--restart-timeout', type=int, default=120, choices=range(1, 601), metavar='SECONDS')
     restart.add_argument('--checkpoint', action='store_true', help='Before updating: save private BotSesh config/plugin-source rollback point; does not restart')
-    disconnect = sub.add_parser('disconnect', help='Revoke one room connection on BotSesh')
+    disconnect = sub.add_parser('disconnect', help='Revoke this profile’s shared connection, all its rooms and DMs')
     disconnect.add_argument('room_id', nargs='?', help='Room ID; optional when there is only one OAuth connection')
     for command in ('rename', 'seats'):
         item = sub.add_parser(command, help='Rename this seat' if command == 'rename' else 'List this gateway’s seats; optionally revoke its stale duplicates')
@@ -109,10 +106,10 @@ def _handle_profile(args, profile):
             return handle_identity(args, client, oauth)
         if args.botsesh_action == 'connect':
             from .identity import configured_name, save_identity_config
-            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout,
-                                    room_hint=args.room, name=configured_name(profile, args.name), profile=profile,
-                                    **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}))
-            configure(binding)
+            binding = oauth.connect(room_hint=args.room, name=configured_name(profile, args.name), profile=profile)
+            for approved in client.store.read()['rooms'].values():
+                if approved.get('transport') == 'oauth' and approved.get('auth_version') == 2 and approved.get('active') and not approved.get('oauth_root'):
+                    configure(approved)
             save_identity_config(profile=profile, display_name=binding['display_name'])
             print(f"Connected to {binding['name']} as @{binding['display_name']}. This exact name is addressable while the gateway runs.")
             print(f'Hermes profile: {profile}. Credentials and room tools stay in that profile’s home.')
@@ -172,10 +169,14 @@ def _handle_profile(args, profile):
         grant_id = rooms[room_id]['oauth_id']
         revoked_rooms = {rid for rid, room in rooms.items() if room.get('oauth_id') == grant_id}
         set_config_value('platforms.botsesh.extra.group_allowed_chats', json.dumps([r for r in allowed if r not in revoked_rooms]))
-        print('Disconnected this OAuth connection and its consented DMs. BotSesh revocation verified; local tokens removed. Messages and attribution remain.')
+        print('Disconnected all rooms and DMs in this profile’s shared OAuth connection. BotSesh denial verified; messages and attribution remain.')
+        print('Remove the retired local grant with `hermes auth logout botsesh:rooms`.')
     except KeyboardInterrupt:
         raise SystemExit('Connection cancelled; no new room connected.') from None
     except (BotSeshError, StorageError, AuthError) as error:
+        if args.botsesh_action == 'connect' or getattr(error, 'code', '') in ('oauth_upgrade_sign_in_required', 'sign_in_required_run_hermes_auth_add_botsesh_rooms', 'oauth_client_id_missing'):
+            from .oauth import sign_in_instructions
+            print(sign_in_instructions())
         raise SystemExit(f'BotSesh: {getattr(error, "code", "private_storage_error")}. Run `hermes botsesh status` to check existing connections.') from None
 
 

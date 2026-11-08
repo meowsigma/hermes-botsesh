@@ -69,6 +69,8 @@ def record_channel(store, state, instance):
 
 
 def access_state(client, room_id, binding):
+    if binding.get('transport') == 'oauth' and binding.get('auth_version') != 2:
+        return 'oauth_upgrade_sign_in_required', False
     if not binding.get('active'):
         return binding.get('state', 'detached'), False
     if binding.get('transport') == 'guest_manager':
@@ -177,4 +179,7 @@ def print_status(report):
             print(f'  Local cleanup (does not revoke access): {r["forget_hint"]}')
     if not report['rooms']:
         print('No BotSesh rooms. Run `hermes botsesh connect`.')
+    if any(r['access'] == 'oauth_upgrade_sign_in_required' for r in report['rooms']):
+        from .oauth import sign_in_instructions
+        print('Upgrade from 0.5.0: old room authorizations are not imported. ' + sign_in_instructions())
     print_home(report['home_channel'])

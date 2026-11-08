@@ -71,9 +71,9 @@ def room_info(store, room_id, show_password=False):
 
 def _http(origin, room_id, method, operation, *, bearer, payload=None):
     import httpx
-    from .oauth import checked_origin
+    from .guest_manager import checked_guest_origin
     from .http_transport import MAX_BYTES, retry_after_ms
-    checked_origin(origin)
+    checked_guest_origin(origin)
     if (not re.fullmatch(r'[A-Za-z0-9_-]{32}', room_id)
             or not ((operation == 'people-invites' and method in ('GET', 'POST'))
                     or (operation in ('rotate-password', 'messages') and method == 'POST')
@@ -119,16 +119,12 @@ class RoomLifecycle:
             token = manager._credential(binding)['access_token']
             return _http(binding['origin'], room_id, method, operation, bearer=token, payload=payload)
         if binding.get('transport') == 'oauth':
-            from .oauth import OAuthClient
-            oauth = OAuthClient(self.store)
-            token = oauth._access(binding)
-            try:
-                return _http(binding['origin'], room_id, method, operation, bearer=token, payload=payload)
-            except BotSeshError as error:
-                if error.status != 401:
-                    raise
-                return _http(binding['origin'], room_id, method, operation,
-                             bearer=oauth._access(binding, rejected=token), payload=payload)
+            from .oauth import AUTH_VERSION
+            from .http_transport import provider_request
+            if binding.get('auth_version') != AUTH_VERSION:
+                raise BotSeshError('oauth_upgrade_sign_in_required')
+            return provider_request(binding['origin'], method,
+                '/api/agent/rooms/' + room_id + '/lifecycle/' + operation, payload=payload)
         raise BotSeshError('oauth_or_python_created_room_required')
 
     def create(self, title, purpose=None, client_id=None, origin=None):

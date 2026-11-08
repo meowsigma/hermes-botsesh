@@ -26,6 +26,21 @@ def _matches(pattern, value):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
 
+def checked_guest_origin(value):
+    """Guest-only loopback development; OAuth remains fixed to declared HTTPS."""
+    from urllib.parse import urlsplit
+    if value == DEFAULT_ORIGIN:
+        return value
+    try:
+        u = urlsplit(value)
+        if (u.scheme == 'http' and u.hostname == '127.0.0.1' and u.port
+                and u.netloc == f'127.0.0.1:{u.port}' and not u.path and not u.query and not u.fragment):
+            return value
+    except (ValueError, TypeError):
+        pass
+    raise BotSeshError('origin_denied')
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                      separators=(',', ':')).encode()).hexdigest()
@@ -34,9 +49,8 @@ def _digest(value):
 def _http(origin, method, path, *, payload=None, bearer=None):
     """Only the four existing guest/manager operations, bounded and cookie-free."""
     import httpx
-    from .oauth import checked_origin
     from .http_transport import MAX_BYTES, retry_after_ms
-    checked_origin(origin)
+    checked_guest_origin(origin)
     if not ((method == 'POST' and path == '/api/agent/rooms' and bearer is None)
             or (bearer and method == 'GET' and _matches('/api/rooms/' + ROOM_ID + '/agent-access', path))
             or (bearer and method == 'POST' and _matches('/api/rooms/' + ROOM_ID +
@@ -75,8 +89,7 @@ class GuestManagerClient:
         self.private = Store(store.credentials / 'python-guest')
 
     def create(self, name, purpose=None, client_id=None, *, origin=None, lifecycle_scopes=None):
-        from .oauth import checked_origin
-        origin = checked_origin(DEFAULT_ORIGIN if origin is None else origin)
+        origin = checked_guest_origin(DEFAULT_ORIGIN if origin is None else origin)
         if (not isinstance(name, str) or not name.strip() or len(name.strip().encode('utf-16-le')) > 160
                 or any(unicodedata.category(c) in ('Cc', 'Cf') for c in name)
                 or purpose is not None and (not isinstance(purpose, str) or len(purpose.encode('utf-16-le')) > 48000)):
@@ -175,9 +188,8 @@ class GuestManagerClient:
         return creation_result(self.store, {**{key: data[key] for key in PUBLIC_CREATE}, 'management_only': True})
 
     def _credential(self, binding):
-        from .oauth import checked_origin
         origin, room_id = binding.get('origin'), binding.get('room_id')
-        checked_origin(origin)
+        checked_guest_origin(origin)
         if (binding.get('transport') != 'guest_manager' or not _matches(ROOM_ID, room_id)
                 or binding.get('url') != origin + '/b/' + room_id):
             raise BotSeshError('identity_mismatch')

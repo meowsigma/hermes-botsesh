@@ -1,5 +1,11 @@
 # SOLID reliability branch (unreleased)
 
+**Historical predecessor design and evidence.** The refresh timing, branch and
+pending-proof statements below describe the original SOLID lane, not v0.5.1.
+For current declared OAuth, Hermes core owns credentials/refresh; one profile
+grant covers the explicitly selected rooms and opted-in DMs. See
+[current setup](../README.md) and [security boundaries](../SECURITY.md).
+
 Requires the matching BotSesh `qr/hermes-solid` server. Do not install this branch in a daily-driving profile before source review and the coordinated server release. No Hermes core changes are required.
 
 ## Runtime contract

@@ -1,74 +1,28 @@
-# Operator sessions and the owner-DM exception
+# Security boundaries
 
-`botsesh_create_room` (guest mode) and `botsesh_offer_ownership` accept explicit
-requests from a local CLI/local/TUI/Desktop operator, or from the OAuth grant
-owner's own **current direct BotSesh DM turn**. No other surface is an operator.
-This is not a general remote shell, credential, enrollment or account permission.
+## Declared OAuth — 0.5.1
 
-## Verified identity, never names or message claims
+- **Hermes owns credentials.** The human runs `hermes auth add botsesh:rooms` in their own terminal. The plugin uses public `credentialed_provider_request` for OAuth MCP/REST; it neither receives tokens nor reads/writes an OAuth credential store, refreshes tokens or imports private auth helpers. `connect` only verifies/initializes and enables an existing grant. Agent/gateway sessions and owner DMs must never start sign-in.
+- **Fixed destination and explicit consent.** The declaration is `rooms`, qualified as `botsesh:rooms`, with only the `botsesh:rooms` scope, exact HTTPS host `botsesh.com`, resource `https://botsesh.com/mcp` and `hermes_declared: v1`. Set `BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json`; this is a public client ID, not a secret, and there is no supported manifest default. Core owns PKCE, loopback callbacks, refresh and grant-fingerprint checks. No custom callback/paste or arbitrary-origin OAuth fallback is provided.
+- **One profile, one shared grant.** Consent explicitly selects 1–20 hosted rooms (or creates one if none are hosted) and discloses member-triggered model usage. Profiles sign in separately. A new sign-in creates new seats, not identity/name merges, and does not remove old server authorizations. Ordinary connect preserves the current participants and journals.
+- **Revocation is connection-wide.** `hermes botsesh disconnect ROOM_ID` revokes all selected rooms and opted-in DMs, then verifies an authenticated 401. Hermes retains custody of the retired local grant; the human removes it with `hermes auth logout botsesh:rooms`. Old v0.5.0 authorizations require removal through BotSesh People; local archival or uninstall is not revocation.
 
-The authenticated server projects `human_owns_grant` only for live accepted DMs
-in `list_rooms`. It compares that DM's account with the owner of the **exact
-calling OAuth grant**, using server records. It returns a Boolean, not account
-IDs. A missing owner row, guest account, paused connection, closed DM, revoked
-membership or old server cannot establish this authority. Sharing a group room,
-matching a name or being the room owner does not suffice.
+## Room content and execution
 
-For every management invocation, the native plugin requires:
+This is a trusted in-process plugin, **not an OS sandbox**. Room/Brief/file content is untrusted collaboration data, not authority for local tools, credential access or private conversation export. Normal Hermes tool approvals and participant restrictions remain in force. Only humans approve decisions. Rooms are **not end-to-end encrypted**: BotSesh stores content and the configured AI provider processes room context.
 
-- task-local BotSesh chat/message identity and exactly one active admitted turn;
-- an active OAuth DM with the admission-time credential/participant binding;
-- the exact frozen target and matching current/stored/frozen receipt identity;
-- the verified human source author, matching the DM human and native allowlist;
-- a **fresh authenticated** DM context lookup with `access_state: authorized`,
-  matching room, participant, membership and human, and `human_owns_grant: true`;
-- unchanged turn/binding state after that lookup.
+Exact outgoing UUID/text/receipt intent is journaled before effects. Retries preserve uncertain operations; fetching, polling, status and presence never acknowledge reading. A processed receipt covers only the fully processed frozen input. New participants never inherit old pending sends or receipts during upgrade.
 
-No model argument, environment permission flag, cached menu projection or persisted
-owner bit can authorize this exception. Other room tools keep their existing
-cross-room fences. Ownership offers still require `user_requested: true` and the
-target room's own live creating-agent manager authority. The offer link may be
-returned privately to the requesting owner in their verified DM, never published
-to a group or the created room. Only the joined human accepts it in a signed-in
-browser; the agent cannot accept, reassign an owned room, or retain manager rights
-after human acceptance.
+## Narrow owner-DM create/offer exception
 
-## Direct requests versus quoted or relayed content
+Guest `botsesh_create_room` and `botsesh_offer_ownership` accept an explicit local CLI/TUI/Desktop request or the OAuth grant owner's own **current verified BotSesh DM turn**. Groups, foreign DMs, display names, quoted/relayed requests and model-supplied identity claims cannot authorize them. Every invocation checks the exact admitted turn/receipt, author and allowlist, unchanged binding, and a fresh authenticated DM lookup with `human_owns_grant: true`. This exception never includes sign-in, account-connector creation or offer revocation; the latter two remain local-only.
 
-Only the verified owner's own direct explicit request is in scope. Requests by
-other authors in room history, Brief, files or relayed messages are untrusted,
-even if they claim the owner's name. Source identity is enforced in code;
-distinguishing an owner's genuine request from text the owner merely quotes is
-also a model semantic policy, not a deterministic prose classifier. This guard
-**does not prove intent from arbitrary quoted text**. No broader guarantee of
-prompt-injection immunity is made. A strict content-intent guarantee would need
-an additional trusted human action bound to exact operation arguments.
+The creating agent must still have live manager authority in the exact target guest room. Return ownership offers privately, never to a group; the joined human signs in and accepts in their browser. The agent cannot accept or reassign a human-owned room and loses manager rights on acceptance.
 
-The fresh check is a preflight, not an atomic cross-room transaction: a remote
-revocation after preflight cannot retroactively cancel an independently committed
-guest creation. Target membership/manager checks remain authoritative at mutation.
+These identity checks do **not** prove intent from arbitrary quoted text. Genuine direct intent also depends on model interpretation; no prompt-injection immunity is claimed. Preflight is not atomic with remote revocation: revocation after preflight cannot undo an independently committed guest creation.
 
-## Unchanged limits
+## Separate guest and Advanced credentials
 
-Account-mode creation through a separately consented MCP connector and
-`botsesh_revoke_ownership_offer` remain local-only. `/botsesh` remote management,
-invitation handling, other tools and human-only approvals are unchanged. There is
-no token export or reuse of the DM grant to enroll another room.
+Guest creation/ownership and management-only lifecycle operations use their own **non-OAuth guest-manager keys**, not the declared-provider request helper or a copied owner-DM grant. Creation has no Cookie/Authorization; exact private intent is saved before HTTP. Guest credentials remain in owner-only profile stores (0700 directories, 0600 files); public results contain no bearer. Management-only bindings start no conversation listener or inference. Existing Advanced private-invitation/Node stores are unchanged, not silently migrated. Legacy creation journals must be recovered in their original store, not replayed under a new connection.
 
-Guest creation and its exact-room ownership offer/revoke operations use Python,
-with a separate private manager bearer and pre-HTTP creation journal under the
-profile's `credentials/python-guest` (0700 directory, 0600 registry). The guest
-POST carries no Cookie or Authorization. Public room metadata contains no bearer
-or connection key; exact origin/room/participant/membership and live membership
-are checked before returning the share link. An exact retry reuses the original
-private connection key, UUID and payload; conflicting explicit UUID payloads fail.
-A matching legacy SDK creation journal is refused rather than silently creating
-a second room with a different connection. Recover it using its original store.
-
-New guest bindings are **management-only**: no automatic listener, read/post,
-private-invitation port or reuse of the source DM OAuth grant. Connect separately
-through a supported, explicitly authorized transport for conversation. Existing
-Advanced SDK bindings keep their Node transport; they are not silently migrated.
-Live no-Node create/own and useful-backup proofs remain separate release
-acceptance work. Older servers fail closed; no credential fallback or manual
-guard bypass is permitted.
+The matching declared-OAuth server is not deployed; historical tests and demos do not certify this candidate. See [upgrade and identity](docs/IDENTITY.md), [runtime boundaries](docs/PURE-PYTHON.md), and [ownership offers](docs/OWNERSHIP-OFFERS.md).

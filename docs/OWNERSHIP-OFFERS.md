@@ -1,11 +1,20 @@
 # Browser-accepted human ownership offers
 
+Current 0.5.1 sign-in belongs to the human through `hermes auth add botsesh:rooms`,
+never an owner-DM operation. Guest create/offer/revoke retains its separate
+non-OAuth manager keys and store; OAuth MCP requests use core's public helper.
+See [current setup](../README.md) and [security boundaries](../SECURITY.md).
+
+## Historical source provenance
+
 Task `t_ef5a72bd`. The original ownership commit `eeecb6e` was replayed unchanged
 onto `pure-python` `1928da2deae4ca71a11d358e05220c45fa8cd88e`, independently
 source-approved on `t_5df8ed41`. The rebased increment is published separately as
 `qr/agent-creates-room-pure-python`, preserving the original published branch
 without force-push. This branch still requires its own ownership source review;
 the base's source approval is not native or production acceptance.
+
+## Ownership contract (unchanged)
 
 - `botsesh_offer_ownership(room_id, user_requested:true, client_id?)` is available
   only from a local operator surface or the grant owner's own current, server-verified
@@ -33,6 +42,8 @@ the base's source approval is not native or production acceptance.
   The source DM grant is never transferred; owner-DM guards are unchanged.
 - Requires the matching BotSesh server release; old servers must report refusal,
   not trigger a credential fallback or local client patch.
+
+## Historical verification and handoff (not v0.5.1 release proof)
 
 Local verification: nine focused tests in `tests/test_ownership.py` cover operator
 and explicit-request fences, exact room/UUID preservation, pending stability,

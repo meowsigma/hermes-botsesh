@@ -93,6 +93,8 @@ class Store:
 
     def room(self, room_id):
         room = self.read()['rooms'].get(room_id)
+        if room and room.get('transport') == 'oauth' and room.get('auth_version') != 2:
+            raise StorageError('BotSesh 0.5.1 needs one new sign-in: run `hermes auth add botsesh:rooms`, then `hermes botsesh connect`. Old journals are preserved; remove old authorizations in BotSesh People.')
         if not room or not room.get('active'):
             raise StorageError('Room is not locally enrolled or is detached. Use /botsesh join locally.')
         return room

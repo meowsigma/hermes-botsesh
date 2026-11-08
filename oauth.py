@@ -1,28 +1,30 @@
-"""Room-scoped OAuth through Hermes PKCE and its profile credential store.
-
-No token in argv, config.yaml, tool output, or the Node invitation bridge.
-"""
+"""Hermes-owned declared OAuth. This module handles room protocol, never tokens."""
 from __future__ import annotations
 import contextlib
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
-import stat
-import unicodedata
 import time
+import unicodedata
 import uuid
-from urllib.parse import urlsplit
 
 from .client import BotSeshError
-from .storage import Store, StorageError
+from .storage import Store
 from .room_turn import parse_room_turn_output, require_client_id, is_number
 
 CLIENT_ID = 'https://botsesh.com/oauth/clients/hermes.json'
-SCOPES = ('botsesh:chat', 'botsesh:rooms')
-POOL = 'botsesh'
-MAX_BYTES = 2 * 1024 * 1024
+OAUTH_ID = 'rooms'
+AUTH_VERSION = 2
+SIGN_IN = 'hermes auth add botsesh:rooms'
+
+
+def sign_in_instructions():
+    return ('In your own terminal, in the intended Hermes profile:\n'
+            f'  export BOTSESH_OAUTH_CLIENT_ID={CLIENT_ID}\n'
+            f'  {SIGN_IN}\n'
+            'Then run `hermes botsesh connect` to enable the explicitly approved rooms. '
+            'Hermes owns sign-in, refresh and logout; this plugin never starts sign-in in a gateway or agent session.')
 
 
 def preferred_name(value=None):
@@ -42,53 +44,18 @@ def preferred_name(value=None):
 
 
 def checked_origin(value):
-    u = urlsplit(value)
-    if value == 'https://botsesh.com':
-        return value
-    # Explicit local development only, never an arbitrary HTTP/HTTPS IdP.
-    if (u.scheme == 'http' and u.hostname == '127.0.0.1' and u.port
-            and u.netloc == f'127.0.0.1:{u.port}' and not u.path and not u.query and not u.fragment):
-        return value
-    raise BotSeshError('origin_denied')
-
-
-def _auth_path():
-    from hermes_cli.config import get_hermes_home
-    return Path(get_hermes_home()) / 'auth.json'
-
-
-def _check_auth_file():
-    path = _auth_path()
-    for item in (path, *path.parents):
-        if item.is_symlink():
-            raise StorageError('Auth storage must not use symlinks.')
-    if path.exists():
-        st = path.lstat()
-        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600 or (hasattr(os, 'getuid') and st.st_uid != os.getuid()):
-            raise StorageError('Hermes auth.json must be an owner-only regular file (0600).')
-
-
-def _rows():
-    from hermes_cli.auth import _load_auth_store
-    _check_auth_file()
-    # Model pools inherit default-profile credentials. Room tokens must not.
-    section = _load_auth_store().get('plugin_oauth', {})
-    return [row for key, row in section.items() if key.startswith('botsesh:') and isinstance(row, dict)]
-
-
-def _save(row=None, *, remove=None):
-    from hermes_cli.plugin_oauth import _write_grant
-    _check_auth_file()
-    _write_grant('botsesh:' + (remove or row['id']), None if remove else row)
-    _check_auth_file()
+    # The declared provider is HTTPS-only. Local tests use a test-only HTTPS
+    # manifest/transport; production never relaxes the origin to reach a fixture.
+    if value != 'https://botsesh.com':
+        raise BotSeshError('origin_denied')
+    return value
 
 
 @contextlib.contextmanager
-def _lock(store, *, connect=False):
-    # All connect/refresh/disconnect processes share this lock. Never spend a
-    # rotating refresh token concurrently, or revive one after local disconnect.
+def _lock(store):
+    # Serialize local binding discovery/connect/disconnect, not credential refresh.
     import fcntl
-    path = store.root / ('.connect.lock' if connect else '.oauth.lock')
+    path = store.root / '.oauth.lock'
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
         Store._check(path)
@@ -98,183 +65,19 @@ def _lock(store, *, connect=False):
         os.close(fd)
 
 
-def _http(origin, path, *, form=None, payload=None, bearer=None):
-    from .http_transport import post
-    return post(origin, path, form=form, payload=payload, bearer=bearer)
-
-
-def _token_request(origin, fields):
-    result = _http(origin, '/oauth/token', form={**fields, 'client_id': CLIENT_ID, 'resource': origin + '/mcp'})
-    if result.get('scope') != 'botsesh:rooms' or result.get('token_type', '').lower() != 'bearer':
-        raise BotSeshError('unexpected_oauth_scope')
-    if not all(isinstance(result.get(k), str) and re.fullmatch(r'[A-Za-z0-9_-]{43}', result[k]) for k in ('access_token', 'refresh_token')):
-        raise BotSeshError('invalid_token_response')
-    return result
-
-
-def _make_loopback_callback_handler(expected_path, *, origin, expected_state):
-    from .oauth_callback import callback_handler
-    return callback_handler(expected_path, landing=checked_origin(origin) + '/connected?client=hermes',
-                            expected_state=expected_state)
-
-
-def _native_loopback_helpers():
-    """Check private Hermes seams before binding; older cores keep their login."""
-    import inspect
-    try:
-        from hermes_cli import auth_device_flow as flow, auth_oauth_pkce_plugin as pkce
-        # Bind the exact calls we will make, without invoking any helper. A new
-        # required argument, missing helper or uninspectable callable falls back.
-        calls = {
-            'bind': (flow._bind_loopback_callback_server, ('127.0.0.1', 0, object),
-                     {'err': None, 'bind_failed_code': 'oauth_callback_bind_failed'}),
-            'verifier': (flow._pkce_code_verifier, (), {}),
-            'challenge': (flow._pkce_code_challenge, ('verifier',), {}),
-            'hint': (flow._print_loopback_ssh_hint, ('http://127.0.0.1:1/callback',), {}),
-            'serve': (flow._serve_loopback_callback, (None, {}),
-                      {'timeout_seconds': 300, 'err': None, 'timeout_code': 'oauth_callback_timeout'}),
-            'graphical': (flow._can_open_graphical_browser, (), {}),
-            'post_token': (pkce._post_token, ('botsesh', None, {}), {'code': 'oauth_token_exchange_failed'}),
-            'err': (pkce._err, ('botsesh', 'message', 'code'), {}),
-            'validate': (pkce.validate_config, ('botsesh', None), {}),
-        }
-        for function, args, kwargs in calls.values():
-            inspect.signature(function).bind(*args, **kwargs)
-    except (ImportError, AttributeError, TypeError, ValueError):
-        return None
-    return {name: function for name, (function, _, _) in calls.items()}
-
-
-def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
-          gateway_id=None, profile=None, name=None, previous=None, paste_redirect=False):
-    from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, login as hermes_login
-    origin = checked_origin(origin)
-    cfg = OAuthPKCEConfig(client_id=CLIENT_ID, authorize_url=origin + '/oauth/authorize',
-                          token_url=origin + '/oauth/token', scopes=SCOPES,
-                          extra_authorize_params={'resource': origin + '/mcp', **({'room_hint': room_hint} if room_hint else {}),
-                              **({'gateway_id': gateway_id, 'gateway_profile': profile, 'agent_name': name} if gateway_id else {}),
-                              **({'gateway_previous_room': previous['room_id'], 'gateway_previous_participant': previous['participant_id']} if previous else {})},
-                          token_request=lambda fields: _token_request(origin, fields),
-                          redirect_path='/callback', redirect_port=0,
-                          timeout_seconds=timeout, label='BotSesh')
-    helpers = _native_loopback_helpers()
-    if helpers is None:
-        if paste_redirect:
-            raise BotSeshError('upgrade_hermes_for_no_browser_callback')
-        print('Native callback compatibility mode: upgrade Hermes for POST diagnostics and --paste-redirect support.')
-        return hermes_login('botsesh', cfg, open_browser=open_browser)
-
-    import hmac
-    import secrets
-    import webbrowser
-    from urllib.parse import urlencode
-
-    helpers['validate']('botsesh', cfg)
-    err = lambda message, code: helpers['err']('botsesh', message, code)
-    verifier = helpers['verifier']()
-    state = secrets.token_urlsafe(32)
-    handler, result = _make_loopback_callback_handler(cfg.redirect_path, origin=origin, expected_state=state)
-    server = helpers['bind']('127.0.0.1', cfg.redirect_port, handler,
-                             err=err, bind_failed_code='oauth_callback_bind_failed')
-    try:
-        redirect_uri = f'http://127.0.0.1:{server.server_address[1]}{cfg.redirect_path}'
-        params = {**cfg.extra_authorize_params, 'client_id': cfg.client_id, 'response_type': 'code',
-                  'redirect_uri': redirect_uri, 'state': state,
-                  'code_challenge': helpers['challenge'](verifier), 'code_challenge_method': 'S256',
-                  'scope': ' '.join(cfg.scopes)}
-        authorize_url = cfg.authorize_url + '?' + urlencode(params)
-        # As in native login, show the authorize URL for manual authorization.
-        # Never print the received callback query, error prose, verifier or tokens.
-        print(f'\nOpen this URL to authorize Hermes with BotSesh:\n  {authorize_url}\n')
-        print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
-        if not paste_redirect:
-            print('Phone cannot reach loopback? Re-run with --no-browser --paste-redirect for hidden URL paste and URL re-print.')
-        helpers['hint'](redirect_uri)
-        if open_browser and helpers['graphical']():
-            try:
-                webbrowser.open(authorize_url)
-            except Exception:
-                print('Could not open the browser automatically; use the URL above.')
-        from .oauth_callback import paste_callback, timeout_diagnostic
-        try:
-            callback = (paste_callback(redirect_uri=redirect_uri, authorize_url=authorize_url,
-                                       expected_state=state, timeout=timeout, err=err)
-                        if paste_redirect else
-                        helpers['serve'](server, result, timeout_seconds=timeout, err=err,
-                                         timeout_code='oauth_callback_timeout'))
-        except Exception as failure:
-            if getattr(failure, 'code', None) == 'oauth_callback_timeout':
-                timeout_diagnostic(handler.observations)
-            raise
-        if callback.get('error'):
-            # Do not reflect untrusted callback error prose into CLI logs.
-            raise err('authorization failed.', 'oauth_authorization_denied')
-        if not hmac.compare_digest(str(callback.get('state') or ''), state):
-            raise err('callback state mismatch — aborting login.', 'oauth_state_mismatch')
-        code = str(callback.get('code') or '').strip()
-        if not code:
-            raise err('callback carried no authorization code.', 'oauth_no_code')
-        return helpers['post_token']('botsesh', cfg, {
-            'grant_type': 'authorization_code', 'code': code,
-            'redirect_uri': redirect_uri, 'code_verifier': verifier,
-        }, code='oauth_token_exchange_failed')
-    except KeyboardInterrupt:
-        print('\nLogin cancelled.')
-        raise SystemExit(130)
-    finally:
-        server.server_close()  # Native serve closes too; cover pre-serve failures.
-
-
 class OAuthClient:
     def __init__(self, store=None):
         self.store = store or Store()
 
-    def _credential(self, binding):
-        row = next((r for r in _rows() if r.get('id') == binding['oauth_id']), None)
-        if not row or row.get('extra', {}).get('origin') != binding['origin'] or binding['room_id'] not in row.get('extra', {}).get('room_ids', [row.get('extra', {}).get('room_id')]):
-            raise BotSeshError('authorization_revoked', 401)
-        if row.get('extra', {}).get('client_id') != CLIENT_ID:
-            raise BotSeshError('credential_binding_denied')
-        return row
-
-    def _access(self, binding, *, rejected=None):
-        with _lock(self.store):
-            row = self._credential(binding)
-            if row.get('expires_at_ms', 0) <= int(time.time()*1000) + 45000 or rejected is not None and row['access_token'] == rejected:
-                try:
-                    result = _token_request(binding['origin'], {'grant_type': 'refresh_token', 'refresh_token': row['refresh_token']})
-                except BotSeshError as e:
-                    if e.code == 'invalid_grant':
-                        _save(remove=row['id'])
-                        def disable(data):
-                            for room in data['rooms'].values():
-                                if room.get('oauth_id') == binding['oauth_id']:
-                                    room.update(active=False, state='authorization_revoked')
-                        self.store.update(disable)
-                    raise
-                row = {**row, 'access_token': result['access_token'], 'refresh_token': result['refresh_token'],
-                       'expires_at_ms': int(time.time()*1000) + result['expires_in']*1000}
-                _save(row)
-            return row['access_token']
-
-    def rpc(self, binding, name, args=None, *, token=None):
-        bearer = token or self._access(binding)
-        payload = {
-            'jsonrpc': '2.0', 'id': uuid.uuid4().hex, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': args or {}}}
-        try:
-            value = _http(binding['origin'], '/mcp', bearer=bearer, payload=payload)
-        except BotSeshError as error:
-            if token is not None or error.status != 401:
-                raise
-            # Clock drift or a sleep/wake token expiry gets exactly one serialized
-            # refresh. A competing request's newer token is reused, not rotated.
-            value = _http(binding['origin'], '/mcp', bearer=self._access(binding, rejected=bearer), payload=payload)
+    def rpc(self, binding, name, args=None):
+        from .http_transport import provider_request
+        payload = {'jsonrpc': '2.0', 'id': uuid.uuid4().hex, 'method': 'tools/call',
+                   'params': {'name': name, 'arguments': args or {}}}
+        value = provider_request(binding['origin'], 'POST', '/mcp', payload=payload)
         if value.get('jsonrpc') != '2.0' or value.get('id') != payload['id']:
             raise BotSeshError('invalid_mcp_response')
         result = value.get('result')
         if value.get('error') or not isinstance(result, dict) or result.get('isError'):
-            # Never echo server error prose, room content or the HTTP request.
             detail = result.get('structuredContent', {}) if isinstance(result, dict) else {}
             code = detail.get('code', 'mcp_operation_denied') if isinstance(detail, dict) else 'mcp_operation_denied'
             if not isinstance(code, str) or not re.fullmatch(r'[a-z0-9_-]{1,80}', code):
@@ -291,7 +94,7 @@ class OAuthClient:
                 if cursor in seen or len(seen) >= 100:
                     raise BotSeshError('context_limit')
                 seen.add(cursor)
-                page = self.rpc(binding, 'read_tool_page', {'room_id': args.get('room_id'), 'cursor': cursor}, token=token)
+                page = self.rpc(binding, 'read_tool_page', {'room_id': (args or {}).get('room_id'), 'cursor': cursor})
                 if not isinstance(page.get('json_fragment'), str):
                     raise BotSeshError('invalid_mcp_page')
                 fragments.append(page['json_fragment'])
@@ -307,143 +110,138 @@ class OAuthClient:
                 raise BotSeshError('invalid_mcp_page')
         return data
 
-    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
-                name=None, profile=None, paste_redirect=False):
-        # Serialize complete browser enrollments separately from refresh: two
-        # concurrent callbacks must not replace a newer local grant with an old
-        # grant that the server just superseded. Refresh can continue meanwhile.
-        with _lock(self.store, connect=True):
-            return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
-                                 name=name, profile=profile, paste_redirect=paste_redirect)
-
-    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect):
+    def connect(self, *, origin='https://botsesh.com', room_hint=None, name=None, profile=None):
+        """Enable already-approved rooms, without invoking or bypassing auth add."""
         from .identity import current_profile, gateway_install_id
+        checked_origin(origin)
         profile = profile or current_profile()
-        name = preferred_name(name)  # Refuse invalid names before creating a grant.
+        name = preferred_name(name)
         if room_hint and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room_hint):
             raise BotSeshError('invalid_room_hint')
-        candidates = [b for b in self.store.read()['rooms'].values() if b.get('active') and b.get('transport') == 'oauth'
-                      and not b.get('oauth_root') and b.get('origin') == origin and (not room_hint or b['room_id'] == room_hint)]
-        previous = candidates[0] if len(candidates) == 1 else None
-        fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
-                       gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous,
-                       **({'paste_redirect': True} if paste_redirect else {}))
-        provisional = {'origin': origin}
-        try:
-            rooms = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms')
-            if not isinstance(rooms, list) or len(rooms) != 1:
-                raise BotSeshError('one_room_required')
-            room = rooms[0]
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
-                raise BotSeshError('invalid_room_binding')
-            room_id = room['room_id']
-            if room.get('gateway_profile') != profile:
+        with _lock(self.store):
+            provisional = {'origin': origin}
+            initialized = self.rpc(provisional, 'hermes_initialize', {
+                'gateway_id': gateway_install_id(), 'gateway_profile': profile})
+            if initialized.get('profile') != profile:
                 raise BotSeshError('gateway_identity_not_confirmed_update_server')
-            prior = self.store.read()['rooms'].get(room_id)
-            if prior and prior.get('active') and (prior.get('origin') != origin or prior.get('participant_id') != room['participant_id']):
-                raise BotSeshError('room_identity_changed_disconnect_first')
-            assigned = self.rpc(provisional, 'hermes_name', {'room_id': room_id, 'display_name': name, 'assign': True}, token=fields['access_token']).get('participant')
-            verified = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms', [])
-            exact = next((r for r in verified if r.get('room_id') == room_id and r.get('participant_id') == room['participant_id']), None)
-            if not assigned or assigned.get('id') != room['participant_id'] or not exact or exact.get('display_name') != assigned.get('name'):
-                raise BotSeshError('agent_name_not_confirmed')
-            room = exact
-            credential_id = uuid.uuid4().hex
-            binding = {'room_id': room_id, 'url': origin + '/b/' + room_id, 'origin': origin,
-                       'name': room['name'], 'display_name': room['display_name'],
-                       'participant_id': room['participant_id'], 'oauth_id': credential_id, 'profile': profile,
-                       'active': True, 'state': 'connected', 'transport': 'oauth'}
-            with _lock(self.store):
-                # Recheck after the browser round trip and under the shared lock.
-                current = self.store.read()['rooms'].get(room_id)
-                if current and current.get('active') and (current.get('origin') != origin or current.get('participant_id') != room['participant_id']):
-                    raise BotSeshError('room_identity_changed_disconnect_first')
+            rooms = self.rpc(provisional, 'list_rooms').get('rooms')
+            if not isinstance(rooms, list) or not rooms:
+                raise BotSeshError('no_approved_rooms_run_hermes_auth_add_botsesh_rooms')
+            for room in rooms:
+                if (not isinstance(room, dict) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', ''))
+                        or not isinstance(room.get('participant_id'), str) or not room['participant_id']
+                        or room.get('gateway_profile') != profile):
+                    raise BotSeshError('invalid_room_binding')
+            roots = [r for r in rooms if r.get('room_type') != 'dm']
+            if not roots or room_hint and not any(r['room_id'] == room_hint for r in roots):
+                raise BotSeshError('room_not_approved_run_hermes_auth_add_botsesh_rooms')
+            # Ordinary reconnect does not undo a deliberate rename. Assign only
+            # for a new participant; the server allocates collision-safe suffixes.
+            saved_rooms = self.store.read()['rooms']
+            for room in roots:
+                prior = saved_rooms.get(room['room_id'], {})
+                if prior.get('participant_id') != room['participant_id'] or prior.get('auth_version') != AUTH_VERSION:
+                    assigned = self.rpc(provisional, 'hermes_name', {
+                        'room_id': room['room_id'], 'display_name': name, 'assign': True}).get('participant')
+                    if not assigned or assigned.get('id') != room['participant_id']:
+                        raise BotSeshError('agent_name_not_confirmed')
+            verified = self.rpc(provisional, 'list_rooms').get('rooms', [])
+            by_id = {r['room_id']: r for r in verified}
+            for room in rooms:
+                if by_id.get(room['room_id'], {}).get('participant_id') != room['participant_id']:
+                    raise BotSeshError('room_identity_changed_retry_connect')
+            def enroll(data):
+                live = set(by_id)
+                for rid, saved in data['rooms'].items():
+                    if saved.get('transport') == 'oauth' and saved.get('active') and rid not in live:
+                        saved.update(active=False, state='not_in_current_authorization')
+                for rid, room in by_id.items():
+                    if rid in data.get('forgotten_rooms', {}) and rid not in {r['room_id'] for r in roots}:
+                        continue
+                    saved = data['rooms'].get(rid, {})
+                    same = saved.get('participant_id') == room['participant_id'] and saved.get('auth_version') == AUTH_VERSION
+                    if saved and not same:
+                        # Keep old pending UUIDs/receipts as recovery evidence;
+                        # never replay them as a different participant.
+                        data.setdefault('previous_oauth_bindings', {})[rid + ':' + str(uuid.uuid4())] = saved
+                    binding = {'room_id': rid, 'url': origin + '/b/' + rid, 'origin': origin,
+                               'name': room['name'], 'display_name': room['display_name'],
+                               'participant_id': room['participant_id'], 'oauth_id': OAUTH_ID,
+                               'auth_version': AUTH_VERSION, 'profile': profile,
+                               'active': True, 'state': 'connected', 'transport': 'oauth',
+                               'room_type': room.get('room_type', 'room')}
+                    if room.get('source_room_id'):
+                        binding['oauth_root'] = room['source_room_id']
+                    data['rooms'][rid] = {**(saved if same else {}), **binding}
+                    data.get('forgotten_rooms', {}).pop(rid, None)
+            self.store.update(enroll)
+            from .room_lifecycle import remember_access
+            for room in verified:
                 if room.get('password_required') is False:
-                    from .room_lifecycle import remember_access
-                    remember_access(self.store, room_id, binding['url'])
-                _save({'id': credential_id, 'provider': POOL, 'auth_type': 'oauth',
-                       'source': 'manual:loopback_pkce', 'label': 'BotSesh room', **fields,
-                       'extra': {'origin': origin, 'room_id': room_id, 'client_id': CLIENT_ID, 'scope': 'botsesh:rooms'}})
-                def replace(data):
-                    # Keep delivery journals/cursors for the SAME participant; a
-                    # grant rotation must not resend already handled messages.
-                    saved = data['rooms'].get(room_id, {})
-                    data['rooms'][room_id] = {**saved, **binding}
-                    data.get('forgotten_rooms', {}).pop(room_id, None)
-                    if saved.get('oauth_id') and saved['oauth_id'] != credential_id:
-                        for descendant in data['rooms'].values():
-                            if descendant.get('oauth_root') == room_id and descendant.get('oauth_id') == saved['oauth_id']:
-                                descendant.update(active=False, state='reconnect_required')
-                self.store.update(replace)
-                if current and current.get('oauth_id'):
-                    _save(remove=current['oauth_id'])
-
-            return binding
-        except Exception:
-            # Never leave an untracked grant after duplicate room / storage failure.
-            _http(origin, '/oauth/revoke', form={'client_id': CLIENT_ID, 'token': fields['refresh_token']})
-            raise
+                    remember_access(self.store, room['room_id'], origin + '/b/' + room['room_id'])
+            return self.store.room(room_hint or roots[0]['room_id'])
 
     def disconnect(self, room_id):
         binding = self.store.read()['rooms'].get(room_id)
-        if not binding:
+        if not binding or binding.get('transport') != 'oauth':
             raise BotSeshError('room_not_connected')
-        if binding.get('transport') != 'oauth':
-            raise BotSeshError('legacy_invitation_use_room_access_to_revoke')
+        if binding.get('auth_version') != AUTH_VERSION:
+            raise BotSeshError('legacy_authorization_remove_in_botsesh_people')
         with _lock(self.store):
-            if not binding.get('active') and binding.get('state') == 'revoked':
+            if binding.get('state') == 'revoked':
                 return
-            # A closed DM is not revocation of its still-live source grant.
-            root = self.store.read()['rooms'].get(binding.get('oauth_root'), binding)
-            row = self._credential(root)
-            _http(binding['origin'], '/oauth/revoke', form={'client_id': CLIENT_ID, 'token': row['refresh_token']})
-            # RFC7009 always returns 200; read back the exact old access before
-            # claiming revocation. A transient failure keeps credentials for retry.
+            result = self.rpc(binding, 'hermes_disconnect', {'confirm': True})
+            if result.get('revoked') is not True:
+                raise BotSeshError('revocation_not_confirmed')
             try:
-                self.rpc(binding, 'list_rooms', token=row['access_token'])
-            except BotSeshError as e:
-                if e.status != 401:
+                self.rpc(binding, 'list_rooms')
+            except BotSeshError as error:
+                if error.status != 401:
                     raise
             else:
                 raise BotSeshError('revocation_not_confirmed')
             def disable(data):
                 for room in data['rooms'].values():
-                    if room.get('oauth_id') == binding['oauth_id']:
+                    if room.get('transport') == 'oauth' and room.get('auth_version') == AUTH_VERSION:
                         room.update(active=False, state='revoked')
             self.store.update(disable)
-            _save(remove=row['id'])
 
     def discover(self, binding):
-        """Only server-authorized exact DM descendants, never names/invitations."""
+        """Only exact server-authorized memberships of the active profile grant."""
         rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
-        root = binding.get('oauth_root', binding['room_id'])
-        accepted = [room for room in rooms if room.get('room_id') == root or room.get('source_room_id') == root and room.get('room_type') == 'dm']
-        if not any(room.get('room_id') == root for room in accepted):
-            raise BotSeshError('authorization_revoked', 401)
-        for room in accepted:
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
+        for room in rooms:
+            if (not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', ''))
+                    or not room.get('participant_id')):
                 raise BotSeshError('invalid_room_binding')
         with _lock(self.store):
-            row = self._credential(binding)
-            row['extra']['room_ids'] = [room['room_id'] for room in accepted]
-            _save(row)
             def enroll(data):
-                live = set(row['extra']['room_ids'])
+                live = {room['room_id'] for room in rooms}
                 for saved in data['rooms'].values():
-                    if saved.get('oauth_id') == binding['oauth_id'] and saved['room_id'] not in live:
+                    if saved.get('transport') == 'oauth' and saved.get('auth_version') == AUTH_VERSION and saved['room_id'] not in live:
                         saved.update(active=False, state='membership_revoked')
-                for room in accepted:
-                    if room['room_id'] in data.get('forgotten_rooms', {}):
-                        continue  # Passive discovery cannot undo explicit forget.
-                    if room['room_id'] in data['rooms']:
-                        continue
+                for room in rooms:
                     rid = room['room_id']
+                    if rid in data.get('forgotten_rooms', {}):
+                        continue
+                    current = data['rooms'].get(rid)
+                    if current:
+                        # Discovery cannot re-enable an explicit detach, switch
+                        # participant identity, or replay its previous journal.
+                        if current.get('participant_id') != room['participant_id']:
+                            current.update(active=False, state='identity_changed_run_connect')
+                        continue
+                    source = room.get('source_room_id')
+                    if room.get('room_type') != 'dm' or not source:
+                        continue  # Root enrollment always requires explicit connect.
+                    root = data['rooms'].get(source, {})
+                    if not root.get('active') or root.get('auth_version') != AUTH_VERSION:
+                        continue
                     data['rooms'][rid] = {'room_id': rid, 'url': binding['origin']+'/b/'+rid, 'origin': binding['origin'],
                         'name': room['name'], 'display_name': room['display_name'], 'participant_id': room['participant_id'],
-                        'oauth_id': binding['oauth_id'], 'oauth_root': root, 'room_type': room.get('room_type', 'room'),
+                        'oauth_id': OAUTH_ID, 'auth_version': AUTH_VERSION, 'oauth_root': source, 'room_type': 'dm',
                         'active': True, 'state': 'connected', 'transport': 'oauth'}
             self.store.update(enroll)
-        return {'rooms': accepted}
+        return {'rooms': rooms}
 
     def pending(self, room_id):
         room = self.store.room(room_id)
@@ -461,8 +259,6 @@ class OAuthClient:
                 if saved['exact'] != exact:
                     raise BotSeshError('pending_send_mismatch')
                 return
-            # Recheck while holding the registry lock; concurrent gateway/tool
-            # callers may not overwrite an earlier uncertain intention.
             other = 'oauth_turns' if section == 'oauth_posts' else 'oauth_posts'
             if client_id in data['rooms'][room_id].get(other, {}):
                 raise BotSeshError('pending_send_mismatch')
@@ -480,21 +276,11 @@ class OAuthClient:
             return self.rpc(binding, name, args)
         except BotSeshError as error:
             if error.definitive:
-                # A server rejection is settled failure, not an uncertain send.
-                # Retain its exact identity/error for replay, without attesting
-                # any read or suppressing later inbox work. Unknown outcomes
-                # (including process loss after journaling) remain pending.
                 self.store.update(lambda d: d['rooms'][binding['room_id']][section][client_id].update(
                     failed={'code': error.code, 'status': error.status}))
             raise
 
     def finish(self, binding, *, output, receipt_id, client_id, processed=False):
-        """One canonical resumable room turn, not another client-side executor.
-
-        Used for explicit structured outputs only. Native prose replies keep
-        send_message's exact reply_to semantics. B66's MCP catalog has no routine
-        executor or reply_to on finish_room_turn; reject those before any effect.
-        """
         require_client_id(client_id)
         intent = parse_room_turn_output(output)
         if 'routine_report' in intent:
@@ -540,6 +326,8 @@ class OAuthClient:
         return result
 
     def call(self, binding, op, **args):
+        if binding.get('auth_version') != AUTH_VERSION:
+            raise BotSeshError('oauth_upgrade_sign_in_required')
         room_id = binding['room_id']
         if op == 'name':
             params = {'room_id': room_id}
@@ -582,7 +370,7 @@ class OAuthClient:
             value = self.rpc(binding, 'wait_for_messages', {'room_id': room_id, 'after': after, 'timeout_seconds': 25, **({'since': since} if since else {})})
             if not is_number(value.get('next_after'), -1) or not isinstance(value.get('since'), str) or not 1 <= len(value['since']) <= 256:
                 raise BotSeshError('invalid_event_cursor')
-            return value  # The adapter persists BOTH cursors, never as a read checkpoint.
+            return value
         if op == 'listener':
             if args.get('state') not in ('listening', 'stopped'):
                 raise BotSeshError('listener_state_denied')
@@ -624,9 +412,7 @@ class OAuthClient:
                            'isMentionToMe': any((m.get('participant') or {}).get('id') == binding['participant_id'] for m in mentions),
                            'isReplyToMe': ((source.get('replyPreview') or {}).get('authorParticipant') or {}).get('id') == binding['participant_id']}
                 messages.append(message)
-
             receipt_id = value['batch_id']
-            # Preserve the whole exact transport result, not a clipped summary.
             result = {'receipt_id': receipt_id, 'read_effect': 'none', 'briefing': [value],
                       'batch': {'messages': messages, 'hasMore': False, 'readCheckpoint': value['read_checkpoint'],
                                 'nextCheckpoint': value['next_checkpoint']}}
@@ -669,14 +455,10 @@ class OAuthClient:
             text = args.get('text')
             intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}})
             if 'draft_ready' in args or 'routine_report' in args:
-                # Canonical MCP finish owns resumable structured effects; never
-                # spawn the invitation SDK or silently drop a requested target.
                 if args.get('reply_to') is not None:
                     raise BotSeshError('oauth_structured_reply_target_not_supported')
                 result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'))
                 return {'client_id': client_id, 'number': result['reply_number'], 'read_effect': result['read_effect']}
-            # Native runtime notices use an explicit no-read server capability,
-            # NEVER implicit-last-batch send_message semantics.
             if args.get('processed') is not True:
                 result = self.rpc(binding, 'hermes_notice', {'room_id': room_id, 'text': text, 'client_id': client_id, **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {}), **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
                 message = result.get('message') or {}

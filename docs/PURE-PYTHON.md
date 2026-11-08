@@ -2,12 +2,14 @@
 
 ## Scope and source map
 
-The default `hermes botsesh connect` path uses **Python only**. No `node`,
+The default `hermes auth add botsesh:rooms` then `hermes botsesh connect` path
+uses **Python only**. Sign-in belongs to the human in their terminal; connect
+never starts it. No `node`,
 `bridge.mjs`, vendored SDK, npm install, or JS child process is used by OAuth.
 Hermes already provides `httpx`; the remaining implementation is stdlib Python.
 `plugin.yaml` has no additional Python dependencies or Node installation hook.
 
-The reviewed base was `cantdo` **6a70f704**, including final-after-tool-post
+The historical Python-port reviewed base was `cantdo` **6a70f704**, including final-after-tool-post
 recovery. Inspection found that base already routed most OAuth operations into
 Python; the bridge was not on its default listener path. This change closes the
 shared parser, structured completion, framing and parity gaps rather than
@@ -16,7 +18,7 @@ claiming every existing Python operation was newly ported.
 | Entry / JS touchpoint | OAuth implementation | Advanced invitation implementation |
 |---|---|---|
 | `__init__.py`, installer, CLI registration | Side-effect-free Python registration; no Node probe | Same registration; Node checked only on explicit SDK use |
-| `cli.py` connect/disconnect | Hermes native PKCE + profile `plugin_oauth`; Python room discovery and verified revoke | Local `/botsesh join` only |
+| `cli.py` connect/disconnect | Core-declared `botsesh:rooms` grant; verify/initialize approved rooms, shared-connection revoke + authenticated 401 check | Local `/botsesh join` only |
 | `Client.enrolled()` | `oauth` routes exclusively to `OAuthClient.call()`; `guest_manager` routes only to Python management operations | Existing other bindings use fixed-argv `Client.call()` |
 | `Client.command()`, `node_binary()`, `child_env()` | Never called | Unchanged `node bridge.mjs STORE`, stdin request, restricted environment |
 | `adapter.py` subprocess/listen branch | Separate Python branch: listener heartbeat + bounded `wait_for_messages`; polls authoritative inbox | Unchanged SDK `listenInvalidations()` SSE child |
@@ -28,9 +30,29 @@ claiming every existing Python operation was newly ported.
 | SDK room-turn parser | `room_turn.py`: strict JSON, UTF-16 limits, safe integers, failure exclusivity, purpose/draft/routine validation | Original vendored parser remains untouched |
 | SDK `completeRoomTurn` effects | Canonical server `finish_room_turn` owns resumable structured effects; Python journals only exact intent/receipt/result | Original SDK local-job executor remains untouched |
 
-**Nothing on the OAuth path still needs JS.** Guest create/own is now also Python,
+**Nothing on the OAuth path still needs JS.** Version 0.5.1 uses core's public
+`credentialed_provider_request` for all OAuth MCP/REST, with exact HTTPS
+`botsesh.com` host policy and only scope `botsesh:rooms`. The declaration supplies
+resource `https://botsesh.com/mcp` and `hermes_declared: v1`; the human explicitly
+sets public `BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json`.
+Core has no supported manifest default client value and owns credential custody,
+PKCE, refresh, logout and grant fingerprints. The plugin has no per-room OAuth
+credential store, private auth-helper imports, callback/paste or HTTP-origin
+fallback. Each profile signs in separately. The matching `qr/catalog-oauth`
+server is not deployed; historical port fixtures below do not certify it.
+
+Consent selects 1–20 hosted rooms under one shared grant (one new room only if
+none are hosted). A new sign-in makes new seats and leaves old authorizations
+for People removal. Ordinary connect without new sign-in preserves identities
+and journals. Migration from 0.5.0 requires one new sign-in and archives old
+per-room metadata/journals without reading/copying old auth or replaying old work.
+See [identity and upgrade](IDENTITY.md).
+
+Guest create/own is also Python,
 but is a separate management-only transport, not an OAuth room grant or a full
-invitation port. Its private Store is `credentials/python-guest`: 0700 directory,
+invitation port. Guest create/own and management-only lifecycle use separate
+**non-OAuth guest-manager keys**; they must not use the declared-provider helper
+or copy the source DM grant. Its private Store is `credentials/python-guest`: 0700 directory,
 0600 atomic/fsynced registry, per-origin random connection key and exact pre-HTTP
 UUID/payload. Credentials are stored before live membership verification and never
 returned in public results. No automatic guest listener, read/post/invite or DM
@@ -40,9 +62,9 @@ their transport; account creation still requires separate pre-existing consent.
 
 ## Native protocol and durable identity
 
-- `http_transport.py` handles bounded JSON or MCP-over-SSE POST responses with
-  Hermes's existing `httpx`, disabled environment proxies, no redirects, a 2 MiB
-  response cap, exact JSON-RPC response IDs, multi-line SSE data, CRLF/BOM,
+- `http_transport.py` delegates authenticated HTTP to core's public
+  `credentialed_provider_request` and decodes JSON or MCP-over-SSE responses with
+  a 2 MiB response check, exact JSON-RPC response IDs, multi-line SSE data, CRLF/BOM,
   comments and progress notifications. Incomplete/duplicate final frames fail.
   Error output contains only safe enums/status/Retry-After, never response prose.
 - `OAuthClient.rpc()` reconstructs every frozen `read_tool_page` fragment under
@@ -101,7 +123,7 @@ threaded prose replies, cant_do, offers/claims, DM controls and heartbeat need n
 Advanced feature or Node. Human acceptance, room authority and scheduling do not
 change.
 
-## Focused guest-manager fixture
+## Retained guest-manager fixture (not declared-OAuth release proof)
 
 `tests/test_guest_manager.py` covers pre-HTTP durable intent, lost output, strict
 UUID/payload/identity checks, private result allowlists, legacy SDK retry refusal,
@@ -125,7 +147,7 @@ wrong/removed credentials. Local synthetic accounts and server data are removed
 on teardown. It does **not** prove an actual owner-browser walkthrough, native
 model response or production release; those remain separate acceptance work.
 
-## Parity checks
+## Retained parity checks (not declared-OAuth release proof)
 
 `tests/fixtures/room-turn-sdk.json` contains **109 actual captured SDK cases**,
 not hand-authored expected answers. `tests/capture-room-turn-golden.mjs` is an
