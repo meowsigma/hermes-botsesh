@@ -229,6 +229,8 @@ SCHEMAS += [
 
 
 def register_tools(ctx):
+    from .terminal_turn import settled_turn
+    ctx.register_hook('post_tool_call', settled_turn)
     from .task_failure import cant_do, claim_takeover
     handlers = [lambda args, **kw: create_room(args, ctx), lambda args, **kw: invite(args, ctx), lambda args, **kw: cant_do(args['reason'], args.get('partial_notes')), lambda args, **kw: claim_takeover(args['reason'], args.get('processed')), lambda args, **kw: rooms(args, ctx), lambda args, **kw: read(args, ctx), lambda args, **kw: post(args, ctx)]
     handlers.extend([lambda args, **kw: offer_ownership(args, ctx), lambda args, **kw: revoke_ownership_offer(args, ctx)])

@@ -444,7 +444,11 @@ class IsolatedNativeCli(unittest.TestCase):
             fixture_store.update(lambda d:d['rooms'].update(dead={'room_id':'dead','name':'Dead','active':False,'state':'deleted','transport':'oauth'}))
             empty=Path(tmp)/'empty-path'; empty.mkdir()
             env={k:v for k,v in os.environ.items() if not (k.startswith(('HERMES_','OPENAI_','ANTHROPIC_','OPENROUTER_','BOTSESH_')) or k in ('PYTHONPATH','PYTHONHOME'))}
-            env.update(HERMES_HOME=str(home),HOME=tmp,PATH=str(empty),PYTHONUNBUFFERED='1',NO_COLOR='1')
+            import hermes_cli
+            # A prepared dependency-only interpreter need not install this source
+            # checkout. Pin the fixture child to the same actual core under test.
+            env.update(HERMES_HOME=str(home),HOME=tmp,PATH=str(empty),PYTHONUNBUFFERED='1',NO_COLOR='1',
+                       PYTHONPATH=str(Path(hermes_cli.__file__).resolve().parent.parent))
             self.assertIsNone(shutil.which('node',path=env['PATH']))
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
             origin=f'http://127.0.0.1:{server.server_port}'
