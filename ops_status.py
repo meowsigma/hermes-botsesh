@@ -22,7 +22,8 @@ def gateway_snapshot():
     try:
         from gateway.status import (resolve_gateway_liveness, read_runtime_status,
                                     runtime_status_is_stale, get_process_start_time,
-                                    profile_platforms_from_multiplexer)
+                                    profile_platforms_from_multiplexer,
+                                    multiplexer_liveness_for_profile)
         liveness = resolve_gateway_liveness(profile_dir=home, use_cache=False)
         answer.update(running=liveness.running if not liveness.probe_error else None,
                       pid=liveness.pid, channel='down' if not liveness.running and not liveness.probe_error else 'unknown')
@@ -30,6 +31,13 @@ def gateway_snapshot():
             return answer
         multiplexed = liveness.source == 'multiplexer'
         live = liveness.runtime if multiplexed else read_runtime_status(home / 'gateway_state.json')
+        if not multiplexed:
+            # The public PID probe may itself resolve a served profile to its
+            # host PID. In that case the ladder says 'pid', not 'multiplexer',
+            # yet only the host owns gateway_state.json.
+            served = multiplexer_liveness_for_profile(home)
+            if served is not None and served[0] == liveness.pid:
+                multiplexed, live = True, served[1]
         if (not isinstance(live, dict) or live.get('pid') != liveness.pid
                 or live.get('start_time') is None
                 or live['start_time'] != get_process_start_time(liveness.pid)):
