@@ -32,8 +32,8 @@ def preferred_name(value=None):
             value = current_profile_name()
         except (ImportError, AttributeError):
             value = os.environ.get('HERMES_PROFILE_NAME') or os.environ.get('HERMES_PROFILE')
-        if not value or value in ('custom', 'default'):
-            value = 'Hermes'
+        if not value or value == 'custom':
+            value = 'default'
     if (not isinstance(value, str) or not value.strip()
             or len(value.encode('utf-16-le')) > 80
             or '@' in value or any(unicodedata.category(c) in ('Cc', 'Cf') for c in value)):
@@ -84,11 +84,11 @@ def _save(row=None, *, remove=None):
 
 
 @contextlib.contextmanager
-def _lock(store):
+def _lock(store, *, connect=False):
     # All connect/refresh/disconnect processes share this lock. Never spend a
     # rotating refresh token concurrently, or revive one after local disconnect.
     import fcntl
-    path = store.root / '.oauth.lock'
+    path = store.root / ('.connect.lock' if connect else '.oauth.lock')
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
         Store._check(path)
@@ -180,12 +180,14 @@ def _native_loopback_helpers():
     return {name: function for name, (function, _, _) in calls.items()}
 
 
-def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None):
+def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, gateway_id=None, profile=None, name=None, previous=None):
     from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, login as hermes_login
     origin = checked_origin(origin)
     cfg = OAuthPKCEConfig(client_id=CLIENT_ID, authorize_url=origin + '/oauth/authorize',
                           token_url=origin + '/oauth/token', scopes=SCOPES,
-                          extra_authorize_params={'resource': origin + '/mcp', **({'room_hint': room_hint} if room_hint else {})},
+                          extra_authorize_params={'resource': origin + '/mcp', **({'room_hint': room_hint} if room_hint else {}),
+                              **({'gateway_id': gateway_id, 'gateway_profile': profile, 'agent_name': name} if gateway_id else {}),
+                              **({'gateway_previous_room': previous['room_id'], 'gateway_previous_participant': previous['participant_id']} if previous else {})},
                           token_request=lambda fields: _token_request(origin, fields),
                           redirect_path='/callback', redirect_port=0,
                           timeout_seconds=timeout, label='BotSesh')
@@ -325,11 +327,24 @@ class OAuthClient:
                 raise BotSeshError('invalid_mcp_page')
         return data
 
-    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, name=None):
+    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, name=None, profile=None):
+        # Serialize complete browser enrollments separately from refresh: two
+        # concurrent callbacks must not replace a newer local grant with an old
+        # grant that the server just superseded. Refresh can continue meanwhile.
+        with _lock(self.store, connect=True):
+            return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint, name=name, profile=profile)
+
+    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile):
+        from .identity import current_profile, gateway_install_id
+        profile = profile or current_profile()
         name = preferred_name(name)  # Refuse invalid names before creating a grant.
         if room_hint and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room_hint):
             raise BotSeshError('invalid_room_hint')
-        fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint)
+        candidates = [b for b in self.store.read()['rooms'].values() if b.get('active') and b.get('transport') == 'oauth'
+                      and not b.get('oauth_root') and b.get('origin') == origin and (not room_hint or b['room_id'] == room_hint)]
+        previous = candidates[0] if len(candidates) == 1 else None
+        fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
+                       gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous)
         provisional = {'origin': origin}
         try:
             rooms = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms')
@@ -339,9 +354,11 @@ class OAuthClient:
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
                 raise BotSeshError('invalid_room_binding')
             room_id = room['room_id']
+            if room.get('gateway_profile') != profile:
+                raise BotSeshError('gateway_identity_not_confirmed_update_server')
             prior = self.store.read()['rooms'].get(room_id)
-            if prior and prior.get('active'):
-                raise BotSeshError('room_already_connected_disconnect_first')
+            if prior and prior.get('active') and (prior.get('origin') != origin or prior.get('participant_id') != room['participant_id']):
+                raise BotSeshError('room_identity_changed_disconnect_first')
             assigned = self.rpc(provisional, 'hermes_name', {'room_id': room_id, 'display_name': name, 'assign': True}, token=fields['access_token']).get('participant')
             verified = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms', [])
             exact = next((r for r in verified if r.get('room_id') == room_id and r.get('participant_id') == room['participant_id']), None)
@@ -351,17 +368,28 @@ class OAuthClient:
             credential_id = uuid.uuid4().hex
             binding = {'room_id': room_id, 'url': origin + '/b/' + room_id, 'origin': origin,
                        'name': room['name'], 'display_name': room['display_name'],
-                       'participant_id': room['participant_id'], 'oauth_id': credential_id,
+                       'participant_id': room['participant_id'], 'oauth_id': credential_id, 'profile': profile,
                        'active': True, 'state': 'connected', 'transport': 'oauth'}
             with _lock(self.store):
                 # Recheck after the browser round trip and under the shared lock.
                 current = self.store.read()['rooms'].get(room_id)
-                if current and current.get('active'):
-                    raise BotSeshError('room_already_connected_disconnect_first')
+                if current and current.get('active') and (current.get('origin') != origin or current.get('participant_id') != room['participant_id']):
+                    raise BotSeshError('room_identity_changed_disconnect_first')
                 _save({'id': credential_id, 'provider': POOL, 'auth_type': 'oauth',
                        'source': 'manual:loopback_pkce', 'label': 'BotSesh room', **fields,
                        'extra': {'origin': origin, 'room_id': room_id, 'client_id': CLIENT_ID, 'scope': 'botsesh:rooms'}})
-                self.store.update(lambda d: d['rooms'].update({room_id: binding}))
+                def replace(data):
+                    # Keep delivery journals/cursors for the SAME participant; a
+                    # grant rotation must not resend already handled messages.
+                    saved = data['rooms'].get(room_id, {})
+                    data['rooms'][room_id] = {**saved, **binding}
+                    if saved.get('oauth_id') and saved['oauth_id'] != credential_id:
+                        for descendant in data['rooms'].values():
+                            if descendant.get('oauth_root') == room_id and descendant.get('oauth_id') == saved['oauth_id']:
+                                descendant.update(active=False, state='reconnect_required')
+                self.store.update(replace)
+                if current and current.get('oauth_id'):
+                    _save(remove=current['oauth_id'])
             return binding
         except Exception:
             # Never leave an untracked grant after duplicate room / storage failure.

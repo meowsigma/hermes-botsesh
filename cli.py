@@ -17,13 +17,23 @@ def setup(parser):
     connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
     connect.add_argument('--room', help='Public room ID hint; access still requires the signed-in host’s Allow')
-    connect.add_argument('--name', help='Addressable agent name (defaults to the Hermes profile name, then Hermes)')
+    connect.add_argument('--name', help='Addressable agent name (defaults to the selected profile name)')
+    connect.add_argument('--profile', help='Hermes profile for this seat; saved after connection')
     connect.add_argument('--timeout', type=int, default=180, choices=range(15, 601), metavar='SECONDS')
     connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
     status = sub.add_parser('status', help='Check access, per-room gateway health, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
     disconnect = sub.add_parser('disconnect', help='Revoke one room connection on BotSesh')
     disconnect.add_argument('room_id', nargs='?', help='Room ID; optional when there is only one OAuth connection')
+    for command in ('rename', 'seats'):
+        item = sub.add_parser(command, help='Rename this seat' if command == 'rename' else 'List this gateway’s seats; optionally revoke its stale duplicates')
+        item.add_argument('--profile', help='Hermes profile (otherwise use the saved choice)')
+        item.add_argument('--room', help='Room ID; required if several rooms are connected')
+        if command == 'rename':
+            item.add_argument('name', help='Exact addressable name')
+        else:
+            item.add_argument('--prune', action='store_true', help='Revoke only verified ghosts belonging to this gateway/account')
+            item.add_argument('--yes', action='store_true', help='Explicitly confirm ghost revocation without a prompt')
 
 
 def configure(binding):
@@ -44,22 +54,55 @@ def configure(binding):
     tools = cfg.get('platform_toolsets', {}).get('botsesh', [])
     if 'botsesh' not in tools:
         set_config_value('platform_toolsets.botsesh', json.dumps([*tools, 'botsesh']))
+    enabled = cfg.get('plugins', {}).get('enabled', [])
+    if 'botsesh' not in enabled:
+        set_config_value('plugins.enabled', json.dumps([*enabled, 'botsesh']))
 
 
 def handle(args):
+    from .identity import choose_profile, profile_scope, save_profile
+    from hermes_cli.config import get_hermes_home
+    starting_home = get_hermes_home()
+    try:
+        explicit = getattr(args, 'profile', None) if args.botsesh_action in ('connect', 'rename', 'seats') else None
+        profile = choose_profile(explicit, interactive=args.botsesh_action == 'connect')
+        with profile_scope(profile) as home:
+            if args.botsesh_action == 'connect' and home != starting_home:
+                from .identity import require_profile_install
+                require_profile_install(home)
+            _handle_profile(args, profile)
+        if args.botsesh_action == 'connect':
+            save_profile(profile)
+    except BotSeshError as error:
+        raise SystemExit(f'BotSesh: {error.code}.') from None
+
+
+def _handle_profile(args, profile):
     from hermes_cli.auth_constants import AuthError
     try:
         client = Client()
         oauth = OAuthClient(client.store)
+        if args.botsesh_action in ('rename', 'seats'):
+            from .identity import handle_identity
+            return handle_identity(args, client, oauth)
         if args.botsesh_action == 'connect':
-            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room, name=args.name)
+            from .identity import configured_name, save_identity_config
+            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room, name=configured_name(profile, args.name), profile=profile)
             configure(binding)
+            save_identity_config(profile=profile, display_name=binding['display_name'])
             print(f"Connected to {binding['name']} as @{binding['display_name']}. This exact name is addressable while the gateway runs.")
+            print(f'Hermes profile: {profile}. Credentials and room tools stay in that profile’s home.')
+            try:
+                seats = oauth.rpc(binding, 'hermes_seats', {'room_id': binding['room_id']}).get('seats', [])
+                if any(s.get('ghost') for s in seats):
+                    print('Stale seats detected. Review `hermes botsesh seats`, then `hermes botsesh seats --prune`.')
+            except BotSeshError:
+                print('Seat inventory unavailable; check `hermes botsesh seats` later.')
             print('This room’s members may address Hermes. Your existing model account and tool approvals apply.')
             if not args.no_start:
                 binary = shutil.which('hermes')
                 if binary:
-                    result = subprocess.run([binary, 'gateway', 'ensure', '--json', '--timeout', '30'],
+                    result = subprocess.run([binary, '-p', profile, 'gateway', 'ensure', '--json', '--timeout', '30'],
                                             capture_output=True, text=True, timeout=40)
                     if result.returncode == 0:
                         print('Hermes gateway runtime is ready. Send a question mentioning ' + binding['display_name'] + '.')

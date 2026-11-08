@@ -27,7 +27,7 @@ class NameTests(unittest.TestCase):
             self.assertEqual(oauth.preferred_name('Scout'), 'Scout')
         for profile in ('custom', 'default', None):
             with self.subTest(profile=profile), patch('hermes_cli.profiles.current_profile_name', return_value=profile):
-                self.assertEqual(oauth.preferred_name(), 'Hermes')
+                self.assertEqual(oauth.preferred_name(), 'default')
         # Explicit --name is authored input, even if it matches a profile sentinel.
         self.assertEqual(oauth.preferred_name('default'), 'default')
         for value in ('', 'a'*41, '@Scout', 'Bad\u200bname', 'line\nfeed', '🪴'*21):
@@ -35,12 +35,12 @@ class NameTests(unittest.TestCase):
                 oauth.preferred_name(value)
 
     def test_connect_uses_scoped_server_assignment_and_readback(self):
-        room = dict(room_id='two', name='Garden', participant_id='second', display_name='Hermes 2')
+        room = dict(room_id='two', name='Garden', participant_id='second', display_name='Hermes 2', gateway_profile='default')
         assigned = dict(room, display_name='Scout')
         fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
         with patch.object(oauth, 'login', return_value=fields), patch.object(self.client, 'rpc', side_effect=[
                 {'rooms':[room]}, {'participant':{'id':'second','name':'Scout'}}, {'rooms':[assigned]}]) as rpc:
-            result = self.client.connect(name='Scout')
+            result = self.client.connect(name='Scout', profile='default')
         self.assertEqual(result['display_name'], 'Scout')
         self.assertEqual(self.store.room('two')['display_name'], 'Scout')
         self.assertEqual(rpc.call_args_list[1].args[1:], ('hermes_name', {'room_id':'two', 'display_name':'Scout', 'assign':True}))
@@ -60,9 +60,10 @@ class NameTests(unittest.TestCase):
     def test_unconfirmed_connect_revokes_new_grant_without_persisting(self):
         fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
         with patch.object(oauth,'login',return_value=fields), patch.object(oauth,'_http',return_value={}) as http, patch.object(self.client,'rpc',side_effect=[
-                {'rooms':[dict(room_id='two',name='Garden',participant_id='second',display_name='Hermes')]},
+                {'rooms':[dict(room_id='two',name='Garden',participant_id='second',display_name='Hermes',gateway_profile='default')]},
                 {'participant':{'id':'second','name':'Scout'}}, {'rooms':[]}]):
-            with self.assertRaises(original.BotSeshError):self.client.connect(name='Scout')
+            with self.assertRaises(original.BotSeshError) as error:self.client.connect(name='Scout', profile='default')
+            self.assertEqual(error.exception.code, 'agent_name_not_confirmed')
         self.assertEqual(http.call_args.args, ('https://botsesh.com','/oauth/revoke'))
         self.assertNotIn('two',self.store.read()['rooms'])
         self.assertEqual(len(oauth._rows()),1)

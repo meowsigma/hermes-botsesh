@@ -100,6 +100,11 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         self.poll_seconds = max(5, min(300, int((config.extra or {}).get('poll_seconds', poll_seconds))))
 
     async def connect(self, *, is_reconnect=False):
+        from .identity import current_profile
+        selected = (self.config.extra or {}).get('profile')
+        if selected and selected != current_profile():
+            logger.error('BotSesh profile choice belongs to another native home; run connect for the selected profile. No seats loaded in the wrong runtime.')
+            return False
         self._running = True
         self._tasks.append(asyncio.create_task(self._supervise()))
         self._mark_connected()
