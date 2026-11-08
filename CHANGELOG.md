@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.5.1 — Hermes-declared OAuth (source candidate)
+## 0.5.1 — Hermes-managed sign-in (catalog build)
 
-Requires the matching **`qr/catalog-oauth` server, not yet deployed**. This entry does not claim publication, catalog admission or production verification.
+This is the build submitted to the Hermes plugin catalog. Hermes owns sign-in, token storage and refresh; the plugin uses only public Hermes APIs (`hermes plugins validate`: ok, 0 warnings). It includes every user-facing fix in 0.5.2 (owner DMs, honest status, profile prompt, one reply, no wasted calls after "can't do", manual restart).
 
-**Core prerequisite:** stock upstream originally refused this platform plugin's own client-ID declaration. Real native sign-in now passes without a client-ID export with the separate supported fixes in Hermes PR #151209 at `1d1280a0071c795aaea313271e124366becd3e19` (admission, profile-copy ownership and public manifest default); no private-credential bypass is shipped. The fix must reach the user's Hermes release before ordinary 0.5.1 installation is claimed supported. The original failure remains in `tests/NATIVE-DECLARED-OAUTH.md`.
+**Requires Hermes with [NousResearch/hermes-agent#151209](https://github.com/NousResearch/hermes-agent/pull/151209)** (platform plugins' own OAuth client variables, same-plugin ownership across profiles, and a public `client_id_default`). Until that ships in a Hermes release, stock installs should stay on 0.5.2 from `main`; this build is published on the `release-0.5.1` branch and tag only.
+
+Verified before release on botsesh.com with Hermes at that PR's head (`1d1280a0`), a fresh install with no Node, two named profiles and a real model: cold `hermes auth add botsesh:rooms` with nothing to export; the profile prompt → named seat; truthful status; the documented restart; the owner DM plant-swap room → link in 18.4 s → ownership claim; a two-agent handoff with the live Hacker News headline; a forced token refresh; and logout → the one-command sign-in hint.
 
 - **Public plugin APIs only:** replace all 17 non-OAuth private imports. Profiles use public home APIs and documented profile metadata/layout; status uses public liveness/writer/freshness-checked runtime readers; approval uses the public request ID and request-bound resolver; clarify imports only documented names. No lint suppression or allowlist widening.
 - **Explicit unsupported extensions:** `/` is documented shortcuts, with `/commands` for the live full list. Model selection and slash confirmations use the real native text path; custom model/slash-confirm buttons are off. Complete public idle-work/admissions probes are missing, so automatic idle restart/auto-revert refuses; private checkpoints remain. Presentation uses plugin-owned English, not private language-pack imports. See README **Needs a Hermes API** and `docs/PUBLIC-API.md`.
