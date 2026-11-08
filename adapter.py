@@ -103,6 +103,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         self._running = True
         self._tasks.append(asyncio.create_task(self._supervise()))
         self._mark_connected()
+        from .ops_status import record_channel
+        record_channel(self.client.store, 'up', self._instance)
         return True
 
     async def disconnect(self):
@@ -117,6 +119,8 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         await asyncio.gather(*self._tasks, *self._rooms.values(), return_exceptions=True)
         self._rooms.clear()
         self._mark_disconnected()
+        from .ops_status import record_channel
+        record_channel(self.client.store, 'down', self._instance)
 
     async def _supervise(self):
         attempt = 0
@@ -184,6 +188,9 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                         logger.warning('BotSesh listener heartbeat unconfirmed (%s); durable inbox remains active.', error.code)
                     result = await asyncio.to_thread(self.client.enrolled, room_id, 'wait', **cursor)
                     health(self.client.store, room_id, last_event=time.time(), stream='connected')
+                    if (result['next_after'] > cursor.get('after', -1)
+                            or cursor.get('since') and result['since'] != cursor['since']):
+                        health(self.client.store, room_id, last_received_event=time.time())
                     self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor={'after': result['next_after'], 'since': result['since']}))
                     changed.set()
                     attempt = 0

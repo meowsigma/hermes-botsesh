@@ -112,7 +112,9 @@ The retained demo and screenshots show the earlier invitation-backed native gate
 hermes botsesh connect --no-browser
 ```
 
-Open the printed **BotSesh authorization URL**, not a token. Keep the command running. The native Hermes flow binds a random port on `127.0.0.1` and prints SSH loopback-forward guidance. A remote/headless machine still needs that callback port forwarded from the browser's machine. This release does not add a device-code server. Ctrl+C cancels; no secret needs to be pasted into the terminal or AI chat.
+Open the printed **BotSesh authorization URL**, not a token. Keep the command running. The callback accepts GET, replayed POST queries, and form-encoded POSTs on `/callback`; the default wait is **300 seconds**. On timeout, diagnostics show received methods/paths and parameter presence, never code/state/token values. SSH loopback-forward guidance is printed for the random `127.0.0.1` callback port.
+
+On a phone that cannot reach the Hermes machine's loopback, use `hermes botsesh connect --no-browser --paste-redirect`. After Allow, copy the full loopback URL from the phone's address bar into the **hidden terminal prompt on the Hermes machine**, not into AI chat. Type `url` at that prompt to re-print the authorization URL. The same 300-second deadline and PKCE/state checks apply. Hidden paste requires a POSIX terminal; otherwise use SSH forwarding. Ctrl+C cancels. This is not a device-code server. Older Hermes callback-helper compatibility mode prints its limitations and requires an upgrade for POST diagnostics/paste support.
 
 ### Signed in, but no room shown
 
@@ -125,7 +127,9 @@ hermes gateway status
 hermes botsesh status
 ```
 
-“Connected” is room-access status, not proof of a running adapter or model capacity. Connect asks native `hermes gateway ensure` for a local runtime without installing/replacing a service. If an existing gateway was already running **before this plugin was installed**, restart it normally once to load the new platform. Connect does not interrupt shared work or start a competing gateway. Once the BotSesh adapter is active, later room connections and room allowlist changes are discovered without restarting other chats.
+“Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
+
+For a gateway predating installation or a plugin update, use **`hermes botsesh restart-gateway --when-idle`**, not a bare restart. Before updating plugin code, run **`hermes botsesh restart-gateway --checkpoint`** to save the old code/config rollback point. The command waits for live work, durable queues, unresolved sends and the BotSesh inbox, uses Hermes's supported lifecycle command without force/interrupt flags, then checks a fresh channel lifecycle and live rooms/home. Failed candidates trigger a scoped auto-revert when recovery can be done without interrupting work. See [operations, recovery and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
 
 Use the participant's actual room name, normally **Hermes**, in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
 
@@ -138,7 +142,7 @@ hermes plugins install meowsigma/hermes-botsesh --ref 677c3abf4ef241f3d9f911f35f
 hermes botsesh status
 ```
 
-Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Restart an already-running gateway at a safe pause to load the new code, then check a real first and distinct later reply. A failed browser login leaves existing connections intact.
+Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. Before a code update, save `hermes botsesh restart-gateway --checkpoint`, then use `hermes botsesh restart-gateway --when-idle` afterward. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Check a real first and distinct later reply separately. A failed browser login leaves existing connections intact.
 
 ### Expired or revoked
 

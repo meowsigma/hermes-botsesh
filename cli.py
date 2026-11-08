@@ -4,8 +4,6 @@ import argparse
 import json
 import shutil
 import subprocess
-import time
-from datetime import datetime, timezone
 from .client import Client, BotSeshError
 from .storage import StorageError
 from .oauth import OAuthClient
@@ -15,20 +13,31 @@ def setup(parser):
     sub = parser.add_subparsers(dest='botsesh_action', required=True)
     connect = sub.add_parser('connect', help='Sign in in your browser and approve one room')
     connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
+    connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')
+    connect.add_argument('--set-home', action='store_true', help='Set home_channel to this newly connected, verified room')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
     connect.add_argument('--room', help='Public room ID hint; access still requires the signed-in host’s Allow')
     connect.add_argument('--name', help='Addressable agent name (defaults to the Hermes profile name, then Hermes)')
-    connect.add_argument('--timeout', type=int, default=180, choices=range(15, 601), metavar='SECONDS')
+    connect.add_argument('--timeout', type=int, default=300, choices=range(15, 601), metavar='SECONDS')
     connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
-    status = sub.add_parser('status', help='Check access, per-room gateway health, replies and backlog')
+    status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
+    status.add_argument('--set-home', metavar='ROOM_ID', help='Explicitly replace home_channel with a live, allowed room')
+    restart = sub.add_parser('restart-gateway', help='Bounded idle gate, supported Hermes restart, channel check and scoped auto-revert')
+    restart.add_argument('--when-idle', action='store_true', help='Wait for active work and inbox drain; refuse unknown work')
+    restart.add_argument('--max-wait', type=int, default=300, choices=range(1, 3601), metavar='SECONDS')
+    restart.add_argument('--health-timeout', type=int, default=60, choices=range(1, 601), metavar='SECONDS')
+    restart.add_argument('--restart-timeout', type=int, default=120, choices=range(1, 601), metavar='SECONDS')
+    restart.add_argument('--checkpoint', action='store_true', help='Before updating: save private BotSesh config/plugin-source rollback point; does not restart')
     disconnect = sub.add_parser('disconnect', help='Revoke one room connection on BotSesh')
     disconnect.add_argument('room_id', nargs='?', help='Room ID; optional when there is only one OAuth connection')
 
 
 def configure(binding):
     from hermes_cli.config import load_config, set_config_value
+    from .ops_restart import checkpoint
     cfg = load_config()
+    checkpoint(Client(), cfg)
     platform = cfg.get('platforms', {}).get('botsesh', {})
     rooms = list(platform.get('extra', {}).get('group_allowed_chats', []))
     if binding['room_id'] not in rooms:
@@ -40,7 +49,6 @@ def configure(binding):
     if not platform.get('home_channel'):
         set_config_value('platforms.botsesh.home_channel', json.dumps({
             'platform': 'botsesh', 'chat_id': binding['room_id'], 'name': binding['name']}))
-    # Enable room tools only for this platform; keep the operator's other tools.
     tools = cfg.get('platform_toolsets', {}).get('botsesh', [])
     if 'botsesh' not in tools:
         set_config_value('platform_toolsets.botsesh', json.dumps([*tools, 'botsesh']))
@@ -52,10 +60,17 @@ def handle(args):
         client = Client()
         oauth = OAuthClient(client.store)
         if args.botsesh_action == 'connect':
-            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room, name=args.name)
+            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout,
+                                    room_hint=args.room, name=args.name,
+                                    **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}))
             configure(binding)
             print(f"Connected to {binding['name']} as @{binding['display_name']}. This exact name is addressable while the gateway runs.")
             print('This room’s members may address Hermes. Your existing model account and tool approvals apply.')
+            from hermes_cli.config import load_config_readonly
+            from .ops_status import status_report, print_home, set_home
+            if getattr(args, 'set_home', False):
+                set_home(client, load_config_readonly(), binding['room_id'])
+            print_home(status_report(client, load_config_readonly())['home_channel'])
             if not args.no_start:
                 binary = shutil.which('hermes')
                 if binary:
@@ -63,52 +78,29 @@ def handle(args):
                                             capture_output=True, text=True, timeout=40)
                     if result.returncode == 0:
                         print('Hermes gateway runtime is ready. Send a question mentioning ' + binding['display_name'] + '.')
-                        print('If this gateway was already running before the plugin was installed, restart it normally once to load the new channel.')
+                        print('For an existing gateway needing the channel loaded, use `hermes botsesh restart-gateway --when-idle` (checkpoint required before plugin updates).')
                     else:
                         print('Room connected; gateway is not ready. Check `hermes gateway status`, then run `hermes gateway run`.')
                 else:
                     print('Start your gateway with `hermes gateway run`.')
             return
-        rooms = client.store.read()['rooms']
-        if args.botsesh_action == 'status':
-            report = []
-            if not rooms and not getattr(args, 'json', False):
-                print('No BotSesh rooms. Run `hermes botsesh connect`.')
-            for room_id, binding in rooms.items():
-                state = binding.get('state', 'unknown')
-                if binding.get('active'):
-                    try:
-                        client.enrolled(room_id, 'verify')
-                        state = 'membership_verified' if binding.get('transport') == 'guest_manager' else 'connected'
-                    except BotSeshError as e:
-                        state = e.code
-                h = binding.get('health', {})
-                gateway = h.get('state', 'not_observed')
-                if time.time() - h.get('last_check', 0) > 90:
-                    gateway = 'stale_or_offline'
-                if binding.get('transport') == 'guest_manager':
-                    gateway = 'not_supported_management_only'
-                rows = binding.get('processing_receipts', {}).values()
-                backlog = sum(row['state'] not in ('replied', 'failed') for row in rows)
-                if state == 'connected' and binding.get('transport') == 'oauth':
-                    try:
-                        backlog = client.enrolled(room_id, 'check').get('backlog', backlog)
-                    except BotSeshError as e:
-                        state = e.code
-                value = {'room_id': room_id, 'name': binding['name'], 'access': state, 'gateway': gateway,
-                         'last_event': h.get('last_event'), 'last_check': h.get('last_check'), 'last_reply': h.get('last_reply'),
-                         'backlog': backlog, 'failure_notices_pending': len(binding.get('failure_outbox', {})),
-                         'reply_pending': bool(binding.get('pending_final')), 'error': h.get('error')}
-                report.append(value)
-                if not getattr(args, 'json', False):
-                    stamp = lambda at: datetime.fromtimestamp(at, timezone.utc).isoformat(timespec='seconds') if at else 'never'
-                    print(f"{binding['name']} · {room_id} · access={state} · gateway={gateway} · backlog={backlog}")
-                    print(f"  last event={stamp(value['last_event'])} · last reply={stamp(value['last_reply'])} · pending notices={value['failure_notices_pending']} · pending reply={value['reply_pending']}")
-            if getattr(args, 'json', False):
-                print(json.dumps({'rooms': report}))
-            else:
-                print('Access is not execution. Stale/offline means no recent local polling receipt; check `hermes gateway status`.')
+        if args.botsesh_action == 'restart-gateway':
+            from hermes_cli.config import load_config_readonly
+            from .ops_restart import restart_gateway
+            restart_gateway(client, load_config_readonly(), args)
             return
+        if args.botsesh_action == 'status':
+            from hermes_cli.config import load_config_readonly
+            from .ops_status import status_report, print_status, set_home
+            if isinstance(getattr(args, 'set_home', None), str):
+                set_home(client, load_config_readonly(), args.set_home)
+            report = status_report(client, load_config_readonly())
+            if getattr(args, 'json', False):
+                print(json.dumps(report))
+            else:
+                print_status(report)
+            return
+        rooms = client.store.read()['rooms']
         eligible = [room_id for room_id, room in rooms.items() if room.get('transport') == 'oauth' and room.get('state') != 'revoked']
         room_id = args.room_id
         if not room_id:
