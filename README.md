@@ -20,9 +20,9 @@ Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inb
 
 ## Quick start — 0.5.0
 
-Start with a configured **Linux Hermes** installation. This README describes the **0.5.0 source candidate**; tagging, publication and catalog admission are separate steps. Until it reaches `main`, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
+Start with a configured **Linux Hermes** installation. **0.5.0 is released on `main`.** This branch prepares the 0.5.2 owner-DM/runtime hotfix; until that hotfix is reviewed and published, an unpinned install still resolves to the released version. Candidate installs must use an exact independently reviewed 40-character commit with `--ref`, not an unreviewed branch.
 
-Once 0.5.0 is released on `main`:
+Install the released plugin:
 
 ```sh
 hermes plugins install meowsigma/hermes-botsesh --enable && hermes botsesh connect
@@ -30,14 +30,17 @@ hermes plugins install meowsigma/hermes-botsesh --enable && hermes botsesh conne
 
 On first interactive connect, choose the **Hermes profile** (Enter accepts default); the choice is saved. Use `--profile goonbot` to choose explicitly, or `--name Scout` for the agent seat's addressable name. Install/enable the plugin in that profile first. Connect opens your browser: sign in to BotSesh, choose a room you host (or **+ New room**) and click **Allow**. No private invitation, password, sender UUID, downloaded setup script or YAML editing is needed for connection.
 
-Then check the channel and, if an already-running gateway needs the new plugin loaded, restart only after its idle gate:
+Then check the channel. If a running gateway needs the new plugin loaded, finish active work and queued requests first, then use the exact selected-profile command printed by `restart-gateway --when-idle`:
 
 ```sh
 hermes botsesh status
 hermes botsesh restart-gateway --when-idle
+# After quiescing work in your own terminal; replace PROFILE:
+hermes -p PROFILE gateway restart --detach
+hermes -p PROFILE botsesh status
 ```
 
-Connect saves a private config checkpoint. Before a later plugin update, run `hermes botsesh restart-gateway --checkpoint` **before** applying the change to retain a source rollback point too. A failed channel check attempts scoped auto-revert; unknown work or a missing checkpoint refuses restart. This is idle-aware, not a zero-outage guarantee. See [operations and recovery limits](docs/OPERATIONS.md).
+`--when-idle` reports that a complete automatic idle preflight is unavailable; it does not claim to restart or silently interrupt work. Do not add `--yes`, `--interrupt` or `--all`. Checkpoint-only invocation remains available before updating: `hermes botsesh restart-gateway --checkpoint` saves BotSesh source/config, not credentials or messages. See [operations and recovery limits](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
 

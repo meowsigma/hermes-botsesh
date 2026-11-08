@@ -1,85 +1,59 @@
-# Operations: headless OAuth, truthful status, idle-aware restart
+# Operations — released 0.5.0 and the 0.5.2 owner-DM hotfix
 
-This increment addresses the owner's **2026-11-07 goonbot field report**, items 3–5. It is not a claim of production or physical-phone verification.
-
-## Exact field asks
-
-> Callback listener answered `501` to the redirect when a client replayed the 302 as POST, then sat silently until the 180s timeout with no hint about what happened. Accept POST on /callback (or 301-redirect POST to a GET path), and on timeout print what was received.
-
-> 180s is tight when the owner is on a phone and the URL is 400 chars. 300s, and a "re-print URL" affordance.
-
-> Success output is great ("Connected to goon sesh", config writes echoed). Keep that.
-
-> `hermes botsesh status` said `Hermes room · axAsOLki... · invalid_grant` forever: a room that no longer exists still occupies the slot, and it never tells you the channel is dead *in the running gateway* vs *not connected at all*. Its own footer even admits "Connected is access status, not proof of a running gateway", so print the gateway-side truth: connected channel yes/no, which profile, which rooms, last inbound/outbound event timestamps. Also validate `home_channel` on connect, mine pointed at the deleted room and nothing warned.
-
-> The "restart the gateway once to load the channel" note is in after-install.md, right behavior, but on a 24/7 inference box a bare "restart it normally" is how owners get an outage. Ship `hermes botsesh restart-gateway --when-idle` (drain + idle gate + auto-revert) or at minimum document the pattern. I had to write my own drain waiter (a Hermes skill template existed but wasn't discoverable from the plugin docs).
-
-## Already present in v0.4.0
-
-`connect --name` already selects an addressable profile-derived room name. The `botsesh_create_room` tool already exists, including Python guest creation and explicit ownership offers. These did **not** supply a `create-room` CLI, profile fan-out, idempotent reconnect identity, or idle-aware restart. Other HB050 lanes own those CLI/identity gaps; this lane does not change them or bump the release version.
+0.5.0 is released on `main`. The 0.5.2 hotfix branch must be independently reviewed and published before an unpinned installation receives it. This is the legacy plugin-owned OAuth path, not the separate 0.5.1 declared-OAuth candidate.
 
 ## Headless/phone authorization
 
 ```sh
 hermes botsesh connect --no-browser
-# If browser loopback cannot reach the headless machine:
+# When browser loopback cannot reach the headless machine:
 hermes botsesh connect --no-browser --paste-redirect
 ```
 
-Default timeout: 300 seconds; `--timeout SECONDS` remains available. `/callback` accepts GET, POST replaying the query, and form-encoded POST bodies. Duplicate OAuth fields fail closed. Callback logging is disabled; diagnostics retain the latest 20 method/path + known-field presence observations, not query/body values or error descriptions.
+The default authorization timeout is 300 seconds. Phone fallback uses a hidden POSIX-terminal prompt; type `url` to reprint the current authorization URL. Never paste a redirect, code or credential into an AI chat. Current-attempt state, PKCE, origin and callback fields remain verified. Install/enable the plugin in the selected profile first; use `hermes -p PROFILE` consistently.
 
-Phone mode has a hidden POSIX-terminal prompt. Type `url` to re-print the authorization URL. Paste the **current attempt's exact redirect URL**, including the random port. It verifies origin, port, path, state and duplicates before token exchange; PKCE still binds the code. Never paste into AI chat. The input reader is synchronous and restores terminal echo on success, timeout or cancellation; it cannot linger and steal a later shell command. Non-TTY and non-POSIX paste mode refuse safely. Use loopback SSH forwarding there. Cores whose private callback-helper signatures changed retain native fallback with an explicit warning; upgrade those cores for this increment's POST diagnostics/paste behavior.
+## Owner-DM admission
 
-## Status and home room
+Private-DM consent authorizes only DMs the grant owner opens from the selected source rooms. A fresh authenticated server projection must identify this DM, agent membership, participant, authorized access and the exact grant-owner human participant. Only that room-scoped participant ID is added to the live adapter's native runtime allowlist. Nothing is added to on-disk/global operator lists. Native durable-envelope reauthorization uses that same standard allowlist; an intake-only adapter verdict is not substituted for it.
 
-```sh
-hermes botsesh status
-hermes botsesh status --json
-hermes botsesh status --set-home LIVE_ROOM_ID
-hermes botsesh connect --set-home
-```
+Foreign, paused, expired, missing-owner and mismatched projections do not create a grant. Existing explicit operator allowlists remain effective. Room invitations and display names confer no DM or manager authority. Owner-only room-creation tools separately revalidate the server identity on every invocation.
 
-Process liveness comes from Hermes's profile-aware ownership resolver. Channel status comes from the owning live gateway control socket and its exact profile/platform writer identity—not a saved room token or successful HTTP request. A live process whose channel is absent/down is distinct from an absent process; unanswerable/unsupported diagnostics say **unknown**, not healthy. `since` comes from this plugin's adapter lifecycle stamps with a process-incarnation check; old or crashed runtimes may have no proven start/stop time. Native `updated_at` is only a last observation, never relabelled a connection-start timestamp.
+`botsesh_read` during an active native turn returns that turn's immutable frozen batch after checking live access. It does not create a second receipt that hides a confirmed tool post from native final reconciliation. The existing durable UUID, structured metadata and read-attestation contracts are unchanged.
 
-Standalone discovery may validly return `control_home: null`. Status uses core's `control_home_for(home, endpoint)` resolver, retaining the explicit owning control home for multiplexed profiles rather than treating that null as a dead/unknown channel.
-
-Each OAuth room is checked against its own live server membership, without reading/acknowledging messages. `alive`, explicit `deleted`, `invalid_grant` and other safe server codes are exposed. An omitted room is **deleted_or_inaccessible**, because absence alone cannot prove which happened. Room polling health is down whenever access or the live channel is down. Python management-only bindings keep their separate membership-verified / no-gateway status. Advanced Node invitation bindings are not spawned just to answer status.
-
-A home room must be a live, allowed OAuth room. Connect/status warn and show exact live candidates for an explicit `--set-home` change; they never silently reassign an existing home. Dead room hints name `hermes botsesh forget ROOM_ID`, supplied by the sibling CLI-management lane. Forgetting is local cleanup, not revocation.
-
-## Update/restart pattern
-
-On an installation that already has this command:
+## Truthful status
 
 ```sh
-# BEFORE applying the approved plugin update (never after the bad change):
-hermes botsesh restart-gateway --checkpoint
-# Apply the approved plugin update through Hermes's plugin lifecycle.
-hermes botsesh restart-gateway --when-idle --max-wait 300 --health-timeout 60
+hermes -p PROFILE botsesh status
+hermes -p PROFILE botsesh status --json
+hermes -p PROFILE botsesh status --set-home LIVE_ROOM_ID
 ```
 
-Connect refreshes a config-only pre-change checkpoint on **each connect**, so a failed later connect/update does not restore the stale config from before earlier rooms were connected. Explicit `--checkpoint` additionally captures plugin runtime source/manifest, for a version rollback; automatic connect checkpoints never replace that operator-prepared source checkpoint. Checkpoints are private in this profile's existing 0700/0600 plugin store. They never include auth.json, .env, sessions, room messages, receipts or token journals. First upgrading from v0.4.0 cannot retroactively capture an old code checkpoint with a command v0.4.0 did not have: retain the prior immutable install pin/backup separately. A missing checkpoint refuses a restart instead of promising a fictional rollback.
+Status uses the public profile-aware liveness resolver and exact owning runtime snapshot. The PID rung may already resolve to the multiplexer even when the selected profile has no local runtime file; the public multiplexer resolver supplies the owner record in that case. Only the selected profile's platform entry is projected. Runtime PID/start time and platform writer identity must match; a stale owner heartbeat or incomplete evidence is unknown, not healthy. A platform timestamp is a last state transition, not a periodic heartbeat.
 
-The bounded gate waits for live unscoped `active-work` (including delegations), each served authority's queued/started/unknown durable admissions, unresolved local sends/receipts/outboxes, and **alive** active OAuth-room server inbox backlog to reach zero. Non-live server inboxes (including deleted/inaccessible rooms and `invalid_grant`) are reported as skipped, not treated as drainable queues. Their unresolved **local** sends/receipts/outboxes still gate restart. Unknown/invalid counters for a live inbox refuse without restart. It does not discard backlog to manufacture idle. `--max-wait` bounds polling; individual live/network probes have their own bounded timeouts. `--restart-timeout` bounds the lifecycle subprocess.
+Per-room server access and polling are separate checks, without message read acknowledgments. Deleted/inaccessible or revoked rooms remain visible with local forget hints. A home room must be both alive and allowed; replacement is explicit. Management-only guest rooms are not described as listeners. Connect reads actual channel state before and after startup assistance rather than reporting a working profile down from a `gateway ensure` deadline.
 
-The restart operation is **`hermes gateway restart --detach`**, with `HERMES_HOME` explicitly bound to the selected profile (including a saved BotSesh profile choice), stdin closed and **without** `--yes`, `--interrupt`, `--all`, guessed services, or custom signals. Hermes rechecks active work and owns its drain/relaunch semantics. On multiplexed installs, Hermes can hot-restart only the named profile instead of stopping other profiles. Immediately before restart, the command snapshots room/home liveness. Health success requires an up channel for a new process incarnation or fresh adapter lifecycle, plus new connected polling for **every room that was alive before restart**. A previously live home must remain that same live home. Already-dead rooms or home produce explicit warnings, not a false rollback; they remain dead in status. If no room was live before restart, no room is required to become live, but the new channel must still be up. Exit code zero alone never proves health.
+## Checkpoint and supported restart fallback
 
-If the candidate fails health, recovery first waits again for active work/durable queues/local pending work, or proves the gateway stopped. Recovery deliberately does not require the broken candidate to drain the remote inbox. It compares the attempted source/config before any restore; concurrent edits abort recovery rather than being overwritten. Only checkpointed BotSesh platform/toolset config and plugin runtime files are restored. The durable room/token/session stores stay intact. A second supported restart is health-checked against the **original pre-restart baseline**, not the failed candidate's degraded room set. A recovered rollback returns a nonzero `candidate_failed_auto_revert_healthy` result so scripts cannot mistake a failed update for success. Unhealthy recovery or unsafe/unavailable rollback is reported explicitly; the checkpoint is retained.
+```sh
+# Before an approved plugin update; no restart:
+hermes -p PROFILE botsesh restart-gateway --checkpoint
+hermes -p PROFILE botsesh restart-gateway --when-idle
+```
 
-`--detach` is essential for a bounded client: without it, a manual gateway's replacement runs inside the restart subprocess and is killed when that subprocess times out. Installed and external supervisor ownership remains with core, as does named-profile hot restart. On failure paths (including restore conflicts), the command confirms the selected live process identity; if absent/unconfirmed it invokes supported **`hermes gateway ensure --json --timeout ...`**, then reads identity back. This does not overwrite a conflicting config/source edit or bypass a supervisor. A loud **CONFIRMED RUNNING** warning is process proof, separate from channel/room health. If core cannot recover/identify the owner, the command returns `gateway_recovery_running_unconfirmed` with an explicit error, never a config-only recovery claim. Broken services/supervisors may still require operator repair; no forced manual fallback is attempted.
+The second command reports that a complete automatic idle-work/admission preflight is unavailable and prints the exact selected-profile maintenance commands. It does not restart, infer a zero queue from runtime counters, or claim automatic rollback. The prior private-socket/schema preflight is not a supported CLI gate in this hotfix.
 
-New guest rooms remain passwordless until rotation. `create-room`, locally known `room-info`, and `botsesh_create_room` return `password_notice`: **No room password: anyone with the link can join. Run rotate-password to set one.** Existing JSON `password: null`/`password_required: false` fields remain compatible. Unknown password state is not described as passwordless; successful local rotation removes this notice. No creation or rotation policy changes.
+After active work and queued requests have finished, run those commands in your own terminal:
 
-### Important safety limits
+```sh
+hermes -p PROFILE gateway restart --detach
+hermes -p PROFILE gateway status
+hermes -p PROFILE botsesh status
+```
 
-Hermes currently exposes a live-work probe and lifecycle refusal, but **not an atomic global idle-and-restart admission fence** or a complete count of every legacy in-memory messaging queue. Another admission can race the preflight; Hermes's second work check narrows but does not eliminate that race. This command is **idle-aware, not a certified zero-interruption/zero-outage guarantee**. For strict maintenance exclusion, quiesce external traffic through the operator's existing maintenance controls before using it. The plugin does not invent a private signal protocol, silently pause all profiles or bypass an unknown queue. No host-Hermes changes were made here.
+This is **not an automatic idle restart** or a zero-interruption guarantee. Core retains multiplexer/supervisor ownership and refuses known live work noninteractively. Do not add `--yes`, `--interrupt`, `--all`, guessed service names or signals. Inspect the selected profile's new channel lifecycle, fresh room/home polling and a real reply afterward. An already-active adapter discovers later rooms without restart.
 
-Checkpoints contain Python runtime/manifest and Advanced bridge/vendor files, not a full git/installation/dependency transaction. Same-source plugin code updates are the supported rollback scope; moving install paths, changing dependencies or upgrading Hermes itself needs its own existing lifecycle/backup procedure. Source rollback leaves newly introduced, unreferenced files in place, and refuses unsafe paths. Shared source used by several profiles must be updated by its one operator/integration owner, not competing per-profile updaters.
+Checkpoint-only invocation preserves BotSesh source/manifest and platform/toolset configuration in the profile's private store. It excludes auth.json, .env, sessions, messages, receipts and credential journals; it is not a full installation, dependency or database backup. Keep the prior immutable pin and normal recovery copies. Historical injected-probe restart/rollback tests remain available, but do not prove an enabled automatic restart feature.
 
-## Verification boundary
+## Verification boundaries
 
-The focused OPS suite uses real loopback GET/POST callbacks, hidden pseudo-terminal input, status/work/socket doubles, real isolated config/source restoration, read-only SQLite queue probes and simulated successful-restart/failed-candidate/recovery sequences. Regression fixtures retain the deleted/inaccessible and invalid-grant rooms and dead home: pending local work still delays restart, pre-existing dead state does not trigger rollback, a newly lost live room does, and recovery must restore the original live set. Successive connect checkpoints are restored to verify earlier rooms survive; explicit source checkpoints remain unchanged. A separate subprocess uses the installed native `python -m hermes_cli.main` CLI with isolated HOME/HERMES_HOME, **an empty PATH (no Node)** and a real local OAuth/MCP fixture: connect via POST, persist configuration, and read status back.
-
-The opt-in `tests/native_ops_probe.py` additionally exercises the **real installed core gateway**, in an isolated container with network disabled except its own loopback and no Node/provider credentials. Its OAuth/MCP server is an explicit local fixture with an empty inbox, not a production server or model. It reproduced the original unknown-channel and stopped-after-timeout failures, then verified: live up/connected status; detached idle restart with a new native incarnation and fresh room `last_check`; an actually disabled-channel candidate followed by scoped rollback; a fault-injected supported recovery stop repaired by `gateway ensure`, with a running/up/connected gateway read back after the expected nonzero result; and a real container-local external supervisor receiving exit75 and launching exactly one new gateway without an unsupervised replacement. `native_ops_fault.py` is test-only and refuses outside the fixed sandbox home. The probe cleans up through supported lifecycle commands. Canonical systemd/launchd/Windows service managers were not exercised. No host/production gateway restart, production account/room write, inference, physical-phone test or overnight claim. **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE**, not exhaustive certification.
-
-Lifecycle source/docs research: [CLI commands](https://hermes-agent.nousresearch.com/docs/reference/cli-commands), [gateway monitoring](https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-monitoring), installed `gateway/control_socket.py`, `gateway/run_active_work_verb.py`, `gateway/status.py`, `hermes_cli/gateway_runtime.py`, `hermes_cli/gateway_profile_lifecycle.py` and `hermes_cli/gateway_lifecycle_guards.py`.
+Use the focused owner-DM native-envelope authorization, writer/profile status and read/post/final regressions. The task's isolated native named-profile evidence separately records actual OAuth, no-Node installation, supported profile hot restart and real bounded Luna output. Physical-phone, exhaustive compatibility and production deployment certification are not implied. **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE.**

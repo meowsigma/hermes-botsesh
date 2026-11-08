@@ -78,6 +78,38 @@ def configure(binding):
         set_config_value('plugins.enabled', json.dumps([*enabled, 'botsesh']))
 
 
+def restart_guidance(profile):
+    import shlex
+    prefix = shlex.join(['hermes', '-p', profile])
+    print('This is not an automatic idle restart. In your own terminal, after active work and queued requests finish, run:')
+    print(f'  {prefix} gateway restart --detach')
+    print(f'  {prefix} gateway status')
+    print(f'  {prefix} botsesh status')
+    print('Core refuses live work noninteractively; do not add --yes, --interrupt or --all. Check the selected profile’s channel and rooms afterward.')
+
+
+def connect_runtime(profile):
+    from .ops_status import gateway_snapshot
+    def ready():
+        live = gateway_snapshot()
+        return live.get('running') is True and live.get('channel') == 'up'
+    if ready():
+        print('Hermes gateway and this profile’s BotSesh channel are already running.')
+        return
+    binary = shutil.which('hermes')
+    if binary:
+        try:
+            subprocess.run([binary, '-p', profile, 'gateway', 'ensure', '--json', '--timeout', '30'],
+                           capture_output=True, text=True, timeout=40)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if ready():
+            print('Hermes gateway and this profile’s BotSesh channel are ready.')
+            return
+    print('Room connected; this profile’s BotSesh channel is not yet confirmed ready. Check the selected profile, not another gateway:')
+    restart_guidance(profile)
+
+
 def handle(args):
     from .identity import choose_profile, profile_scope, save_profile
     from hermes_cli.config import get_hermes_home
@@ -129,21 +161,14 @@ def _handle_profile(args, profile):
                 set_home(client, load_config_readonly(), binding['room_id'])
             print_home(status_report(client, load_config_readonly())['home_channel'])
             if not args.no_start:
-                binary = shutil.which('hermes')
-                if binary:
-                    result = subprocess.run([binary, '-p', profile, 'gateway', 'ensure', '--json', '--timeout', '30'],
-                                            capture_output=True, text=True, timeout=40)
-                    if result.returncode == 0:
-                        print('Hermes gateway runtime is ready. Send a question mentioning ' + binding['display_name'] + '.')
-                        print('For an existing gateway needing the channel loaded, use `hermes botsesh restart-gateway --when-idle` (checkpoint required before plugin updates).')
-                    else:
-                        print('Room connected; gateway is not ready. Check `hermes gateway status`, then run `hermes gateway run`.')
-                else:
-                    print('Start your gateway with `hermes gateway run`.')
+                connect_runtime(profile)
             return
         if args.botsesh_action == 'restart-gateway':
             from hermes_cli.config import load_config_readonly
             from .ops_restart import restart_gateway
+            if not args.checkpoint:
+                restart_guidance(profile)
+                raise BotSeshError('safe_idle_restart_unavailable_no_restart')
             restart_gateway(client, load_config_readonly(), args)
             return
         if args.botsesh_action == 'status':

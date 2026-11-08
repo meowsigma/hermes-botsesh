@@ -139,7 +139,22 @@ def rooms(args, ctx):
 
 
 def read(args, ctx):
-    return Client().enrolled(scoped_room(args, ctx), 'read')
+    client = Client()
+    room_id = scoped_room(args, ctx)
+    platform, _ = calling_scope(ctx)
+    if platform == 'botsesh':
+        from gateway.session_context import get_session_env
+        target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+        row = client.store.room(room_id).get('processing_receipts', {}).get(target, {})
+        frozen = row.get('frozen')
+        if (row.get('state') in ('admitting', 'admitted', 'started') and frozen
+                and frozen.get('receipt_id') == row.get('receipt_id')):
+            # A native turn consumes one immutable batch. A second catchup
+            # would create another receipt, hiding its tool post from final
+            # reconciliation. Verify live access; never synthesize an ack.
+            client.enrolled(room_id, 'verify')
+            return frozen
+    return client.enrolled(room_id, 'read')
 
 
 def post(args, ctx):
