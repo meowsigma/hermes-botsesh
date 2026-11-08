@@ -39,7 +39,8 @@ def checkpoint(client, config, *, source=False):
             'config': config_part(config), 'source': source_snapshot() if source else None}
     def save(data):
         # Do not overwrite an operator-prepared pre-update source recovery point.
-        if source or not data.get('restart_checkpoint'):
+        previous = data.get('restart_checkpoint')
+        if source or not previous or previous.get('source') is None:
             data['restart_checkpoint'] = item
     client.store.update(save)
 
@@ -106,7 +107,12 @@ def wait_idle(client, config, *, max_wait, interval=1, check_inbox=True, allow_s
                 binding = client.store.read()['rooms'][row['room_id']]
                 if not binding.get('active') or binding.get('transport') != 'oauth':
                     continue
-                if not row['alive'] or type(row['backlog']) is not int or row['backlog'] < 0:
+                if not row['alive']:
+                    # Deleted/inaccessible/revoked rooms have no accessible
+                    # server inbox to drain. Their local pending work still gates.
+                    print(f"Skipping server inbox for {row['room_id']}: {row['access']} (not alive; local pending still gates).", flush=True)
+                    continue
+                if type(row['backlog']) is not int or row['backlog'] < 0:
                     raise BotSeshError('inbox_drain_unavailable_no_restart')
                 inbox += row['backlog']
         print(f'Waiting for idle: active work={count}, queued admissions={queued}, local pending={pending}, inbox={inbox}.', flush=True)
@@ -133,7 +139,29 @@ def lifecycle_restart(*, timeout):
         raise BotSeshError('gateway_restart_refused_or_failed')
 
 
+def liveness_baseline(client, config, runtime):
+    """Preserve the pre-restart live room set, not a failed candidate's state."""
+    report = status_report(client, config, runtime=runtime)
+    bindings = client.store.read()['rooms']
+    live = []
+    for row in report['rooms']:
+        binding = bindings[row['room_id']]
+        if not binding.get('active') or binding.get('transport') != 'oauth':
+            continue
+        if row['alive']:
+            live.append(row['room_id'])
+        else:
+            print(f"Pre-existing room warning: {row['room_id']} ({row['access']}); not a restart regression.", flush=True)
+    home = report['home_channel']
+    if not home['live']:
+        print(f"Pre-existing home_channel warning: {home['room_id'] or 'not set'} ({home['state']}); not a restart regression. Use `hermes botsesh status --set-home LIVE_ROOM_ID`.", flush=True)
+    return {'rooms': live, 'home_channel': home}
+
+
 def healthy(client, config, before):
+    baseline = before.get('liveness_baseline')
+    if baseline is None:
+        return False
     report = status_report(client, config)
     runtime = report['gateway']
     if runtime.get('running') is not True or runtime.get('channel') != 'up':
@@ -144,10 +172,15 @@ def healthy(client, config, before):
     since = runtime.get('since')
     if not changed and not (isinstance(since, (int, float)) and since >= before.get('restart_at', float('inf'))):
         return False
-    rows = [r for r in report['rooms'] if client.store.read()['rooms'][r['room_id']].get('active')
-            and client.store.read()['rooms'][r['room_id']].get('transport') == 'oauth']
-    return bool(rows) and all(r['alive'] and r['gateway'] == 'connected'
-                              and (r['last_check'] or 0) >= before.get('restart_at', 0) for r in rows) and report['home_channel']['live']
+    rows = {r['room_id']: r for r in report['rooms']}
+    for rid in baseline['rooms']:
+        row = rows.get(rid)
+        if (not row or not row['alive'] or row['gateway'] != 'connected'
+                or (row['last_check'] or 0) < before.get('restart_at', 0)):
+            return False
+    home = baseline['home_channel']
+    return not home['live'] or (report['home_channel']['live']
+                               and report['home_channel']['room_id'] == home['room_id'])
 
 
 def wait_healthy(client, config, before, *, timeout, check=healthy, clock=time.monotonic, sleep=time.sleep):
@@ -220,6 +253,7 @@ def restart_gateway(client, config, args, *, idle=wait_idle, restart=lifecycle_r
     attempted = {'config': config_part(config), 'source': source_snapshot()}
     print('Idle gate covers live gateway work, local BotSesh sends and server inbox. No forced interruption. New admissions can race this preflight; Hermes rechecks work at restart.', flush=True)
     before = idle(client, config, max_wait=args.max_wait)
+    before['liveness_baseline'] = liveness_baseline(client, config, before)
     before['restart_at'] = time.time()
     try:
         restart(timeout=args.restart_timeout)
@@ -229,12 +263,13 @@ def restart_gateway(client, config, args, *, idle=wait_idle, restart=lifecycle_r
         success = False
     if success:
         client.store.update(lambda d: d.pop('restart_checkpoint', None))
-        print('Gateway restarted; new channel lifecycle and live room/home_channel health verified.')
+        print('Gateway restarted; new channel lifecycle and pre-restart live room/home_channel baseline verified. Pre-existing warnings remain visible in `hermes botsesh status`.')
         return
     print('Candidate not healthy. Waiting for active work to finish before scoped auto-revert...', flush=True)
     # No server inbox gate here: the unhealthy candidate may be unable to drain
     # it. Never drop or restore the durable room/token/session stores.
     recovery_before = idle(client, config, max_wait=args.max_wait, check_inbox=False, allow_stopped=True)
+    recovery_before['liveness_baseline'] = before['liveness_baseline']
     restored = rollback(client, saved, attempted)
     print('Reverted checkpointed BotSesh config' + (' and plugin source.' if saved.get('source') else ' (config-only checkpoint; plugin code was not changed).'), flush=True)
     recovery_before['restart_at'] = time.time()
