@@ -1,8 +1,8 @@
 """HB050 offline OPS tests. Local HTTP fixtures/doubles, no inference/services."""
 import argparse
-import base64
+
 import contextlib
-import copy
+
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, HTTPServer
 import io
@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import select
 import shutil
-import sqlite3
+
 import subprocess
 import tempfile
 import threading
@@ -19,11 +19,11 @@ import time
 import sys
 import queue
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 from urllib.parse import urlencode, urlsplit, parse_qs
 
 from test_plugin import Client, Store, BotSeshError, ROOT
-from hermes_botsesh_test import cli, oauth, oauth_callback, ops_status as status, ops_restart as restart
+from hermes_botsesh_test import cli, oauth, oauth_callback, ops_status as status
 
 
 class OpsTests(unittest.TestCase):
@@ -167,250 +167,6 @@ class OpsTests(unittest.TestCase):
             live['platforms']['fixture:botsesh']['writer_pid'] = 123
             live['updated_at'] = '2000-01-01T00:00:00Z'
             self.assertEqual(status.gateway_snapshot()['channel'], 'unknown')
-
-    def test_wait_active_then_inbox_then_restart_and_max_wait(self):
-        self.store.update(lambda d: d['rooms'].clear())
-        ticks = [0]
-        work = iter([1, 0, 0])
-        queue = iter([0, 1, 0])
-        waited = []
-        def sleep(s): ticks[0] += s; waited.append(s)
-        result = restart.wait_idle(self.client, {}, max_wait=3, snapshot=lambda:self.runtime,
-            work=lambda r:next(work), queues=lambda r:next(queue), clock=lambda:ticks[0], sleep=sleep)
-        self.assertIs(result, self.runtime); self.assertEqual(len(waited), 2)
-        with self.assertRaises(BotSeshError) as error:
-            restart.wait_idle(self.client, {}, max_wait=1, snapshot=lambda:self.runtime,
-                work=lambda r:1, queues=lambda r:0, clock=lambda:ticks[0], sleep=sleep)
-        self.assertEqual(error.exception.code, 'idle_wait_timeout_no_restart')
-
-    def test_idle_skips_dead_and_invalid_rooms_but_keeps_local_pending_gate(self):
-        self.store.update(lambda d: d['rooms']['dead'].update(pending_final={'text': 'fixture'}))
-        ticks = [0]; waited = []; out = io.StringIO()
-        def sleep(seconds):
-            ticks[0] += seconds; waited.append(seconds)
-            self.store.update(lambda d: d['rooms']['dead'].pop('pending_final'))
-        with contextlib.redirect_stdout(out):
-            result = restart.wait_idle(self.client, self.cfg, max_wait=2,
-                snapshot=lambda: self.runtime, work=lambda r: 0, queues=lambda r: 0,
-                clock=lambda: ticks[0], sleep=sleep)
-        self.assertIs(result, self.runtime)
-        self.assertEqual(waited, [1])
-        self.assertIn('Skipping server inbox for dead: deleted_or_inaccessible', out.getvalue())
-        self.assertIn('Skipping server inbox for invalid: invalid_grant', out.getvalue())
-        self.assertEqual(set(self.store.read()['rooms']), {'one', 'dead', 'invalid'})
-
-    def test_queue_probe_is_readonly_and_unknown_is_not_idle(self):
-        db = sqlite3.connect(self.home/'state.db')
-        db.execute('CREATE TABLE session_admissions(status TEXT)')
-        db.executemany('INSERT INTO session_admissions VALUES (?)', [('queued',), ('started',), ('terminal',)])
-        db.commit(); db.close()
-        self.assertEqual(restart.queued_admissions(self.runtime), 2)
-        with patch('gateway.control_socket.query_gateway_control', return_value=None):
-            with self.assertRaises(BotSeshError): restart.work_snapshot(self.runtime)
-
-    def test_restart_cli_uses_lifecycle_no_signals_force_or_all(self):
-        with patch.object(restart, 'profile_context', return_value=(self.home, 'fixture')), patch.object(restart.shutil, 'which', return_value='/fixture/hermes'), patch.object(restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
-            restart.lifecycle_restart(timeout=42)
-        self.assertEqual(run.call_args.args[0], ['/fixture/hermes','-p','fixture','gateway','restart','--detach'])
-        self.assertIs(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
-        self.assertEqual(run.call_args.kwargs['env']['HERMES_HOME'], str(self.home))
-        self.assertNotIn('HERMES_PROFILE', run.call_args.kwargs['env'])
-        self.assertNotIn('HERMES_PROFILE_NAME', run.call_args.kwargs['env'])
-
-    def test_failure_recovery_ensures_then_reads_back_exact_owner(self):
-        live = {**self.runtime, 'process_start': 42}
-        with patch.object(restart, 'lifecycle_command') as command:
-            restart.ensure_running(timeout=12, snapshot=Mock(side_effect=[{'running': False}, live]))
-        command.assert_called_once_with(['ensure', '--json', '--timeout', '12'], timeout=17)
-        with patch.object(restart, 'lifecycle_command', side_effect=BotSeshError('gateway_restart_refused_or_failed')):
-            with self.assertRaises(BotSeshError) as error:
-                restart.ensure_running(timeout=12, snapshot=lambda: {'running': False})
-        self.assertEqual(error.exception.code, 'gateway_recovery_running_unconfirmed')
-
-    def test_restore_conflict_still_confirms_running_without_overwriting(self):
-        restart.checkpoint(self.client, self.cfg)
-        args = argparse.Namespace(checkpoint=False, when_idle=True, max_wait=2, restart_timeout=2, health_timeout=2)
-        recover = Mock()
-        rollback = Mock(side_effect=BotSeshError('rollback_conflict_preserved_concurrent_changes'))
-        with self.assertRaises(BotSeshError) as error:
-            restart.restart_gateway(self.client, self.cfg, args, idle=lambda *a, **kw: dict(self.runtime),
-                restart=Mock(), health=lambda *a, **kw: False, rollback=rollback, recover=recover)
-        self.assertEqual(error.exception.code, 'rollback_conflict_preserved_concurrent_changes')
-        recover.assert_called_once_with(timeout=2)
-        self.assertIn('restart_checkpoint', self.store.read())
-
-    def test_restart_preserves_preexisting_dead_rooms_and_home_without_reverting(self):
-        restart.checkpoint(self.client, self.cfg)
-        args = argparse.Namespace(checkpoint=False, when_idle=True, max_wait=2, restart_timeout=2, health_timeout=2)
-        ticks = [0]; busy = iter([1, 0]); events = []; out = io.StringIO()
-        def sleep(seconds): ticks[0] += seconds; events.append('wait')
-        def idle(client, config, **kwargs):
-            return restart.wait_idle(client, config, **kwargs, snapshot=lambda: dict(self.runtime),
-                work=lambda r: next(busy, 0), queues=lambda r: 0, clock=lambda: ticks[0], sleep=sleep)
-        def relaunch(**kwargs):
-            events.append('restart')
-            self.runtime.update(instance='second', channel='up')
-            self.store.update(lambda d: d['rooms']['one']['health'].update(last_check=time.time()))
-        rollback = Mock(return_value=self.cfg)
-        with contextlib.redirect_stdout(out), patch.object(status, 'gateway_snapshot', side_effect=lambda: self.runtime):
-            restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch,
-                health=lambda c, cfg, before, **kw: restart.wait_healthy(c, cfg, before, timeout=0), rollback=rollback)
-        rollback.assert_not_called()
-        self.assertEqual(events, ['wait', 'restart'])
-        self.assertIn('Pre-existing home_channel warning: dead', out.getvalue())
-        self.assertIn('Pre-existing room warning: invalid', out.getvalue())
-        self.assertNotIn('restart_checkpoint', self.store.read())
-        self.assertEqual(set(self.store.read()['rooms']), {'one', 'dead', 'invalid'})
-
-    def test_auto_revert_and_second_restart_simulated(self):
-        self.store.update(lambda d:d['rooms'].clear())
-        restart.checkpoint(self.client, self.cfg)
-        args = argparse.Namespace(checkpoint=False, when_idle=True, max_wait=2, restart_timeout=2, health_timeout=2)
-        idle = Mock(side_effect=lambda *a, **kw: dict(self.runtime))
-        relaunch = Mock()
-        rollback = Mock(return_value={})
-        health = Mock(side_effect=[False, True])
-        with self.assertRaises(BotSeshError) as error:
-            restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health, recover=Mock())
-        self.assertEqual(error.exception.code, 'candidate_failed_auto_revert_healthy')
-        self.assertEqual(relaunch.call_count, 2); rollback.assert_called_once()
-        self.assertFalse(idle.call_args.kwargs['check_inbox']); self.assertTrue(idle.call_args.kwargs['allow_stopped'])
-        self.assertNotIn('restart_checkpoint', self.store.read())
-
-    def test_health_baseline_still_rejects_channel_and_live_room_regressions(self):
-        before = dict(self.runtime)
-        with contextlib.redirect_stdout(io.StringIO()):
-            before['liveness_baseline'] = restart.liveness_baseline(self.client, self.cfg, before)
-        before['restart_at'] = time.time()
-        self.runtime.update(instance='second', channel='up')
-        self.store.update(lambda d: d['rooms']['one']['health'].update(last_check=time.time()))
-        report = status.status_report(self.client, self.cfg, runtime=self.runtime)
-        with patch.object(restart, 'status_report', return_value=report):
-            self.assertTrue(restart.healthy(self.client, self.cfg, before))
-            self.assertFalse(restart.healthy(self.client, self.cfg, dict(self.runtime)))
-        for failure in ('channel_down', 'old_incarnation', 'stale_poll', 'lost_room', 'removed_room'):
-            with self.subTest(failure=failure):
-                bad = copy.deepcopy(report)
-                if failure == 'channel_down': bad['gateway']['channel'] = 'down'
-                elif failure == 'old_incarnation': bad['gateway']['instance'] = before['instance']
-                elif failure == 'stale_poll': bad['rooms'][0]['last_check'] = before['restart_at'] - 1
-                elif failure == 'lost_room': bad['rooms'][0]['alive'] = False
-                else: bad['rooms'] = [r for r in bad['rooms'] if r['room_id'] != 'one']
-                with patch.object(restart, 'status_report', return_value=bad):
-                    self.assertFalse(restart.healthy(self.client, self.cfg, before))
-        live_home = copy.deepcopy(self.cfg)
-        live_home['platforms']['botsesh']['home_channel']['chat_id'] = 'one'
-        with contextlib.redirect_stdout(io.StringIO()):
-            before['liveness_baseline'] = restart.liveness_baseline(self.client, live_home, before)
-        with patch.object(restart, 'status_report', return_value=report):
-            self.assertFalse(restart.healthy(self.client, live_home, before), 'previously live home must not regress')
-
-    def test_health_allows_no_live_rooms_only_when_baseline_had_none(self):
-        self.store.update(lambda d: d['rooms'].pop('one'))
-        before = dict(self.runtime)
-        with contextlib.redirect_stdout(io.StringIO()):
-            before['liveness_baseline'] = restart.liveness_baseline(self.client, self.cfg, before)
-        self.assertEqual(before['liveness_baseline']['rooms'], [])
-        before['restart_at'] = time.time()
-        self.runtime.update(instance='second', channel='up')
-        with patch.object(status, 'gateway_snapshot', return_value=self.runtime):
-            self.assertTrue(restart.healthy(self.client, self.cfg, before))
-            before['liveness_baseline']['rooms'] = ['one']
-            self.assertFalse(restart.healthy(self.client, self.cfg, before))
-
-    def test_real_health_auto_revert_keeps_original_baseline_and_dead_rooms(self):
-        restart.checkpoint(self.client, self.cfg)
-        args = argparse.Namespace(checkpoint=False, when_idle=True, max_wait=2, restart_timeout=2, health_timeout=2)
-        stages = []; baselines = []
-        original_rpc = oauth.OAuthClient.rpc.side_effect
-        def rpc(binding, name, *a, **kw):
-            if binding['room_id'] == 'one' and name == 'list_rooms' and stages == ['candidate']:
-                return {'rooms': []}
-            return original_rpc(binding, name, *a, **kw)
-        def relaunch(**kwargs):
-            stages.append('candidate' if not stages else 'recovery')
-            self.runtime.update(instance=stages[-1], channel='up')
-            self.store.update(lambda d: d['rooms']['one']['health'].update(last_check=time.time()))
-        def health(c, cfg, before, **kw):
-            baselines.append(before['liveness_baseline'])
-            return restart.wait_healthy(c, cfg, before, timeout=0)
-        def idle(c, cfg, **kw):
-            return restart.wait_idle(c, cfg, **kw, snapshot=lambda: dict(self.runtime), work=lambda r: 0, queues=lambda r: 0)
-        rollback = Mock(return_value=self.cfg)
-        with contextlib.redirect_stdout(io.StringIO()), patch.object(status, 'gateway_snapshot', side_effect=lambda: self.runtime), \
-             patch.object(oauth.OAuthClient, 'rpc', side_effect=rpc):
-            with self.assertRaises(BotSeshError) as error:
-                restart.restart_gateway(self.client, self.cfg, args, idle=idle, restart=relaunch, rollback=rollback, health=health, recover=Mock())
-        self.assertEqual(error.exception.code, 'candidate_failed_auto_revert_healthy')
-        self.assertEqual(stages, ['candidate', 'recovery'])
-        self.assertEqual([b['rooms'] for b in baselines], [['one'], ['one']])
-        rollback.assert_called_once()
-        self.assertEqual(set(self.store.read()['rooms']), {'one', 'dead', 'invalid'})
-        self.assertNotIn('restart_checkpoint', self.store.read())
-
-    def test_restart_happens_only_after_turn_and_server_inbox_drain(self):
-        self.store.update(lambda d: [d['rooms'].pop(r) for r in ('dead','invalid')])
-        restart.checkpoint(self.client,self.cfg)
-        events=[]; ticks=[0]; work=iter([1,0,0]); backlog=iter([0,2,0,0])
-        def sleep(s): ticks[0]+=s; events.append('wait')
-        def idle(client,config,**kw):
-            return restart.wait_idle(client,config,**kw,snapshot=lambda:dict(self.runtime),work=lambda r:next(work),
-                queues=lambda r:0,clock=lambda:ticks[0],sleep=sleep)
-        def report(*a,**kw):
-            return {'rooms':[{'room_id':'one','alive':True,'backlog':next(backlog)}],
-                    'home_channel': {'room_id':'dead', 'live':False, 'state':'deleted_or_inaccessible'}}
-        args=argparse.Namespace(checkpoint=False,when_idle=True,max_wait=3,restart_timeout=2,health_timeout=2)
-        with patch.object(restart,'status_report',side_effect=report):
-            restart.restart_gateway(self.client,self.cfg,args,idle=idle,
-                restart=lambda **kw:events.append('restart'),health=lambda *a,**kw:True)
-        self.assertEqual(events,['wait','wait','restart'])
-
-    def test_connect_refreshes_config_checkpoint_and_preserves_earlier_rooms_on_restore(self):
-        from hermes_cli.config import load_config_readonly, set_config_value
-        with contextlib.redirect_stdout(io.StringIO()), patch.object(cli, 'Client', return_value=self.client):
-            set_config_value('platforms.botsesh', json.dumps(self.cfg['platforms']['botsesh']))
-            cli.configure({'room_id': 'two', 'name': 'Two'})
-            before_three = load_config_readonly()
-            cli.configure({'room_id': 'three', 'name': 'Three'})
-            saved = self.store.read()['restart_checkpoint']
-            self.assertEqual(saved['config'], restart.config_part(before_three))
-            self.assertIsNone(saved['source'])
-            attempted = {'config': restart.config_part(load_config_readonly()), 'source': restart.source_snapshot()}
-            restored = restart.restore(self.client, saved, attempted)
-        self.assertIn('two', restored['platforms']['botsesh']['extra']['group_allowed_chats'])
-        self.assertNotIn('three', restored['platforms']['botsesh']['extra']['group_allowed_chats'])
-        self.assertEqual(set(self.store.read()['rooms']), {'one', 'dead', 'invalid'})
-
-    def test_connect_never_replaces_explicit_source_checkpoint(self):
-        from hermes_cli.config import load_config_readonly
-        restart.checkpoint(self.client, self.cfg, source=True)
-        saved = self.store.read()['restart_checkpoint']
-        with contextlib.redirect_stdout(io.StringIO()), patch.object(cli, 'Client', return_value=self.client):
-            cli.configure({'room_id': 'two', 'name': 'Two'})
-            cli.configure({'room_id': 'three', 'name': 'Three'})
-        self.assertEqual(self.store.read()['restart_checkpoint'], saved)
-        self.assertIn('three', load_config_readonly()['platforms']['botsesh']['extra']['group_allowed_chats'])
-
-    def test_restore_real_scoped_config_and_code_preserves_concurrent_edits(self):
-        from hermes_cli.config import load_config_readonly, set_config_value
-        source = self.home/'source'; source.mkdir(); (source/'plugin.yaml').write_text('version: old\n')
-        with patch.object(restart, 'ROOT', source):
-            with contextlib.redirect_stdout(io.StringIO()):
-                set_config_value('platforms.botsesh', json.dumps(self.cfg['platforms']['botsesh']))
-                set_config_value('platforms.telegram', '{"enabled":false}')
-            original = load_config_readonly()
-            restart.checkpoint(self.client, original, source=True)
-            saved = self.store.read()['restart_checkpoint']
-            (source/'plugin.yaml').write_text('version: candidate\n')
-            with contextlib.redirect_stdout(io.StringIO()): set_config_value('platforms.botsesh.enabled', 'false')
-            attempt = {'config':restart.config_part(load_config_readonly()), 'source':restart.source_snapshot()}
-            with contextlib.redirect_stdout(io.StringIO()): recovered = restart.restore(self.client, saved, attempt)
-            self.assertEqual(recovered['platforms']['botsesh'], original['platforms']['botsesh'])
-            self.assertEqual(recovered['platforms']['telegram'], original['platforms']['telegram'])
-            self.assertEqual((source/'plugin.yaml').read_text(), 'version: old\n')
-            (source/'plugin.yaml').write_text('version: concurrent\n')
-            with self.assertRaises(BotSeshError) as error: restart.restore(self.client, saved, attempt)
-            self.assertEqual(error.exception.code, 'rollback_conflict_preserved_concurrent_changes')
 
 
 class IsolatedNativeCli(unittest.TestCase):

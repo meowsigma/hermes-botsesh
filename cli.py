@@ -15,7 +15,7 @@ def setup(parser):
         'Command groups:\n'
         '  Connection & identity: connect, disconnect, rename, seats\n'
         '  Rooms & access: create-room, rooms, room-info, invite, invites, revoke-invite, rotate-password, forget\n'
-        '  Operations: send, status, restart-gateway\n\n'
+        '  Operations: send, status\n\n'
         'Commands use the saved profile; hermes -p PROFILE botsesh COMMAND overrides it.\n'
         'Use COMMAND --help for room selectors and explicit mutation options.'
     )
@@ -33,12 +33,7 @@ def setup(parser):
     status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
     status.add_argument('--set-home', metavar='ROOM_ID', help='Explicitly replace home_channel with a live, allowed room')
-    restart = sub.add_parser('restart-gateway', help='Save a recovery checkpoint or explain the manual restart fallback')
-    restart.add_argument('--when-idle', action='store_true', help='Refuse automatic restart until Hermes exposes a complete public idle gate; print manual guidance')
-    restart.add_argument('--max-wait', type=int, default=300, choices=range(1, 3601), metavar='SECONDS')
-    restart.add_argument('--health-timeout', type=int, default=60, choices=range(1, 601), metavar='SECONDS')
-    restart.add_argument('--restart-timeout', type=int, default=120, choices=range(1, 601), metavar='SECONDS')
-    restart.add_argument('--checkpoint', action='store_true', help='Before updating: save private BotSesh config/plugin-source rollback point; does not restart')
+
     disconnect = sub.add_parser('disconnect', help='Revoke one room connection on BotSesh')
     disconnect.add_argument('room_id', nargs='?', help='Room ID; optional when there is only one OAuth connection')
     for command in ('rename', 'seats'):
@@ -56,9 +51,7 @@ def setup(parser):
 
 def configure(binding):
     from hermes_cli.config import load_config, set_config_value
-    from .ops_restart import checkpoint
     cfg = load_config()
-    checkpoint(Client(), cfg)
     platform = cfg.get('platforms', {}).get('botsesh', {})
     rooms = list(platform.get('extra', {}).get('group_allowed_chats', []))
     if binding['room_id'] not in rooms:
@@ -76,17 +69,6 @@ def configure(binding):
     enabled = cfg.get('plugins', {}).get('enabled', [])
     if 'botsesh' not in enabled:
         set_config_value('plugins.enabled', json.dumps([*enabled, 'botsesh']))
-
-
-def restart_guidance(profile):
-    import shlex
-    prefix = shlex.join(['hermes', '-p', profile])
-    print('This is not an automatic idle restart: public Hermes status omits asynchronous delegations and a complete queued-admission gate.')
-    print('No restart or auto-revert was attempted. In your own terminal, quiesce new input and finish active turns, delegations, queued requests and pending sends, then run:')
-    print(f'  {prefix} gateway restart --detach')
-    print(f'  {prefix} gateway status')
-    print(f'  {prefix} botsesh status')
-    print('Core refuses live work noninteractively; do not add --yes, --interrupt or --all. Check the selected profile’s channel and rooms afterward.')
 
 
 def connect_runtime(profile):
@@ -107,8 +89,9 @@ def connect_runtime(profile):
         if ready():
             print('Hermes gateway and this profile’s BotSesh channel are ready.')
             return
-    print('Room connected; this profile’s BotSesh channel is not yet confirmed ready. Check the selected profile, not another gateway:')
-    restart_guidance(profile)
+    import shlex
+    prefix = shlex.join(['hermes', '-p', profile])
+    print(f'Room connected; BotSesh channel not ready. After work finishes, run `{prefix} gateway restart --detach`, then `{prefix} botsesh status`.')
 
 
 def connect_in_profile(args, profile, home):
@@ -192,14 +175,7 @@ def _handle_profile(args, profile):
             if not args.no_start:
                 connect_runtime(profile)
             return
-        if args.botsesh_action == 'restart-gateway':
-            from hermes_cli.config import load_config_readonly
-            from .ops_restart import restart_gateway
-            if not args.checkpoint:
-                restart_guidance(profile)
-                raise BotSeshError('safe_idle_restart_unavailable_no_restart')
-            restart_gateway(client, load_config_readonly(), args)
-            return
+
         if args.botsesh_action == 'status':
             from hermes_cli.config import load_config_readonly
             from .ops_status import status_report, print_status, set_home

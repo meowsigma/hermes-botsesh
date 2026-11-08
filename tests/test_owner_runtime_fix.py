@@ -11,21 +11,6 @@ from gateway.session_context import set_session_vars, clear_session_vars
 
 
 class RuntimeFixTests(OpsTests):
-    def test_idle_restart_refusal_prints_exact_selected_profile_command(self):
-        import argparse
-        import contextlib
-        import io
-        from hermes_botsesh_test import cli
-        args = argparse.Namespace(botsesh_action='restart-gateway', checkpoint=False)
-        output = io.StringIO()
-        with patch.object(cli, 'Client', return_value=self.client), \
-             patch('hermes_botsesh_test.ops_restart.lifecycle_command') as lifecycle, \
-             contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
-            cli._handle_profile(args, 'fixture')
-        lifecycle.assert_not_called()
-        self.assertIn('hermes -p fixture gateway restart --detach', output.getvalue())
-        self.assertIn('hermes -p fixture botsesh status', output.getvalue())
-        self.assertIn('not an automatic idle restart', output.getvalue())
 
     def test_pid_rung_can_be_a_multiplex_owner_without_local_runtime(self):
         stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -86,5 +71,4 @@ def load_tests(loader, tests, pattern):
     return unittest.TestSuite([
         RuntimeFixTests('test_pid_rung_can_be_a_multiplex_owner_without_local_runtime'),
         RuntimeFixTests('test_connected_platform_transition_is_not_a_heartbeat'),
-        RuntimeFixTests('test_idle_restart_refusal_prints_exact_selected_profile_command'),
         FinalReadFixTests('test_read_during_turn_keeps_frozen_receipt_and_one_greeting')])

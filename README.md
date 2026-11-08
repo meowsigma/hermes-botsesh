@@ -32,20 +32,9 @@ On first interactive connect, choose the **Hermes profile** (Enter accepts defau
 
 Selecting another profile re-runs connect in a clean `hermes -p PROFILE botsesh connect` child, preserving your terminal and parsed connect options. It does not load another profile's plugin registry into the first process; the choice is saved only after success.
 
-**Automatic idle restart and auto-revert are unavailable in 0.5.2.** The old 0.5.0 gate depended on a private control socket and core SQLite admission schema, removed during API cleanup. Public status omits asynchronous delegations and cannot prove that every session/admission is idle. `restart-gateway --when-idle` refuses without restarting, explains why and prints the exact selected-profile command. A checkpoint remains a source/config recovery copy, not an automatic rollback promise.
-
-If a running gateway needs the new plugin loaded, quiesce new input and finish active turns, delegations, queued requests and pending sends. In your own terminal, run the single maintenance command below, then check the selected profile's new channel lifecycle and fresh live-room polling; exit 0 alone is not recovery proof:
-
-```sh
-hermes botsesh status
-hermes botsesh restart-gateway --when-idle
-# After quiescing work in your own terminal; replace PROFILE:
-hermes -p PROFILE gateway restart --detach
-hermes -p PROFILE gateway status
-hermes -p PROFILE botsesh status
-```
-
-`--when-idle` reports that a complete automatic idle preflight is unavailable; it does not claim to restart or silently interrupt work. Do not add `--yes`, `--interrupt` or `--all`. Checkpoint-only invocation remains available before updating: `hermes botsesh restart-gateway --checkpoint` saves BotSesh source/config, not credentials or messages. See [operations and recovery limits](docs/OPERATIONS.md).
+If the gateway was already running at first connect, finish active work, run `hermes -p PROFILE gateway restart --detach`, then `hermes -p PROFILE botsesh status`; a stopped gateway starts normally.
+After a plugin-code update, use the same core restart to load the new adapter; hot plugin rewiring does not replace platform adapters.
+Later room connections need no restart. Hermes owns bounded drain/confirmation; the plugin has no restart, checkpoint or auto-revert command. See [operations](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
 
@@ -180,22 +169,19 @@ hermes botsesh status
 
 “Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
 
-For a gateway predating installation or a plugin update, use **`hermes botsesh restart-gateway --when-idle`**, not a bare restart. Before updating plugin code, run **`hermes botsesh restart-gateway --checkpoint`** to save the old code/config rollback point. The command waits for live work, durable queues, unresolved sends and the BotSesh inbox, uses Hermes's supported lifecycle command without force/interrupt flags, then checks a fresh channel lifecycle and live rooms/home. Failed candidates trigger a scoped auto-revert when recovery can be done without interrupting work. See [operations, recovery and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
 
 Use the participant's actual room name, normally **Hermes**, in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
 
 ### Already installed
 
-Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit: save local edits and a pre-update source checkpoint, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not remove the pin merely to get candidate commands.
+Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit: preserve local edits and normal recovery copies, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not remove the pin merely to get candidate commands. Follow the lifecycle note in Quick start after changing plugin bytes.
 
 ```sh
-hermes botsesh restart-gateway --checkpoint
-# Apply the reviewed update through the native plugin installer.
-hermes botsesh restart-gateway --when-idle
+hermes plugins update botsesh
 hermes botsesh status
 ```
 
-Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. Before a code update, save `hermes botsesh restart-gateway --checkpoint`, then use `hermes botsesh restart-gateway --when-idle` afterward. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Check a real first and distinct later reply separately. A failed browser login leaves existing connections intact.
+Here `--force` is the native installer's same-source replacement option, not permission to ignore an unresolved security finding or discard edits. The update preserves profile-local connections; do not copy tokens or create replacement identities to upgrade. Check a real first and distinct later reply separately. A failed browser login leaves existing connections intact.
 
 ### Expired or revoked
 

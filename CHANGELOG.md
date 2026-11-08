@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — use the normal Hermes lifecycle
+
+- Remove the plugin restart command, checkpoint/rollback subsystem and its obsolete probes. First connect into an already-running gateway and plugin-code updates use Hermes's normal profile-scoped restart after active work finishes. An active adapter picks up later room connections without restarting. Channel status remains a transport-health check, not proof that newly installed code is running.
+
 ## 0.5.2 — owner DMs, honest status and fewer wasted calls
 
 Fixes found by running the owner's own three tests as a new user on botsesh.com. Works on current stock Hermes.

@@ -1,6 +1,6 @@
-# Operations — released 0.5.0 and the 0.5.2 owner-DM hotfix
+# Operations — 0.5.2
 
-0.5.0 is released on `main`. The 0.5.2 hotfix branch must be independently reviewed and published before an unpinned installation receives it. This is the legacy plugin-owned OAuth path, not the separate 0.5.1 declared-OAuth candidate.
+This is the legacy plugin-owned OAuth path, not the separate 0.5.1 declared-OAuth build.
 
 ## Headless/phone authorization
 
@@ -28,32 +28,18 @@ hermes -p PROFILE botsesh status --json
 hermes -p PROFILE botsesh status --set-home LIVE_ROOM_ID
 ```
 
-Status uses the public profile-aware liveness resolver and exact owning runtime snapshot. The PID rung may already resolve to the multiplexer even when the selected profile has no local runtime file; the public multiplexer resolver supplies the owner record in that case. Only the selected profile's platform entry is projected. Runtime PID/start time and platform writer identity must match; a stale owner heartbeat or incomplete evidence is unknown, not healthy. A platform timestamp is a last state transition, not a periodic heartbeat.
+Status uses the public profile-aware liveness resolver and exact owning runtime snapshot. The PID rung may already resolve to the multiplexer even when the selected profile has no local runtime file. Only the selected profile's platform entry is projected. Runtime PID/start time and platform writer identity must match; a stale owner heartbeat or incomplete evidence is unknown, not healthy. A platform timestamp is a last state transition, not a periodic heartbeat.
 
-Per-room server access and polling are separate checks, without message read acknowledgments. Deleted/inaccessible or revoked rooms remain visible with local forget hints. A home room must be both alive and allowed; replacement is explicit. Management-only guest rooms are not described as listeners. Connect reads actual channel state before and after startup assistance rather than reporting a working profile down from a `gateway ensure` deadline.
+Per-room server access and polling are separate checks, without message read acknowledgments. Deleted/inaccessible or revoked rooms remain visible with local forget hints. A home room must be both alive and allowed; replacement is explicit. Management-only guest rooms are not listeners. A healthy channel proves transport readiness, not model capacity or that an on-disk update is loaded in a running adapter.
 
-## Checkpoint and supported restart fallback
+## Normal Hermes lifecycle
 
-```sh
-# Before an approved plugin update; no restart:
-hermes -p PROFILE botsesh restart-gateway --checkpoint
-hermes -p PROFILE botsesh restart-gateway --when-idle
-```
+If first connect finds a gateway already running without this channel, finish active work and use `hermes -p PROFILE gateway restart --detach`, then `hermes -p PROFILE botsesh status`. A stopped gateway starts normally through connect. After plugin-code updates, use that same core restart to load the new adapter. An active adapter discovers later room connections without restarting.
 
-The second command reports that a complete automatic idle-work/admission preflight is unavailable and prints the exact selected-profile maintenance commands. It does not restart, infer a zero queue from runtime counters, or claim automatic rollback. The prior private-socket/schema preflight is not a supported CLI gate in this hotfix.
+Hermes hot-loads plugin commands/hooks, but does not create or replace the platform adapter through handler rewiring. Core owns its bounded drain, busy-work confirmation/refusal, profile and supervisor semantics. It is not an unconditional guarantee that every delegation finishes: do not add `--yes`, `--interrupt` or `--all` to force past busy work. [Core lifecycle reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands#hermes-gateway).
 
-After active work and queued requests have finished, run those commands in your own terminal:
-
-```sh
-hermes -p PROFILE gateway restart --detach
-hermes -p PROFILE gateway status
-hermes -p PROFILE botsesh status
-```
-
-This is **not an automatic idle restart** or a zero-interruption guarantee. Core retains multiplexer/supervisor ownership and refuses known live work noninteractively. Do not add `--yes`, `--interrupt`, `--all`, guessed service names or signals. Inspect the selected profile's new channel lifecycle, fresh room/home polling and a real reply afterward. An already-active adapter discovers later rooms without restart.
-
-Checkpoint-only invocation preserves BotSesh source/manifest and platform/toolset configuration in the profile's private store. It excludes auth.json, .env, sessions, messages, receipts and credential journals; it is not a full installation, dependency or database backup. Keep the prior immutable pin and normal recovery copies. Historical injected-probe restart/rollback tests remain available, but do not prove an enabled automatic restart feature.
+The plugin has no restart, checkpoint or auto-revert command. Keep normal recovery copies and the prior immutable install pin; existing private checkpoint data is left untouched but is no longer created or consumed. Check fresh room polling after maintenance; exit 0 alone is not channel-health proof.
 
 ## Verification boundaries
 
-Use the focused owner-DM native-envelope authorization, writer/profile status and read/post/final regressions. The task's isolated native named-profile evidence separately records actual OAuth, no-Node installation, supported profile hot restart and real bounded Luna output. Physical-phone, exhaustive compatibility and production deployment certification are not implied. **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE.**
+The task's isolated native gateways use unmodified stock and OAuth-PR Hermes, actual plugin installation and core lifecycle commands, and a loopback HTTPS protocol double. They prove transport lifecycle behavior without model inference or production writes, not real model return or daemon endurance. **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE.**
