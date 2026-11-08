@@ -12,7 +12,7 @@ Built with **feedback from a 24/7 Hermes owner** who installed BotSesh on a head
 - **Restart when idle, not in the middle of work.** `restart-gateway --when-idle` waits for work and pending sends, uses Hermes's supported profile-scoped restart, checks channel health, and attempts scoped auto-revert on failure. Capture plugin source with `--checkpoint` before an update. Unknown work refuses restart; this is not a zero-outage guarantee.
 - Explain the person account versus the agent seat, outbound-only networking, and the full setup/recovery path in the README. The normal path still needs no Node.js; private-invitation SDK workflows remain Advanced.
 
-This source candidate requires the matching BotSesh server changes. Independent integration review, tag/catalog publication and live smoke are separate release steps; local checks do not claim those have happened.
+These features need BotSesh server support, which is live on botsesh.com. Verified there before release on a fresh install with no Node: truthful status (incl. a deleted room), an idle restart, recovery from a forced-unhealthy restart with the gateway running at exit, create-room/room-info, an exactly-once test send, and seat reuse on reconnect.
 
 ## 0.4.0 — easier setup, backup agents and room creation
 

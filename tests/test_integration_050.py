@@ -45,7 +45,7 @@ class Integration050(unittest.TestCase):
              patch.object(ops_restart.shutil, 'which', return_value='/fixture/hermes'), \
              patch.object(ops_restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             ops_restart.lifecycle_restart(timeout=12)
-        self.assertEqual(run.call_args.args[0], ['/fixture/hermes', '-p', 'night', 'gateway', 'restart'])
+        self.assertEqual(run.call_args.args[0], ['/fixture/hermes', '-p', 'night', 'gateway', 'restart', '--detach'])
         self.assertEqual(run.call_args.kwargs['env']['HERMES_HOME'], str(target))
         self.assertNotIn('HERMES_PROFILE', run.call_args.kwargs['env'])
         self.assertNotIn('HERMES_PROFILE_NAME', run.call_args.kwargs['env'])
