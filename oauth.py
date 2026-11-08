@@ -113,44 +113,9 @@ def _token_request(origin, fields):
 
 
 def _make_loopback_callback_handler(expected_path, *, origin, expected_state):
-    """Capture the native callback fields, then leave the browser on BotSesh."""
-    from http.server import BaseHTTPRequestHandler
-    from urllib.parse import parse_qs
-
-    landing = checked_origin(origin) + '/connected?client=hermes'
-    result = dict.fromkeys(('code', 'state', 'error', 'error_description'))
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def setup(self):
-            super().setup()
-            # The native loopback server is single-threaded. Chromium may
-            # preconnect without sending HTTP; bound that socket so neither a
-            # queued callback nor native shutdown can wait forever on it.
-            self.connection.settimeout(2)
-
-        def do_GET(self):
-            parsed = urlsplit(self.path)
-            if parsed.path != expected_path:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b'Not found.')
-                return
-            params = parse_qs(parsed.query)
-            for key in result:
-                result[key] = params.get(key, [None])[0]
-            import hmac
-            failed = result['error'] or not str(result['code'] or '').strip() or not hmac.compare_digest(str(result['state'] or ''), expected_state)
-            self.send_response(302)
-            self.send_header('Location', landing + ('&error=1' if failed else ''))
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('Referrer-Policy', 'no-referrer')
-            self.send_header('Content-Length', '0')
-            self.end_headers()
-
-        def log_message(self, format, *args):
-            pass  # The request URL contains the authorization code and state.
-
-    return CallbackHandler, result
+    from .oauth_callback import callback_handler
+    return callback_handler(expected_path, landing=checked_origin(origin) + '/connected?client=hermes',
+                            expected_state=expected_state)
 
 
 def _native_loopback_helpers():
@@ -167,7 +132,7 @@ def _native_loopback_helpers():
             'challenge': (flow._pkce_code_challenge, ('verifier',), {}),
             'hint': (flow._print_loopback_ssh_hint, ('http://127.0.0.1:1/callback',), {}),
             'serve': (flow._serve_loopback_callback, (None, {}),
-                      {'timeout_seconds': 180, 'err': None, 'timeout_code': 'oauth_callback_timeout'}),
+                      {'timeout_seconds': 300, 'err': None, 'timeout_code': 'oauth_callback_timeout'}),
             'graphical': (flow._can_open_graphical_browser, (), {}),
             'post_token': (pkce._post_token, ('botsesh', None, {}), {'code': 'oauth_token_exchange_failed'}),
             'err': (pkce._err, ('botsesh', 'message', 'code'), {}),
@@ -180,7 +145,8 @@ def _native_loopback_helpers():
     return {name: function for name, (function, _, _) in calls.items()}
 
 
-def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, gateway_id=None, profile=None, name=None, previous=None):
+def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
+          gateway_id=None, profile=None, name=None, previous=None, paste_redirect=False):
     from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, login as hermes_login
     origin = checked_origin(origin)
     cfg = OAuthPKCEConfig(client_id=CLIENT_ID, authorize_url=origin + '/oauth/authorize',
@@ -193,6 +159,9 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_
                           timeout_seconds=timeout, label='BotSesh')
     helpers = _native_loopback_helpers()
     if helpers is None:
+        if paste_redirect:
+            raise BotSeshError('upgrade_hermes_for_no_browser_callback')
+        print('Native callback compatibility mode: upgrade Hermes for POST diagnostics and --paste-redirect support.')
         return hermes_login('botsesh', cfg, open_browser=open_browser)
 
     import hmac
@@ -218,14 +187,25 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=180, room_
         # Never print the received callback query, error prose, verifier or tokens.
         print(f'\nOpen this URL to authorize Hermes with BotSesh:\n  {authorize_url}\n')
         print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
+        if not paste_redirect:
+            print('Phone cannot reach loopback? Re-run with --no-browser --paste-redirect for hidden URL paste and URL re-print.')
         helpers['hint'](redirect_uri)
         if open_browser and helpers['graphical']():
             try:
                 webbrowser.open(authorize_url)
             except Exception:
                 print('Could not open the browser automatically; use the URL above.')
-        callback = helpers['serve'](server, result, timeout_seconds=timeout, err=err,
-                                    timeout_code='oauth_callback_timeout')
+        from .oauth_callback import paste_callback, timeout_diagnostic
+        try:
+            callback = (paste_callback(redirect_uri=redirect_uri, authorize_url=authorize_url,
+                                       expected_state=state, timeout=timeout, err=err)
+                        if paste_redirect else
+                        helpers['serve'](server, result, timeout_seconds=timeout, err=err,
+                                         timeout_code='oauth_callback_timeout'))
+        except Exception as failure:
+            if getattr(failure, 'code', None) == 'oauth_callback_timeout':
+                timeout_diagnostic(handler.observations)
+            raise
         if callback.get('error'):
             # Do not reflect untrusted callback error prose into CLI logs.
             raise err('authorization failed.', 'oauth_authorization_denied')
@@ -327,14 +307,16 @@ class OAuthClient:
                 raise BotSeshError('invalid_mcp_page')
         return data
 
-    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=180, room_hint=None, name=None, profile=None):
+    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
+                name=None, profile=None, paste_redirect=False):
         # Serialize complete browser enrollments separately from refresh: two
         # concurrent callbacks must not replace a newer local grant with an old
         # grant that the server just superseded. Refresh can continue meanwhile.
         with _lock(self.store, connect=True):
-            return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint, name=name, profile=profile)
+            return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
+                                 name=name, profile=profile, paste_redirect=paste_redirect)
 
-    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile):
+    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect):
         from .identity import current_profile, gateway_install_id
         profile = profile or current_profile()
         name = preferred_name(name)  # Refuse invalid names before creating a grant.
@@ -344,7 +326,8 @@ class OAuthClient:
                       and not b.get('oauth_root') and b.get('origin') == origin and (not room_hint or b['room_id'] == room_hint)]
         previous = candidates[0] if len(candidates) == 1 else None
         fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
-                       gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous)
+                       gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous,
+                       **({'paste_redirect': True} if paste_redirect else {}))
         provisional = {'origin': origin}
         try:
             rooms = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms')
