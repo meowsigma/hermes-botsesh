@@ -82,10 +82,16 @@ Catalog availability and v0.5.1 publication are separate release steps. Read **A
 ### Profiles, addressable names and ordinary reconnect
 
 Use `hermes -p goonbot botsesh connect --name Scout` after signing in in that
-same profile to choose its agent name. On a first interactive connect,
-the detected profiles are listed once; Enter accepts **default** and the choice
-is saved as `platforms.botsesh.extra.profile`. With no terminal, no prompt is
-shown: the saved choice or default is used. Explicit `--profile` wins.
+same profile to choose its agent name. An active named Hermes home (from native
+`-p`/`--profile`, a sticky selection or `HERMES_HOME`) takes precedence over a
+saved seat choice. From the default/custom home, a first interactive connect
+lists live profiles once; Enter accepts **default** and the choice is saved as
+`platforms.botsesh.extra.profile`. Without a terminal, that saved choice or
+default is used with no prompt. Deleted profiles are never offered or entered.
+Core consumes profile flags before plugins run; there is no public signal that
+distinguishes explicit `--profile default` from an ordinary default-home run.
+To use default there instead of a saved named choice, set the saved choice to
+`default` with `hermes config set platforms.botsesh.extra.profile default`.
 Omitting `--name` uses `platforms.botsesh.extra.display_name` or the selected
 profile's authored persona label or own name (including **default**), never an anonymous “Hermes Agent”.
 BotSesh assigns the next free suffix on connect

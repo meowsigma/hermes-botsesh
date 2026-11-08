@@ -12,14 +12,27 @@ from .storage import Store
 
 def current_profile():
     from hermes_cli.config import get_hermes_home
+    from hermes_constants import profile_name_for_home, named_profile_is_live
     home = Path(get_hermes_home())
-    return home.name if home.parent.name == 'profiles' else 'default'
+    profile = profile_name_for_home(home)
+    # The public helper also identifies an ancestor's owner. A nested custom
+    # HERMES_HOME is a separate default home, not that ancestor's active seat.
+    if home.parent.name == 'profiles' and (home.name == profile or named_profile_is_live(home)):
+        return home.name
+    return 'default'
 
 
 def profile_root():
     from hermes_cli.config import get_hermes_home
+    from hermes_constants import get_default_hermes_root, profile_name_for_home
     home = Path(get_hermes_home())
-    return home.parent.parent if home.parent.name == 'profiles' else home
+    root = get_default_hermes_root(home=home)
+    profile = profile_name_for_home(home) or 'default'
+    if home == root or home == root / 'profiles' / profile:
+        return root
+    # The core root helper collapses every descendant of ~/.hermes to that
+    # install. An explicit nested/custom home must not escape into its owner.
+    return home.parent.parent if home.parent.name == 'profiles' and profile != 'default' else home
 
 
 def profile_dir(name):
@@ -27,27 +40,22 @@ def profile_dir(name):
 
 
 def profile_names():
-    # Documented profiles/<name> layout and identity-file presence contract.
-    # Never open credentials/configs while enumerating profile names.
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+    # Use core's public identity/tombstone contract without opening credentials.
     parent = profile_root() / 'profiles'
-    identities = ('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db')
     names = [p.name for p in parent.iterdir()
-             if p.is_dir() and not p.is_symlink()
-             and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', p.name)
-             and any((p / name).is_file() for name in identities)] if parent.is_dir() else []
+             if not p.is_symlink() and PROFILE_ID_RE.fullmatch(p.name)
+             and named_profile_is_live(p)] if parent.is_dir() else []
     return ['default', *sorted(set(names) - {'default'})]
 
 
 def explicit_native_profile():
-    # Hermes documents -p/--profile and leaves argv intact after pre-parsing.
-    # Do not import/read the CLI main module or its private parser state.
-    for arg in sys.argv[1:]:
-        if arg == '--':
-            break
-        if (arg in ('-p', '--profile') or arg.startswith('--profile=')
-                or arg.startswith('-p') and len(arg) > 2):
-            return current_profile()
-    return None
+    # Core consumes -p/--profile before loading plugins. Its public active
+    # named home survives that preparse and takes precedence over a saved
+    # seat choice (also for sticky/env-selected named homes). Never scan argv:
+    # remaining tokens can belong to a subcommand or a test runner instead.
+    profile = current_profile()
+    return profile if profile != 'default' else None
 
 
 def persona_name():
@@ -72,6 +80,7 @@ def persona_name():
 
 def choose_profile(explicit=None, *, interactive=False):
     from hermes_cli.config import load_config
+    from hermes_constants import PROFILE_ID_RE
     extra = load_config().get('platforms', {}).get('botsesh', {}).get('extra', {})
     saved = extra.get('profile')
     if explicit is None:
@@ -85,7 +94,7 @@ def choose_profile(explicit=None, *, interactive=False):
         answer = input('Profile [default]: ').strip()
         value = names[int(answer)-1] if answer.isdigit() and 1 <= int(answer) <= len(names) else answer or 'default'
     value = 'default' if value is None else value
-    if not isinstance(value, str) or value not in names or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', value):
+    if not isinstance(value, str) or value not in names or not PROFILE_ID_RE.fullmatch(value):
         raise BotSeshError('unknown_hermes_profile')
     return value
 

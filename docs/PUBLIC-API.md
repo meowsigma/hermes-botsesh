@@ -29,12 +29,12 @@ Line numbers refer to predecessor plugin `eb160dcd7feaa693f57cb1457f882c90505e42
 | 4 | `dm_controls.py:37 agent.i18n.t` | Plugin-owned English presentation strings. Authored text is not translated or guessed. Dynamic core/plugin language-pack inheritance needs a public translation API. |
 | 5 | `dm_controls.py:469 gateway.platforms.base_exec_approval.approval_timeout_seconds` | Public re-export `gateway.platforms.base.approval_timeout_seconds`; local card expiry is not claimed to be the request's exact remaining time. |
 | 6 | `dm_controls.py:554 hermes_cli.model_selection_guards.combined_selection_warning` | Custom model-picker override off. Native `/model` listing and typed selection retain core's full guards, including live-session context. |
-| 7 | `identity.py:14 hermes_cli.profiles.current_profile_name` | Profile derived from public `get_hermes_home()` and documented immediate `profiles/<name>` layout; arbitrary custom homes remain scoped. |
+| 7 | `identity.py:14 hermes_cli.profiles.current_profile_name` | Public `get_hermes_home()` + `hermes_constants.profile_name_for_home`/`named_profile_is_live`, limited to the active immediate home so nested custom homes cannot adopt an ancestor's profile. Active named homes survive core preparse and override saved seat choices; argv is never scanned. |
 | 8 | `ops_restart.py:49 gateway.control_socket.query_gateway_control` | Automated idle restart off: no complete public live-work/admissions preflight exists. Refuses without restart; checkpoint still works. |
 | 9 | `ops_status.py:23 hermes_cli.gateway_runtime.control_home_for` | Public `gateway.status.resolve_gateway_liveness` and runtime readers; no private socket/home discovery. |
 | 10 | `command_catalog.py:20 hermes_cli.commands.resolve_command` | Documented shortcuts + actual native dispatch, not a copied dispatcher. |
-| 11 | `identity.py:20 hermes_cli.profiles.list_profiles` | Plugin-owned enumeration of documented profile directories with identity-file presence checks, not secret/config contents. |
-| 12 | `identity.py:51 hermes_cli.profiles.get_profile_dir` | Documented root/profiles layout and public home override context manager; reject missing/symlink targets. |
+| 11 | `identity.py:20 hermes_cli.profiles.list_profiles` | Public `PROFILE_ID_RE` and `named_profile_is_live` identity/tombstone contract; never copy marker lists or open secret/config contents. |
+| 12 | `identity.py:51 hermes_cli.profiles.get_profile_dir` | Public `get_default_hermes_root(home=...)` and home override context manager; explicit nested/custom homes stay confined; reject missing, deleted and symlink targets. |
 | 13 | `identity.py:107 hermes_cli.profiles.read_profile_meta` | Read documented `profile.yaml` display-name field with the stock third-party safe YAML parser. Never interpret it as identity/authority. |
 | 14 | `oauth.py:33 hermes_cli.profiles.current_profile_name` | Reuse plugin-owned home-derived profile label. |
 | 15 | `ops_status.py:13 hermes_cli.profiles.current_profile_name` | Reuse plugin-owned home-derived profile label. |

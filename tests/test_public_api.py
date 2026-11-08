@@ -41,9 +41,9 @@ class PublicApiContracts(unittest.TestCase):
         self.assertEqual(identity.profile_dir('default'), self.home)
         self.assertEqual(identity.profile_dir('scout'), self.home / 'profiles' / 'scout')
         with patch.object(identity.sys, 'argv', ['hermes','--profile=default','botsesh','status']):
-            self.assertEqual(identity.explicit_native_profile(), 'default')
+            self.assertIsNone(identity.explicit_native_profile())
         with patch.object(identity.sys, 'argv', ['hermes','-pdefault','botsesh','status']):
-            self.assertEqual(identity.explicit_native_profile(), 'default')
+            self.assertIsNone(identity.explicit_native_profile())
         with patch.object(identity.sys, 'argv', ['hermes','botsesh','send','--','--profile=foreign']):
             self.assertIsNone(identity.explicit_native_profile())
 

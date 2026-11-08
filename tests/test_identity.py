@@ -45,7 +45,7 @@ class ProfileSelection(unittest.TestCase):
         with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', return_value='3'):
             self.assertEqual(identity.choose_profile(interactive=True), 'evilgoonbot')
         self.config['platforms']['botsesh']['extra']['profile'] = 'goonbot'
-        with patch.object(identity, 'current_profile', return_value='evilgoonbot'), patch.object(sys, 'argv', ['hermes', '-p', 'evilgoonbot', 'botsesh', 'status']):
+        with patch.object(identity, 'current_profile', return_value='evilgoonbot'), patch.object(sys, 'argv', ['hermes', 'botsesh', 'status']):
             self.assertEqual(identity.choose_profile(), 'evilgoonbot')
         for value in ('../escape', 'missing', '', False, [], ['goonbot']):
             with self.assertRaises(original.BotSeshError):
@@ -139,6 +139,64 @@ class SeatLifecycle(unittest.TestCase):
                 self.assertEqual(original.Store().root, target / 'plugin-data/botsesh')
             self.assertEqual(get_hermes_home(), self.home)
         self.assertEqual((self.home / 'plugin-data/botsesh-identity/rooms.json').stat().st_mode & 0o777, 0o600)
+
+    def test_preparse_stripped_argv_keeps_active_named_home_over_saved_profile(self):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        # This is a real profile root, even when TMPDIR is inside another home.
+        (self.home / 'config.yaml').write_text('{}')
+        home = self.home / 'profiles' / 'alpha'
+        home.mkdir(parents=True)
+        (home / 'config.yaml').write_text('{}')
+        config = {'platforms': {'botsesh': {'extra': {'profile': 'default'}}}}
+        token = set_hermes_home_override(home)
+        try:
+            # Real Hermes consumed `-p alpha`, set the home, then stripped it.
+            with patch.object(sys, 'argv', ['hermes', 'botsesh', 'connect']), patch('hermes_cli.config.load_config', return_value=config):
+                self.assertEqual(identity.choose_profile(), 'alpha')
+                self.assertEqual(identity.choose_profile('default'), 'default')
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_stray_profile_like_tokens_never_override_saved_profile(self):
+        home = self.home / 'profiles' / 'alpha'
+        home.mkdir(parents=True)
+        (home / 'config.yaml').write_text('{}')
+        config = {'platforms': {'botsesh': {'extra': {'profile': 'alpha'}}}}
+        argvs = [
+            ['unittest', 'discover', '-p', 'test_*.py'],
+            ['hermes', 'botsesh', 'connect', '--name', '-pirate'],
+            ['hermes', 'botsesh', 'connect', '-pfoo'],
+            ['hermes', 'botsesh', 'connect', '-p', '--invalid'],
+            ['hermes', 'botsesh', 'connect', '--', '--profile=beta'],
+        ]
+        for argv in argvs:
+            with self.subTest(argv=argv), patch.object(sys, 'argv', argv), patch('hermes_cli.config.load_config', return_value=config):
+                self.assertEqual(identity.choose_profile(), 'alpha')
+
+    def test_deleted_profile_is_not_listed_or_selectable(self):
+        from hermes_constants import mark_named_profile_deleted
+        for name in ('alpha', 'beta'):
+            home = self.home / 'profiles' / name
+            home.mkdir(parents=True)
+            (home / 'config.yaml').write_text('{}')
+        mark_named_profile_deleted(self.home / 'profiles' / 'beta')
+        self.assertEqual(identity.profile_names(), ['default', 'alpha'])
+        with self.assertRaises(original.BotSeshError):
+            identity.choose_profile('beta')
+
+    def test_deleted_profile_scope_refuses_even_when_it_is_active(self):
+        from hermes_constants import mark_named_profile_deleted, set_hermes_home_override, reset_hermes_home_override
+        home = self.home / 'profiles' / 'beta'
+        home.mkdir(parents=True)
+        (home / 'config.yaml').write_text('{}')
+        mark_named_profile_deleted(home)
+        token = set_hermes_home_override(home)
+        try:
+            with self.assertRaises(original.BotSeshError):
+                with identity.profile_scope('beta'):
+                    self.fail('entered a deleted profile')
+        finally:
+            reset_hermes_home_override(token)
 
     def test_seats_prune_no_tty_requires_yes_and_readback(self):
         binding = self.binding

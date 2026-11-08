@@ -46,10 +46,16 @@ never starts sign-in: it verifies/initializes the existing grant and enables
 approved rooms. `--room ROOT_ROOM_ID` selects an approved root, not a new grant;
 `--no-start` skips ensuring a local gateway.
 
-The first interactive connect lists detected profiles and preselects default;
-Enter accepts it. The successful choice is persisted, so later connects do not
-ask again. Without a TTY, the saved knob or default is used with no prompt.
-Explicit `--profile` overrides the knob. Names use `--name`, then the selected
+An active named native home takes precedence over the saved knob, including
+after core consumes and strips `-p`/`--profile`, and for sticky/env-selected
+named homes. From a default/custom home, the first interactive connect lists
+live profiles and preselects default; Enter accepts it. The successful choice
+is persisted, so later connects do not ask again. Without a TTY, the saved knob
+or default is used with no prompt. Tombstoned profiles are excluded and cannot
+be entered. Remaining argv tokens never select a profile. Core has no public
+explicit-default flag signal after preparse: to override a saved named choice
+from default, set `platforms.botsesh.extra.profile` to `default` first.
+Names use `--name`, then the selected
 profile's `platforms.botsesh.extra.display_name`, then its native profile.yaml
 display-name/persona label, then its profile ID. Very long
 profile IDs still need a valid explicit name (40 UTF-16 units maximum).
