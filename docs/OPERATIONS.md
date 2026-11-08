@@ -52,6 +52,8 @@ channel is down/unknown. Management-only guest bindings are not listeners.
 A home room must be live and allowed. Repair is explicit; connect does not
 silently replace an existing dead home. Forget is local cleanup, not revocation.
 
+Core's own-policy allowlist admits a private DM only for its currently authorized OAuth grant owner, verified through the server's DM identity projection. It does not turn a group invitation, display name, expired consent or another person's DM into owner authority. Explicit native operator allowlists are preserved. `botsesh_read` within an active native turn returns that turn's frozen batch after checking live access; it does not replace its receipt with a new catchup.
+
 ## Checkpoints work; automatic idle restart is unavailable
 
 ```sh
@@ -73,12 +75,21 @@ pretend zero means idle, or substitute an interrupt/force flag. No automatic
 restart, auto-revert, outage-free maintenance or post-restart health guarantee
 is claimed. Checkpoint-only invocation remains supported.
 
-If a running gateway needs the channel loaded, arrange local maintenance and
-quiesce external work using the operator's existing procedures. Use Hermes's
-supported gateway lifecycle during that window, and inspect gateway/channel,
-room/home health and a real reply afterward. Do not restart a busy shared host
-just to complete setup. Later rooms are discovered without restart by an
-already-active adapter.
+If a running gateway needs the channel loaded, finish active work and queued
+requests first, then run the exact selected-profile commands printed by the
+refusal (replace `PROFILE` with the profile that owns the connection):
+
+```sh
+hermes -p PROFILE gateway restart --detach
+hermes -p PROFILE gateway status
+hermes -p PROFILE botsesh status
+```
+
+This is **not an automatic idle restart**. Core's supported lifecycle retains
+multiplexer/supervisor ownership and refuses known live work noninteractively;
+do not add `--yes`, `--interrupt` or `--all`. Inspect the selected profile's
+channel, room/home health and a real reply afterward. Later rooms are discovered
+without restart by an already-active adapter.
 
 `hermes gateway status` is supported human-readable output on the tested core;
 there is no `gateway status --json`. The documented `gateway attach --json`

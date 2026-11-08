@@ -41,7 +41,10 @@ def gateway_snapshot():
         native = platforms.get('botsesh') or {}
         writer_matches = (native.get('writer_pid') == liveness.pid
                           and native.get('writer_start_time') == live['start_time'])
-        stale = runtime_status_is_stale(live) or runtime_status_is_stale(native)
+        # Platform updated_at is the last state transition, not a heartbeat;
+        # a healthy long-lived connection need not change it. The owning
+        # process snapshot supplies freshness, with per-platform writer identity.
+        stale = runtime_status_is_stale(live)
         answer.update(channel='unknown' if stale else 'up' if native.get('state') == 'connected' and writer_matches else 'down',
                       native_state=native.get('state', 'not_loaded'), observed_at=native.get('updated_at'),
                       snapshot_stale=stale)

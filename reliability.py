@@ -41,6 +41,6 @@ def failure_notice(code):
     why = {'provider_budget': 'ran out of usage', 'provider_error': 'model/provider error',
            'interrupted': 'gateway restarted mid-turn; tool execution may be incomplete. Check before retrying',
            'cancelled': 'turn cancelled', 'empty_response': 'no answer was returned',
-           'admission_denied': 'gateway did not admit this message', 'context_limit': 'room context is too large',
+           'admission_denied': 'gateway did not admit this message; in your local terminal run hermes botsesh status for this agent’s profile, then reconnect with Private DMs enabled using the account that authorized the agent. Ask the gateway operator to check its participant allowlist if access is still denied', 'context_limit': 'room context is too large',
            'runtime_error': 'gateway processing error'}.get(code, 'gateway processing error')
     return "Hermes couldn't answer: " + why + '.'

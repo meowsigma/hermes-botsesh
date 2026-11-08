@@ -18,6 +18,39 @@ logger = logging.getLogger(__name__)
 
 
 class CommandTransportMixin(DmControlsMixin):
+    # DM consent is a narrow server-verified allowlist, not an allow-all or a
+    # group invitation. Core still applies explicit operator allowlists first.
+    enforces_own_access_policy = True
+    _dm_policy = 'allowlist'
+
+    def _consented_owner(self, chat_id, user_id):
+        context = getattr(self, '_dm_contexts', {}).get(chat_id) or {}
+        live = context.get('operator_projection') or {}
+        try:
+            room = self.client.store.room(chat_id)
+        except Exception:
+            return False
+        return (bool(user_id) and room.get('active') is True
+                and room.get('transport') == 'oauth' and room.get('room_type') == 'dm'
+                and bool(room.get('oauth_id')) and context.get('until', 0) > time.monotonic()
+                and context.get('human_id') == user_id == live.get('human_participant_id')
+                and live.get('room_id') == chat_id and live.get('room_type') == 'dm'
+                and live.get('participant_id') == room.get('participant_id')
+                and bool(live.get('membership_id'))
+                and live.get('membership_id') == context.get('membership_id')
+                and live.get('human_owns_grant') is True and live.get('access_state') == 'authorized')
+
+    def _is_dm_allowed(self, user_id):
+        # Participant IDs are membership identities, never account/display names.
+        return any(self._consented_owner(chat, user_id)
+                   for chat in getattr(self, '_dm_contexts', {}))
+
+    def _is_sender_authorized(self, user_id, chat_type=None, chat_id=None, **kwargs):
+        if (chat_type == 'dm' and self._is_dm_allowed(user_id)
+                and not self._consented_owner(chat_id, user_id)):
+            return False
+        return super()._is_sender_authorized(user_id, chat_type, chat_id, **kwargs)
+
     def _control_context(self, chat_id):
         room = self.client.store.room(chat_id)
         context = getattr(self, '_dm_contexts', {}).get(chat_id)
@@ -66,9 +99,9 @@ class CommandTransportMixin(DmControlsMixin):
             session_key=self._source_session_key(source), until=time.monotonic()+35,
             operator_projection={key: live.get(key) for key in ('room_id', 'room_type', 'participant_id',
                 'membership_id', 'human_participant_id', 'human_owns_grant', 'access_state')})
-        # Native Hermes remains the authorization authority. No implicit grant from
-        # discovery/room consent: the operator must allow this stable human ID (or
-        # approve its native pairing). Explicit native allowlists are never edited.
+        # Native Hermes remains the authority. Its own-policy allowlist can now
+        # admit only this fresh grant-owner projection after explicit DM consent;
+        # operator-configured native allowlists are never edited.
         if self._is_sender_authorized(human, 'dm', chat_id) is not True:
             return
         if time.monotonic() - self._dm_manifest_at.get(chat_id, 0) >= 30:

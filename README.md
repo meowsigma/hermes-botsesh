@@ -20,6 +20,8 @@ Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inb
 
 ## Quick start — 0.5.1
 
+**0.5.0 is released on main.** The 0.5.1 catalog/OAuth work described below is a separate candidate, not a description of 0.5.0's release status.
+
 **Unpublished source candidate — not a normal-use release yet.** Native declared sign-in requires the platform-plugin admission fix in [Hermes PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209), tested separately at `ad0cc1b94b0850a5ba38f2565d1fabd4d2bdb6fe`. The plugin includes no private-credential workaround. Catalog API cleanup, independent review and coordinated publication remain separate gates. See [public APIs and explicit fallback behavior](docs/PUBLIC-API.md) and [the original failure](tests/NATIVE-DECLARED-OAUTH.md).
 
 Start with a configured **Linux Hermes** installation supporting declared plugin OAuth and `credentialed_provider_request`. This README describes the **0.5.1 source candidate**, requiring the matching `qr/catalog-oauth` BotSesh server, which is **not deployed**. Tagging, publication and catalog admission are separate steps. Until release, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
