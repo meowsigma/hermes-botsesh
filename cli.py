@@ -24,6 +24,8 @@ def setup(parser):
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
     disconnect = sub.add_parser('disconnect', help='Revoke one room connection on BotSesh')
     disconnect.add_argument('room_id', nargs='?', help='Room ID; optional when there is only one OAuth connection')
+    from .room_lifecycle import setup as setup_lifecycle
+    setup_lifecycle(sub)
 
 
 def configure(binding):
@@ -50,6 +52,9 @@ def handle(args):
     from hermes_cli.auth_constants import AuthError
     try:
         client = Client()
+        from .room_lifecycle import ACTIONS, handle as handle_lifecycle
+        if args.botsesh_action in ACTIONS:
+            return handle_lifecycle(args, client)
         oauth = OAuthClient(client.store)
         if args.botsesh_action == 'connect':
             binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout, room_hint=args.room, name=args.name)

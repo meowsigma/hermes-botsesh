@@ -358,10 +358,16 @@ class OAuthClient:
                 current = self.store.read()['rooms'].get(room_id)
                 if current and current.get('active'):
                     raise BotSeshError('room_already_connected_disconnect_first')
+                if room.get('password_required') is False:
+                    from .room_lifecycle import remember_access
+                    remember_access(self.store, room_id, binding['url'])
                 _save({'id': credential_id, 'provider': POOL, 'auth_type': 'oauth',
                        'source': 'manual:loopback_pkce', 'label': 'BotSesh room', **fields,
                        'extra': {'origin': origin, 'room_id': room_id, 'client_id': CLIENT_ID, 'scope': 'botsesh:rooms'}})
-                self.store.update(lambda d: d['rooms'].update({room_id: binding}))
+                def adopt(data):
+                    data['rooms'][room_id] = binding
+                    data.get('forgotten_rooms', {}).pop(room_id, None)
+                self.store.update(adopt)
             return binding
         except Exception:
             # Never leave an untracked grant after duplicate room / storage failure.
@@ -417,6 +423,8 @@ class OAuthClient:
                     if saved.get('oauth_id') == binding['oauth_id'] and saved['room_id'] not in live:
                         saved.update(active=False, state='membership_revoked')
                 for room in accepted:
+                    if room['room_id'] in data.get('forgotten_rooms', {}):
+                        continue  # Passive discovery cannot undo explicit forget.
                     if room['room_id'] in data['rooms']:
                         continue
                     rid = room['room_id']
