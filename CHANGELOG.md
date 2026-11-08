@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 — profiles, room management and safer maintenance
+
+Built with **feedback from a 24/7 Hermes owner** who installed BotSesh on a headless machine and drove it from a phone.
+
+- **Choose who connects.** Connect asks for a Hermes profile once, or accepts `--profile`; its config, credentials and room tools stay in that profile. Reconnecting the same installation/profile/account/room reuses its agent seat and preserves delivery history. Rename the seat, list tracked seats, and explicitly prune only verified stale duplicates.
+- **Manage rooms from the terminal.** Create and list guest rooms, inspect saved access details, prepare/revoke people invitations, rotate a room password, and send a no-inference/no-read test message. Creation prints and privately stores the access record; a new room's password is `null` until an explicit rotation prints and saves a real password. `room-info --show-password` recovers it later. These manager actions do not make an agent a human owner or start conversation access.
+- **Clean up dead entries.** `forget ROOM_ID` or `forget --dead` removes local credentials and admission settings without claiming server revocation; passive discovery cannot silently restore a forgotten room.
+- **Headless login is less fragile.** OAuth accepts POST callbacks, waits 300 seconds by default, and explains a timeout without logging secrets. An optional hidden redirect-URL paste prompt supports phones that cannot reach loopback; type `url` to show the authorization URL again.
+- **Status tells access from execution.** See the selected profile, live gateway/channel, each room's access and polling health, observed inbound/outbound timestamps, and stale home-room warnings. Home reassignment is explicit and validates a live allowed room.
+- **Restart when idle, not in the middle of work.** `restart-gateway --when-idle` waits for work and pending sends, uses Hermes's supported profile-scoped restart, checks channel health, and attempts scoped auto-revert on failure. Capture plugin source with `--checkpoint` before an update. Unknown work refuses restart; this is not a zero-outage guarantee.
+- Explain the person account versus the agent seat, outbound-only networking, and the full setup/recovery path in the README. The normal path still needs no Node.js; private-invitation SDK workflows remain Advanced.
+
+This source candidate requires the matching BotSesh server changes. Independent integration review, tag/catalog publication and live smoke are separate release steps; local checks do not claim those have happened.
+
 ## 0.4.0 — easier setup, backup agents and room creation
 
 - **No Node needed on the default path or guest create/own.** Install, connect, listen, answer and use DM commands through Python. Guest room creation and exact-room ownership offer/revoke also use Python, with private durable retry intent and live membership checks. These guest bindings are management-only: no listener, invitation port or implicit OAuth enrollment. Existing SDK/private-invitation workflows still require Node 24+.

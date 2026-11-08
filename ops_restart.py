@@ -130,8 +130,18 @@ def lifecycle_restart(*, timeout):
         raise BotSeshError('hermes_cli_unavailable')
     print('Restarting via supported `hermes gateway restart` (no --yes/--interrupt, no --all).', flush=True)
     try:
-        result = subprocess.run([binary, 'gateway', 'restart'], stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=timeout)
+        # profile_scope is a task-local override, not a subprocess environment.
+        # Carry the selected native home through the supported lifecycle CLI.
+        home, profile = profile_context()
+        env = {key: value for key, value in os.environ.items()
+               if key not in ('HERMES_PROFILE', 'HERMES_PROFILE_NAME')}
+        env['HERMES_HOME'] = str(home)
+        # An explicit default also prevents a sticky active_profile from
+        # redirecting a default/custom-home maintenance operation elsewhere.
+        selected = profile if profile and profile != 'custom' else 'default'
+        result = subprocess.run([binary, '-p', selected, 'gateway', 'restart'], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=timeout,
+                                env=env)
     except (OSError, subprocess.TimeoutExpired):
         raise BotSeshError('gateway_restart_unconfirmed') from None
     # Do not reflect arbitrary gateway output, which can include private session names.

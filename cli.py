@@ -10,7 +10,16 @@ from .oauth import OAuthClient
 
 
 def setup(parser):
-    sub = parser.add_subparsers(dest='botsesh_action', required=True)
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    parser.epilog = (
+        'Command groups:\n'
+        '  Connection & identity: connect, disconnect, rename, seats\n'
+        '  Rooms & access: create-room, rooms, room-info, invite, invites, revoke-invite, rotate-password, forget\n'
+        '  Operations: send, status, restart-gateway\n\n'
+        'Commands use the saved profile; hermes -p PROFILE botsesh COMMAND overrides it.\n'
+        'Use COMMAND --help for room selectors and explicit mutation options.'
+    )
+    sub = parser.add_subparsers(dest='botsesh_action', required=True, title='commands', metavar='COMMAND')
     connect = sub.add_parser('connect', help='Sign in in your browser and approve one room')
     connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
     connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')

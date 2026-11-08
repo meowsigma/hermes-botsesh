@@ -5,6 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 sys.dont_write_bytecode = True
+# -P intentionally omits cwd. Keep Hermes imports first, but make the plugin's
+# flat, transport-independent controls module available to this suite.
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 _home = TemporaryDirectory(prefix='.test-hermes-', dir=Path(__file__).parent)
 os.environ['HERMES_HOME'] = _home.name
 os.environ['HERMES_NO_AUTO_UPDATE'] = '1'

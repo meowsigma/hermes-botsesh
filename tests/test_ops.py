@@ -205,10 +205,13 @@ class OpsTests(unittest.TestCase):
             with self.assertRaises(BotSeshError): restart.work_snapshot(self.runtime)
 
     def test_restart_cli_uses_lifecycle_no_signals_force_or_all(self):
-        with patch.object(restart.shutil, 'which', return_value='/fixture/hermes'), patch.object(restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
+        with patch.object(restart, 'profile_context', return_value=(self.home, 'fixture')), patch.object(restart.shutil, 'which', return_value='/fixture/hermes'), patch.object(restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:
             restart.lifecycle_restart(timeout=42)
-        self.assertEqual(run.call_args.args[0], ['/fixture/hermes','gateway','restart'])
+        self.assertEqual(run.call_args.args[0], ['/fixture/hermes','-p','fixture','gateway','restart'])
         self.assertIs(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(run.call_args.kwargs['env']['HERMES_HOME'], str(self.home))
+        self.assertNotIn('HERMES_PROFILE', run.call_args.kwargs['env'])
+        self.assertNotIn('HERMES_PROFILE_NAME', run.call_args.kwargs['env'])
 
     def test_restart_preserves_preexisting_dead_rooms_and_home_without_reverting(self):
         restart.checkpoint(self.client, self.cfg)
@@ -397,8 +400,11 @@ class IsolatedNativeCli(unittest.TestCase):
                     value = {'access_token':'A'*43,'refresh_token':'R'*43,'expires_in':3600,'scope':'botsesh:rooms','token_type':'Bearer'}
                 elif self.path == '/mcp':
                     request = json.loads(body); name=request['params']['name']
-                    if name == 'list_rooms': value={'rooms':[{'room_id':'one','name':'Fixture room','participant_id':'bot','display_name':'fixture'}]}
+                    # The integrated identity protocol confirms the chosen
+                    # profile and inventory; retain the real POST/status proof.
+                    if name == 'list_rooms': value={'rooms':[{'room_id':'one','name':'Fixture room','participant_id':'bot','display_name':'fixture','gateway_profile':'default','password_required':False}]}
                     elif name == 'hermes_name': value={'participant':{'id':'bot','name':'fixture'}}
+                    elif name == 'hermes_seats': value={'seats':[]}
                     elif name == 'hermes_inbox': value={'targets':[],'has_more':False,'backlog':0}
                     else: raise AssertionError(name)
                     value={'jsonrpc':'2.0','id':request['id'],'result':{'structuredContent':value}}
