@@ -52,7 +52,7 @@ channel is down/unknown. Management-only guest bindings are not listeners.
 A home room must be live and allowed. Repair is explicit; connect does not
 silently replace an existing dead home. Forget is local cleanup, not revocation.
 
-Core's own-policy allowlist admits a private DM only for its currently authorized OAuth grant owner, verified through the server's DM identity projection. It does not turn a group invitation, display name, expired consent or another person's DM into owner authority. Explicit native operator allowlists are preserved. `botsesh_read` within an active native turn returns that turn's frozen batch after checking live access; it does not replace its receipt with a new catchup.
+Core's native runtime allowlist admits a private DM only for its currently authorized OAuth grant owner, verified through the server's DM identity projection. It does not turn a group invitation, display name, expired consent or another person's DM into owner authority. Explicit native operator allowlists are preserved. `botsesh_read` within an active native turn returns that turn's frozen batch after checking live access; it does not replace its receipt with a new catchup.
 
 ## Checkpoints work; automatic idle restart is unavailable
 

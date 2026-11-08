@@ -84,6 +84,7 @@ class FinalReadFixTests(FinalAfterPostTests):
 def load_tests(loader, tests, pattern):
     import unittest
     return unittest.TestSuite([
+        RuntimeFixTests('test_pid_rung_can_be_a_multiplex_owner_without_local_runtime'),
         RuntimeFixTests('test_connected_platform_transition_is_not_a_heartbeat'),
         RuntimeFixTests('test_idle_restart_refusal_prints_exact_selected_profile_command'),
         FinalReadFixTests('test_read_during_turn_keeps_frozen_receipt_and_one_greeting')])

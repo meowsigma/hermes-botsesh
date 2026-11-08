@@ -18,10 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class CommandTransportMixin(DmControlsMixin):
-    # DM consent is a narrow server-verified allowlist, not an allow-all or a
-    # group invitation. Core still applies explicit operator allowlists first.
-    enforces_own_access_policy = True
-    _dm_policy = 'allowlist'
+    # Feed only server-verified, room-scoped participant identities into core's
+    # native allowlist. Native admission deliberately rechecks without trusting
+    # adapter-policy delegation, so an intake-only verdict is insufficient.
 
     def _consented_owner(self, chat_id, user_id):
         context = getattr(self, '_dm_contexts', {}).get(chat_id) or {}
@@ -40,14 +39,29 @@ class CommandTransportMixin(DmControlsMixin):
                 and live.get('membership_id') == context.get('membership_id')
                 and live.get('human_owns_grant') is True and live.get('access_state') == 'authorized')
 
-    def _is_dm_allowed(self, user_id):
-        # Participant IDs are membership identities, never account/display names.
-        return any(self._consented_owner(chat, user_id)
-                   for chat in getattr(self, '_dm_contexts', {}))
+    def _refresh_dm_allowlist(self):
+        extra = self.config.extra
+        if not hasattr(self, '_dm_base_allow_from'):
+            self._dm_base_allow_from = extra.get('allow_from')
+        original = self._dm_base_allow_from
+        def ids(value):
+            return value.split(',') if isinstance(value, str) else value if isinstance(value, list) else []
+        owners = {c.get('human_id') for chat, c in getattr(self, '_dm_contexts', {}).items()
+                  if self._consented_owner(chat, c.get('human_id'))}
+        if owners:
+            # Keep explicit operator identities, including the alternate native
+            # allowed_users spelling which allow_from would otherwise shadow.
+            base = [*ids(original), *ids(extra.get('allowed_users'))]
+            extra['allow_from'] = sorted({str(v).strip() for v in [*base, *owners] if str(v).strip()})
+        elif original is None:
+            extra.pop('allow_from', None)
+        else:
+            extra['allow_from'] = original
+        return owners
 
     def _is_sender_authorized(self, user_id, chat_type=None, chat_id=None, **kwargs):
-        if (chat_type == 'dm' and self._is_dm_allowed(user_id)
-                and not self._consented_owner(chat_id, user_id)):
+        owners = self._refresh_dm_allowlist()
+        if chat_type == 'dm' and user_id in owners and not self._consented_owner(chat_id, user_id):
             return False
         return super()._is_sender_authorized(user_id, chat_type, chat_id, **kwargs)
 
@@ -86,6 +100,7 @@ class CommandTransportMixin(DmControlsMixin):
                 raise BotSeshError('dm_identity_unavailable')
         except Exception:
             self._dm_contexts.pop(chat_id, None)  # Disable callbacks before any await.
+            self._refresh_dm_allowlist()
             await self._control_invalidate(chat_id, 'DM access changed. No action was taken.')
             raise
         if prior and (prior['human_id'], prior['membership_id']) != (human, member):
@@ -99,9 +114,9 @@ class CommandTransportMixin(DmControlsMixin):
             session_key=self._source_session_key(source), until=time.monotonic()+35,
             operator_projection={key: live.get(key) for key in ('room_id', 'room_type', 'participant_id',
                 'membership_id', 'human_participant_id', 'human_owns_grant', 'access_state')})
-        # Native Hermes remains the authority. Its own-policy allowlist can now
-        # admit only this fresh grant-owner projection after explicit DM consent;
-        # operator-configured native allowlists are never edited.
+        # Native Hermes remains the authority. A fresh grant-owner projection
+        # supplies the exact participant ID to its native runtime allowlist;
+        # operator-configured allowlists on disk are never edited.
         if self._is_sender_authorized(human, 'dm', chat_id) is not True:
             return
         if time.monotonic() - self._dm_manifest_at.get(chat_id, 0) >= 30:

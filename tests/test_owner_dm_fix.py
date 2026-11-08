@@ -20,6 +20,8 @@ class OwnerConsentTests(NativeCommandTests):
         await self.adapter._refresh_dm_controls('native-dm')
         self.assertIs(self.adapter._is_sender_authorized('human-owner', 'dm', 'native-dm'), True)
         self.assertTrue(self.runner._is_user_authorized(self.source))
+        self.assertTrue(self.runner._is_user_authorized_for_source(self.source, allow_adapter_delegation=False),
+                        'native envelope rechecks without adapter-policy delegation')
         self.assertIs(self.adapter._is_sender_authorized('foreign', 'dm', 'native-dm'), False)
         self.adapter._dm_contexts['native-dm']['until'] = 0
         self.assertIs(self.adapter._is_sender_authorized('human-owner', 'dm', 'native-dm'), False)
