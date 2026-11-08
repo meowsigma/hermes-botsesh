@@ -472,6 +472,18 @@ class OAuthClient:
                     raise BotSeshError('operation_journal_full')
                 del rows[removable]
             rows[client_id] = {'exact': exact}
+            if section == 'oauth_posts' and exact.get('processed') is True and 'reply_to' not in exact:
+                # Bind only NEW native sends to their exact active input. Keep
+                # authored fields separate; old/uncertain UUIDs must never gain
+                # a reply target on replay, even after the active turn changes.
+                room = data['rooms'][room_id]
+                numbers = room.get('oauth_receipts', {}).get(exact.get('receipt_id'), {}).get('numbers', [])
+                targets = [row['target'] for row in room.get('processing_receipts', {}).values()
+                           if row.get('receipt_id') == exact.get('receipt_id')
+                           and row.get('state') in ('admitting', 'admitted', 'started')
+                           and is_number(row.get('target')) and row['target'] in numbers]
+                if len(targets) == 1:
+                    rows[client_id]['native_reply_to'] = targets[0]
         self.store.update(save)
         return self.store.room(room_id)[section][client_id]
 
@@ -701,10 +713,11 @@ class OAuthClient:
             if not saved and args.get('reply_to') is not None and args['reply_to'] not in receipt['numbers']:
                 raise BotSeshError('unread_reply_target')
             if not saved:
-                self._journal(room_id, 'oauth_posts', client_id, exact)
+                saved = self._journal(room_id, 'oauth_posts', client_id, exact)
+            reply_to = saved.get('native_reply_to', args.get('reply_to'))
             result = self._journal_rpc(binding, 'oauth_posts', client_id, 'send_message', {'room_id': room_id, 'text': text,
                 'client_id': client_id, 'batch_id': receipt_id,
-                **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {})})
+                **({'reply_to': reply_to} if reply_to is not None else {})})
             message = result.get('message') or {}
             if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                 raise BotSeshError('send_not_confirmed_retry_same_intent')
