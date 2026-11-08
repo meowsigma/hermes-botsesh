@@ -5,12 +5,11 @@ The normal path is **pure Python**; Node.js is not required. Version 0.5.1 requi
 After that coordinated release, run in **your own terminal**:
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect --name Scout
 ```
 
-The client ID is public, not a secret; Hermes currently requires it explicitly. Keep it available to the intended profile's sign-in and gateway processes. For a named profile, use `hermes -p PROFILE auth add botsesh:rooms` and `hermes -p PROFILE botsesh connect`; install/enable the plugin there first. Each profile signs in separately.
+The plugin declares its public CIMD client ID in the manifest; no export, client secret or config edit is needed. The required Hermes OAuth PR includes public-default support. For a named profile, use `hermes -p PROFILE auth add botsesh:rooms` and `hermes -p PROFILE botsesh connect`; install/enable the plugin there first. Each profile signs in separately.
 
 **Sign-in belongs to Hermes core.** Select **1–20 hosted rooms**, review automatic replies/model usage and optional permissions, then Allow. If you host no rooms, consent can create one new room. `connect` only verifies/initializes the existing shared grant and enables approved rooms locally; it never opens sign-in. `--room ROOT_ROOM_ID` selects an already-approved root; `--no-start` skips ensuring a local gateway. Never run sign-in inside an agent/gateway session or owner DM. For SSH, use `hermes auth add botsesh:rooms --no-browser` and core's loopback-forwarding instructions, not redirect paste.
 

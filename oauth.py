@@ -21,7 +21,6 @@ SIGN_IN = 'hermes auth add botsesh:rooms'
 
 def sign_in_instructions():
     return ('In your own terminal, in the intended Hermes profile:\n'
-            f'  export BOTSESH_OAUTH_CLIENT_ID={CLIENT_ID}\n'
             f'  {SIGN_IN}\n'
             'Then run `hermes botsesh connect` to enable the explicitly approved rooms. '
             'Hermes owns sign-in, refresh and logout; this plugin never starts sign-in in a gateway or agent session.')

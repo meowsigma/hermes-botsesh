@@ -6,8 +6,9 @@ imports dynamically, or claim unsupported operations succeeded.
 
 Reference checked: upstream `origin/main` **8d7061f1a74980a7549356a4e5e57b603475ddf0**.
 Final native verification targets core PR [151209](https://github.com/NousResearch/hermes-agent/pull/151209),
-**ad0cc1b94b0850a5ba38f2565d1fabd4d2bdb6fe**. That PR fixes platform-plugin
-OAuth admission, not these API gaps. Until the fix is in the user's Hermes
+**1d1280a0071c795aaea313271e124366becd3e19**. That PR fixes platform-plugin
+OAuth admission and profile-copy ownership, and adds the declared public
+client-ID default. It does not provide a complete public idle-work API. Until the fix is in the user's Hermes
 version, ordinary 0.5.1 sign-in is not a supported release claim.
 
 Sources:

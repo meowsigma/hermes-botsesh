@@ -30,8 +30,8 @@ def setup(parser):
     status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
     status.add_argument('--set-home', metavar='ROOM_ID', help='Explicitly replace home_channel with a live, allowed room')
-    restart = sub.add_parser('restart-gateway', help='Bounded idle gate, supported Hermes restart, channel check and scoped auto-revert')
-    restart.add_argument('--when-idle', action='store_true', help='Wait for active work and inbox drain; refuse unknown work')
+    restart = sub.add_parser('restart-gateway', help='Save a recovery checkpoint or explain the manual restart fallback')
+    restart.add_argument('--when-idle', action='store_true', help='Refuse automatic restart until Hermes exposes a complete public idle gate; print manual guidance')
     restart.add_argument('--max-wait', type=int, default=300, choices=range(1, 3601), metavar='SECONDS')
     restart.add_argument('--health-timeout', type=int, default=60, choices=range(1, 601), metavar='SECONDS')
     restart.add_argument('--restart-timeout', type=int, default=120, choices=range(1, 601), metavar='SECONDS')
@@ -78,7 +78,8 @@ def configure(binding):
 def restart_guidance(profile):
     import shlex
     prefix = shlex.join(['hermes', '-p', profile])
-    print('This is not an automatic idle restart. In your own terminal, after active work and queued requests finish, run:')
+    print('This is not an automatic idle restart: public Hermes status omits asynchronous delegations and a complete queued-admission gate.')
+    print('No restart or auto-revert was attempted. In your own terminal, quiesce new input and finish active turns, delegations, queued requests and pending sends, then run:')
     print(f'  {prefix} gateway restart --detach')
     print(f'  {prefix} gateway status')
     print(f'  {prefix} botsesh status')
@@ -109,6 +110,32 @@ def connect_runtime(profile):
     restart_guidance(profile)
 
 
+def connect_in_profile(args, profile, home):
+    """Re-enter native profile parsing before a second plugin registry is loaded."""
+    import os
+    binary = shutil.which('hermes')
+    if not binary:
+        raise BotSeshError('hermes_cli_unavailable')
+    argv = [binary, '-p', profile, 'botsesh', 'connect']
+    for flag in ('set_home', 'no_start'):
+        if getattr(args, flag, False):
+            argv.append('--' + flag.replace('_', '-'))
+    for field in ('room', 'name'):
+        value = getattr(args, field, None)
+        if value is not None:
+            argv.append('--' + field + '=' + str(value))
+    env = {key: value for key, value in os.environ.items()
+           if key not in ('HERMES_PROFILE', 'HERMES_PROFILE_NAME', 'BOTSESH_OAUTH_CLIENT_ID')}
+    env['HERMES_HOME'] = str(home)
+    try:
+        # Inherit the operator's terminal for native OAuth/approval prompts.
+        result = subprocess.run(argv, env=env)
+    except OSError:
+        raise BotSeshError('hermes_cli_unavailable') from None
+    if result.returncode:
+        raise SystemExit(result.returncode)
+
+
 def handle(args):
     from .identity import choose_profile, profile_scope, save_profile
     from hermes_cli.config import get_hermes_home
@@ -120,7 +147,9 @@ def handle(args):
             if args.botsesh_action == 'connect' and home != starting_home:
                 from .identity import require_profile_install
                 require_profile_install(home)
-            _handle_profile(args, profile)
+                connect_in_profile(args, profile, home)
+            else:
+                _handle_profile(args, profile)
         if args.botsesh_action == 'connect':
             save_profile(profile)
     except BotSeshError as error:

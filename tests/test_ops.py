@@ -60,7 +60,7 @@ class OpsTests(unittest.TestCase):
         self.assertIn('hermes auth add botsesh:rooms', guide)
         self.assertIn('hermes botsesh connect', guide)
         self.assertIn('intended Hermes profile', guide)
-        self.assertIn('BOTSESH_OAUTH_CLIENT_ID', guide)
+        self.assertNotIn('export ', guide)
         self.assertNotIn('--paste-redirect', guide)
         self.assertNotIn('--dev-origin', guide)
 

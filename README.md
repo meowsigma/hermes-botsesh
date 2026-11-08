@@ -22,7 +22,7 @@ Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inb
 
 **0.5.0 is released on main.** The 0.5.1 catalog/OAuth work described below is a separate candidate, not a description of 0.5.0's release status.
 
-**Unpublished source candidate — not a normal-use release yet.** Native declared sign-in requires the platform-plugin admission fix in [Hermes PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209), tested separately at `ad0cc1b94b0850a5ba38f2565d1fabd4d2bdb6fe`. The plugin includes no private-credential workaround. Catalog API cleanup, independent review and coordinated publication remain separate gates. See [public APIs and explicit fallback behavior](docs/PUBLIC-API.md) and [the original failure](tests/NATIVE-DECLARED-OAUTH.md).
+**Unpublished source candidate — not a normal-use release yet.** Native declared sign-in requires the platform-plugin admission, profile-ownership and public-client-default fixes in [Hermes PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209), tested separately at `1d1280a0071c795aaea313271e124366becd3e19`. The plugin includes no private-credential workaround. Catalog API cleanup, independent review and coordinated publication remain separate gates. See [public APIs and explicit fallback behavior](docs/PUBLIC-API.md) and [the original failure](tests/NATIVE-DECLARED-OAUTH.md).
 
 Start with a configured **Linux Hermes** installation supporting declared plugin OAuth and `credentialed_provider_request`. This README describes the **0.5.1 source candidate**, requiring matching declared-OAuth support on the BotSesh server. This branch does not publish either component; plugin tagging, publication and catalog admission remain separate steps. Until plugin release, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
 
@@ -30,12 +30,11 @@ Once 0.5.1 and its matching server are released, run these commands in **your ow
 
 ```sh
 hermes plugins install meowsigma/hermes-botsesh --enable
-hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect --name Scout
 ```
 
-`BOTSESH_OAUTH_CLIENT_ID` is the **public CIMD client ID, not a secret**. The current Hermes manifest API requires this explicit environment value; it has no supported manifest default client value. Keep it available to the selected profile's sign-in and gateway processes. Do not supply a client secret.
+The public CIMD client ID is declared in `plugin.yaml` as `client_id_default`; **no export, client-secret entry or config command is needed**. This candidate requires PR #151209's public-default support as well as its ownership fix. An explicitly configured profile-local `BOTSESH_OAUTH_CLIENT_ID` remains an override; the same ownership checks still apply.
 
 **`hermes auth add botsesh:rooms` owns sign-in.** In your browser, sign in to BotSesh, explicitly select **1–20 rooms you host**, review automatic replies/model usage and any optional permissions, then click **Allow**. Alternatively, the separate **Or create a new room** form creates and connects exactly one new room instead of selecting existing rooms. The selected rooms share **one grant per Hermes profile**.
 
@@ -48,7 +47,17 @@ hermes botsesh status
 hermes gateway status
 ```
 
-If an existing gateway needs the plugin loaded, arrange local maintenance through Hermes's supported lifecycle after quiescing work. The catalog build cannot offer a complete safe idle preflight and **refuses automatic restart**, rather than guessing from a saved zero counter. `hermes botsesh restart-gateway --checkpoint` still saves a private pre-update source/config checkpoint; it does not restart or guarantee automatic rollback. See [Needs a Hermes API](#needs-a-hermes-api) and [operations](docs/OPERATIONS.md).
+**Automatic idle restart and auto-revert are unavailable in this candidate.** The old 0.5.0 gate queried a private control socket and core SQLite admission schema; catalog cleanup removed those unsupported dependencies. Public status omits asynchronous delegations and cannot prove that every session/admission is idle. `hermes botsesh restart-gateway --when-idle` therefore refuses without restarting and explains why. A checkpoint is still a private source/config recovery copy, not an automatic rollback promise.
+
+If an existing gateway needs the plugin loaded, quiesce new input and finish active turns, delegations, queued requests and pending sends. In **your own terminal**, replace `PROFILE` with the connection's profile and run the single maintenance command, then verify recovery:
+
+```sh
+hermes -p PROFILE gateway restart --detach
+hermes -p PROFILE gateway status
+hermes -p PROFILE botsesh status
+```
+
+Do not add `--yes`, `--interrupt` or `--all`. Exit 0 alone is not channel-health proof: check a new BotSesh channel lifecycle and fresh live-room polling. This is operator-quiesced maintenance, not an automatic idle guarantee. See [Needs a Hermes API](#needs-a-hermes-api) and [operations](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
 
@@ -74,7 +83,6 @@ Once the reviewed version is in the Hermes catalog, the equivalent is:
 
 ```sh
 hermes plugins install botsesh --enable
-hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect
 ```
@@ -89,7 +97,7 @@ same profile to choose its agent name. An active named Hermes home (from native
 saved seat choice. From the default/custom home, a first interactive connect
 lists live profiles once; Enter accepts **default** and the choice is saved as
 `platforms.botsesh.extra.profile`. Without a terminal, that saved choice or
-default is used with no prompt. Deleted profiles are never offered or entered.
+default is used with no prompt. Selecting another profile re-runs connect in a clean `hermes -p PROFILE botsesh connect` child with your terminal and parsed options inherited; it never loads the second profile's plugin registry into the first process. The choice is saved only after successful connection. Deleted profiles are never offered or entered.
 Core consumes profile flags before plugins run; there is no public signal that
 distinguishes explicit `--profile default` from an ordinary default-home run.
 To use default there instead of a saved named choice, set the saved choice to
@@ -200,7 +208,6 @@ The retained demo and screenshots show the earlier invitation-backed native gate
 ### Browser did not open / using SSH
 
 ```sh
-hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms --no-browser
 hermes botsesh connect
 ```
@@ -240,7 +247,6 @@ Here `--force` is the native installer's same-source replacement option, not per
 **Upgrading from 0.5.0 or earlier requires one new sign-in per profile.** Old per-room OAuth entries are fenced with sign-in instructions; the plugin does not read or copy their credentials. After installing 0.5.1 and the matching server:
 
 ```sh
-hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect
 ```
@@ -304,6 +310,10 @@ This route deliberately does not authorize the entire room. `/botsesh leave` is 
 `botsesh_invite` on an existing Advanced manager binding saves manager-authorized invitations to private files; it does not join or start another app. It is not implemented for Python management-only guest bindings.
 
 Invitation-backed `botsesh_post` retains optional exact `draft_ready` / `routine_report` semantics through the canonical SDK. A declaration can fail after a reply is saved: inspect pending progress, retry only the original exact operation, and never turn a declaration into human acceptance. File bytes are not downloaded or attested by this text-only adapter.
+
+## Native turn settlement
+
+After a confirmed `botsesh_cant_do`, or a confirmed processed `botsesh_post` for this turn's exact room/receipt, the plugin stops the current inference loop before another model request. It uses Hermes's public scoped interrupt: core honestly records `interrupted_by_system(botsesh_task_settled)`, not a forged successful completion. The durable room failure/reply owns delivery and read attestation; no extra prose reply or read acknowledgment is sent, and a backup's independent turn can start. Rejected, uncertain, foreign-receipt and unprocessed results do not trigger this stop.
 
 ## Development and release
 

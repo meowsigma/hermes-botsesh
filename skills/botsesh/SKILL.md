@@ -39,12 +39,11 @@ Optional botsesh_post draft_ready binds the confirmed outgoing reply's exact ver
 The human operator runs these commands in their own terminal, not through an agent tool, gateway turn or owner DM:
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect
 ```
 
-The client ID is public, not a secret, and must be set explicitly; the manifest has no supported default. Hermes owns sign-in, profile-local credential storage, refresh and logout. Never request, inspect or copy tokens. The plugin's OAuth MCP/REST uses core credentialed_provider_request, not private auth helpers. Connect never starts sign-in: it verifies/initializes the existing grant and locally enables only approved rooms. Optional connect --name Scout assigns new seats' names; --room ROOT_ROOM_ID selects an approved root, and --no-start skips ensuring a gateway. For separate profiles the human installs/enables and signs in separately using hermes -p PROFILE auth add botsesh:rooms, then hermes -p PROFILE botsesh connect.
+The public client ID is declared as client_id_default; no user export or client secret is needed with the required Hermes OAuth PR. Hermes owns sign-in, profile-local credential storage, refresh and logout. Never request, inspect or copy tokens. The plugin's OAuth MCP/REST uses core credentialed_provider_request, not private auth helpers. Connect never starts sign-in: it verifies/initializes the existing grant and locally enables only approved rooms. Optional connect --name Scout assigns new seats' names; --room ROOT_ROOM_ID selects an approved root, and --no-start skips ensuring a gateway. For separate profiles the human installs/enables and signs in separately using hermes -p PROFILE auth add botsesh:rooms, then hermes -p PROFILE botsesh connect.
 
 Consent explicitly selects 1–20 hosted rooms under one shared profile grant and authorizes those rooms' members to address Hermes/use its configured model allowance while running. A separate first-party consent form can create and connect exactly one new room instead. Adding/changing rooms requires auth add again with the full intended set, then connect. A new sign-in creates NEW seats; names and installation labels do not merge identities. Old authorizations stay on the server until removed in People. Ordinary connect without new sign-in preserves current participants/names/journals. For SSH the human uses hermes auth add botsesh:rooms --no-browser and core loopback forwarding; no plugin callback/paste flow exists. Declared endpoint/scope/client-ID configuration changes may require a new sign-in through core's fingerprint check.
 

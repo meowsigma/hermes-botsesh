@@ -260,7 +260,8 @@ class ProviderContractTests(unittest.TestCase):
         self.assertEqual(manifest['oauth'][0]['scopes'], ['botsesh:rooms'])
         self.assertEqual(manifest['oauth'][0]['authorize_params'], {'resource': 'https://botsesh.com/mcp', 'hermes_declared': 'v1'})
         self.assertIn('hermes auth add botsesh:rooms', oauth.sign_in_instructions())
-        self.assertIn('BOTSESH_OAUTH_CLIENT_ID', oauth.sign_in_instructions())
+        self.assertEqual(manifest['oauth'][0]['client_id_default'], oauth.CLIENT_ID)
+        self.assertNotIn('export ', oauth.sign_in_instructions())
         for deleted in ('login', '_rows', '_save', '_access', '_credential', '_make_loopback_callback_handler'):
             self.assertFalse(hasattr(oauth, deleted), deleted)
 

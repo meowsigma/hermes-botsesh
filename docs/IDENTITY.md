@@ -29,7 +29,6 @@ or `hermes -p PROFILE plugins enable botsesh` for an installed copy. No command
 copies code, model credentials or OAuth grants into another profile.
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
 hermes -p goonbot auth add botsesh:rooms
 hermes -p goonbot botsesh connect --name Scout
 # A separate profile needs its own sign-in:
@@ -37,9 +36,9 @@ hermes -p evilgoonbot auth add botsesh:rooms
 hermes -p evilgoonbot botsesh connect --name 'Night keeper'
 ```
 
-The public CIMD client ID is not a secret and must be supplied explicitly; core
-has no supported manifest default client value. Keep it available to sign-in
-and gateway processes. `auth add` is a human-terminal step, never an agent or DM
+The public CIMD client ID is declared as `client_id_default` by this plugin;
+no export, client secret or profile config edit is needed with the required
+Hermes OAuth PR. `auth add` is a human-terminal step, never an agent or DM
 operation. It explicitly selects 1–20 hosted rooms under one shared profile
 grant; a separate form can create and connect exactly one new room instead. Connect
 never starts sign-in: it verifies/initializes the existing grant and enables

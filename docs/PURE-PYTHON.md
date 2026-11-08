@@ -33,9 +33,9 @@ claiming every existing Python operation was newly ported.
 **Nothing on the OAuth path still needs JS.** Version 0.5.1 uses core's public
 `credentialed_provider_request` for all OAuth MCP/REST, with exact HTTPS
 `botsesh.com` host policy and only scope `botsesh:rooms`. The declaration supplies
-resource `https://botsesh.com/mcp` and `hermes_declared: v1`; the human explicitly
-sets public `BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json`.
-Core has no supported manifest default client value and owns credential custody,
+resource `https://botsesh.com/mcp` and `hermes_declared: v1`, plus the public
+CIMD URL as `client_id_default`. No user export or config bootstrap is needed
+with the required Hermes OAuth PR. Core owns credential custody,
 PKCE, refresh, logout and grant fingerprints. The plugin has no per-room OAuth
 credential store, private auth-helper imports, callback/paste or HTTP-origin
 fallback. Each profile signs in separately. The matching `qr/catalog-oauth`

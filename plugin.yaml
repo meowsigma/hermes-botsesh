@@ -17,6 +17,7 @@ oauth:
     token_url: https://botsesh.com/oauth/token
     scopes: ["botsesh:rooms"]
     client_id_env: BOTSESH_OAUTH_CLIENT_ID
+    client_id_default: https://botsesh.com/oauth/clients/hermes.json
     hosts: [botsesh.com]
     authorize_params:
       resource: https://botsesh.com/mcp
@@ -31,13 +32,13 @@ provides_tools:
   - botsesh_post
   - botsesh_cant_do
   - botsesh_takeover_claim
-provides_hooks: [post_llm_call, on_session_end]
+provides_hooks: [post_llm_call, on_session_end, post_tool_call]
 config_schema:
   poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}
   account_create_tool: {type: str, default: "", description: Exact existing BotSesh MCP create_room tool name, after separate first-party Create rooms consent. Optional.}
 optional_env:
   - name: BOTSESH_OAUTH_CLIENT_ID
-    description: "Public PKCE client ID: https://botsesh.com/oauth/clients/hermes.json (no secret). Set before hermes auth add botsesh:rooms."
+    description: "Optional override of the manifest's public PKCE client ID (no secret); normal sign-in needs no configuration."
   - name: BOTSESH_ALLOWED_USERS
     description: Comma-separated stable participant IDs allowed to drive this Hermes profile.
     password: false
