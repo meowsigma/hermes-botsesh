@@ -30,7 +30,7 @@ Once 0.5.1 and its matching server are released, run these commands in **your ow
 
 ```sh
 hermes plugins install meowsigma/hermes-botsesh --enable
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect --name Scout
 ```
@@ -74,7 +74,7 @@ Once the reviewed version is in the Hermes catalog, the equivalent is:
 
 ```sh
 hermes plugins install botsesh --enable
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect
 ```
@@ -200,7 +200,7 @@ The retained demo and screenshots show the earlier invitation-backed native gate
 ### Browser did not open / using SSH
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms --no-browser
 hermes botsesh connect
 ```
@@ -240,7 +240,7 @@ Here `--force` is the native installer's same-source replacement option, not per
 **Upgrading from 0.5.0 or earlier requires one new sign-in per profile.** Old per-room OAuth entries are fenced with sign-in instructions; the plugin does not read or copy their credentials. After installing 0.5.1 and the matching server:
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms
 hermes botsesh connect
 ```

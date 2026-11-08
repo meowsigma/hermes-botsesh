@@ -8,13 +8,16 @@ exact core tested and every replacement.
 ## Sign in locally, then connect
 
 ```sh
-export BOTSESH_OAUTH_CLIENT_ID=https://botsesh.com/oauth/clients/hermes.json
+hermes config set BOTSESH_OAUTH_CLIENT_ID https://botsesh.com/oauth/clients/hermes.json
 hermes auth add botsesh:rooms --no-browser
 hermes botsesh connect
 ```
 
 Run these in your own terminal, in the intended profile; use `hermes -p PROFILE`
-for both commands when named. Install/enable there first. The client ID is public,
+for configuration, sign-in and connect when named. `config set` persists the public
+client ID in that profile's native environment so the multiplexed gateway can
+resolve it later; a temporary export in another profile is not sufficient.
+Install/enable there first. The client ID is public,
 not a secret; keep it available to sign-in and gateway processes. Sign-in is
 never started from an agent/gateway session or owner DM. Follow core's loopback
 SSH-forwarding instructions, not a redirect-paste workaround.
