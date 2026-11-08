@@ -2,34 +2,80 @@
 from __future__ import annotations
 import contextlib
 import json
+from pathlib import Path
 import re
 import sys
 import uuid
-from pathlib import Path
 from .client import BotSeshError
 from .storage import Store
 
 
 def current_profile():
-    from hermes_cli.profiles import current_profile_name
-    value = current_profile_name() or 'default'
-    return value if value != 'custom' else 'default'
+    from hermes_cli.config import get_hermes_home
+    home = Path(get_hermes_home())
+    return home.name if home.parent.name == 'profiles' else 'default'
+
+
+def profile_root():
+    from hermes_cli.config import get_hermes_home
+    home = Path(get_hermes_home())
+    return home.parent.parent if home.parent.name == 'profiles' else home
+
+
+def profile_dir(name):
+    return profile_root() if name == 'default' else profile_root() / 'profiles' / name
 
 
 def profile_names():
-    from hermes_cli.profiles import list_profiles
-    return list(dict.fromkeys(['default', *(p.name for p in list_profiles())]))
+    # Documented profiles/<name> layout and identity-file presence contract.
+    # Never open credentials/configs while enumerating profile names.
+    parent = profile_root() / 'profiles'
+    identities = ('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db')
+    names = [p.name for p in parent.iterdir()
+             if p.is_dir() and not p.is_symlink()
+             and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', p.name)
+             and any((p / name).is_file() for name in identities)] if parent.is_dir() else []
+    return ['default', *sorted(set(names) - {'default'})]
+
+
+def explicit_native_profile():
+    # Hermes documents -p/--profile and leaves argv intact after pre-parsing.
+    # Do not import/read the CLI main module or its private parser state.
+    for arg in sys.argv[1:]:
+        if arg == '--':
+            break
+        if (arg in ('-p', '--profile') or arg.startswith('--profile=')
+                or arg.startswith('-p') and len(arg) > 2):
+            return current_profile()
+    return None
+
+
+def persona_name():
+    from hermes_cli.config import get_hermes_home
+    path = Path(get_hermes_home()) / 'profile.yaml'
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        # Hermes ships ruamel.yaml on Python 3.14 and PyYAML on older
+        # interpreters. Use the third-party safe parser, not core profile code.
+        try:
+            from ruamel.yaml import YAML
+            parse = YAML(typ='safe', pure=True).load
+        except ImportError:
+            from yaml import safe_load
+            parse = safe_load
+        value = parse(path.read_text(encoding='utf-8'))
+        return value.get('display_name') if isinstance(value, dict) else None
+    except Exception:
+        return None
 
 
 def choose_profile(explicit=None, *, interactive=False):
     from hermes_cli.config import load_config
     extra = load_config().get('platforms', {}).get('botsesh', {}).get('extra', {})
     saved = extra.get('profile')
-    # Hermes pre-parses --profile even after plugin subcommands. Do not import
-    # main here (startup side effects); honor its explicit choice when loaded.
-    main = sys.modules.get('hermes_cli.main')
-    if explicit is None and callable(getattr(main, 'explicit_cli_profile', None)):
-        explicit = main.explicit_cli_profile()
+    if explicit is None:
+        explicit = explicit_native_profile()
     names = profile_names()
     value = explicit if explicit is not None else saved
     if value is None and interactive and sys.stdin.isatty():
@@ -48,10 +94,11 @@ def choose_profile(explicit=None, *, interactive=False):
 def profile_scope(name):
     """Select the real native home, including credentials/config/tools isolation."""
     from hermes_cli.config import get_hermes_home
-    from hermes_cli.profiles import get_profile_dir
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Preserve arbitrary HERMES_HOME installs when staying in their active home.
-    home = Path(get_hermes_home()) if name == current_profile() else Path(get_profile_dir(name))
+    if name not in profile_names():
+        raise BotSeshError('unknown_hermes_profile')
+    home = Path(get_hermes_home()) if name == current_profile() else profile_dir(name)
     if not home.is_dir() or home.is_symlink():
         raise BotSeshError('unknown_hermes_profile')
     token = set_hermes_home_override(home)
@@ -100,14 +147,10 @@ def gateway_install_id():
 
 
 def configured_name(profile, explicit=None):
-    from hermes_cli.config import load_config, get_hermes_home
+    from hermes_cli.config import load_config
     from .oauth import preferred_name
     extra = load_config().get('platforms', {}).get('botsesh', {}).get('extra', {})
-    try:
-        from hermes_cli.profiles import read_profile_meta
-        persona = read_profile_meta(get_hermes_home()).get('display_name')
-    except ImportError:
-        persona = None
+    persona = persona_name()
     return preferred_name(explicit if explicit is not None else extra.get('display_name') or persona or profile)
 
 

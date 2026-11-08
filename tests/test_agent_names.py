@@ -22,11 +22,11 @@ class NameTests(unittest.TestCase):
         self.assertTrue(args.no_start)
 
     def test_explicit_profile_then_host_fallback_and_validation(self):
-        with patch('hermes_cli.profiles.current_profile_name', return_value='garden-profile'):
+        with patch('botsesh_oauth_test.identity.current_profile', return_value='garden-profile'):
             self.assertEqual(oauth.preferred_name(), 'garden-profile')
             self.assertEqual(oauth.preferred_name('Scout'), 'Scout')
         for profile in ('custom', 'default', None):
-            with self.subTest(profile=profile), patch('hermes_cli.profiles.current_profile_name', return_value=profile):
+            with self.subTest(profile=profile), patch('botsesh_oauth_test.identity.current_profile', return_value=profile):
                 self.assertEqual(oauth.preferred_name(), 'default')
         # Explicit --name is authored input, even if it matches a profile sentinel.
         self.assertEqual(oauth.preferred_name('default'), 'default')

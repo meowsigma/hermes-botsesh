@@ -1,124 +1,93 @@
 # Native Hermes commands in BotSesh DMs
 
-Source candidate: `commands`, built on reviewed `solid` fa3b1b51. This is not a
-published release or a production end-to-end certification. Deploy the matching
-reviewed BotSesh server before distributing this plugin: it requires
+Unpublished 0.5.1 catalog candidate. The matching BotSesh server must support
 `dm_controls`, `hermes_edit` and `hermes_delivery(state: handled)`.
+See [setup](../README.md) and the [17-site public API migration](PUBLIC-API.md).
 
-## Use and authority
+## Authority and use
 
-1. In your own terminal, set the public client ID and run
-   `hermes auth add botsesh:rooms` with the optional **Hermes DMs** consent,
-   then `hermes botsesh connect` and open that connection's private DM in BotSesh.
-   See [current setup and upgrade](../README.md); each profile signs in separately.
-   Neither DM commands nor the owner-DM create/offer exception can start sign-in.
-   Group rooms remain normal
-   collaboration context: slash-looking room prose never controls the gateway.
-2. Authorize the DM human's **stable participant ID** through normal Hermes
-   authorization/pairing. Room/DM OAuth consent, an invitation, a display name,
-   or BotSesh host status is not a native Hermes operator grant. Existing global,
-   per-platform and per-command restrictions remain authoritative. The plugin
-   does not edit or bypass those lists. The new ID is exposed in the exact
-   authorized `list_rooms` DM row as `human_participant_id`, not a credential.
-   For an operator who uses a per-platform list, the existing local configuration
-   route is `hermes config set platforms.botsesh.extra.allowed_users
-   '["DM_HUMAN_PARTICIPANT_ID"]'` (one shell command); preserve other allowed IDs.
-   Explicit global/env restrictions may require their own normal operator update.
-3. With that gateway running, type `/` in the DM composer. The visible manifest
-   is discovered from the actual gate-aware registry, plugin commands and
-   configured alias/exec quick commands. Choosing only fills the composer; send
-   it yourself. Bare `/model` uses the native provider/model picker and native
-   model-selection warnings. `/status` reports the actual chosen model.
-4. `/goal <objective>` follows Hermes's native semantics: it **starts work** as
-   well as saving the goal; use `/goal show` to inspect it. Commands such as
-   `/retry`, `/bg`, `/review` and quick execs can also do real work/spend allowance.
-   Command routing itself does not turn them into model prompts or change their
-   native semantics. `/new` and `/stop` invalidate existing cards immediately.
+1. In your own terminal, sign in with `hermes auth add botsesh:rooms` and the
+   optional **Hermes DMs** consent, then run `hermes botsesh connect`.
+2. Open that connection's DM in BotSesh. Authorize its human's **stable
+   participant ID** through normal Hermes pairing/allowlists. OAuth consent,
+   invitation, display name and web ownership are not native operator authority.
+   The exact authorized `list_rooms` DM row exposes `human_participant_id`.
+   The public config command is `hermes config set platforms.botsesh.extra.allowed_users
+   '["DM_HUMAN_PARTICIPANT_ID"]'`; preserve existing IDs and global restrictions.
+3. Type `/`. The catalog build supplies **documented shortcuts**, not the live
+   Hermes registry. Configured quick-command descriptions are included without
+   shell bodies or alias targets. Send `/commands` for the current complete
+   native list, including installed plugins. A shortcut only fills the composer;
+   you still send it yourself.
+4. `/model` lists available models. Use the native typed command, such as
+   `/model MODEL --provider PROVIDER`, for a guarded switch. `/status` reports
+   actual session/model state. Model-picker buttons are off because the current
+   picker callback bypasses the full native guard context and has no public guard API.
+5. `/new` and other slash confirmations use core's text `/approve`, `/always`
+   and `/cancel` fallback. Merely requesting a new session is not approval.
+   `/goal <objective>` **starts work**, while `/goal show` only inspects it.
+   Commands and configured quick execs can use tools, run code or spend model allowance;
+   native dispatch preserves their normal authorization and semantics.
 
-The v1 manifest is capped at 128 commands (83 commands/aliases in the tested
-empty-home core, excluding platform-ping `/start` and Telegram-only `/topic`).
-Skill/bundle slash invocations still use native dispatch;
-this manifest does not inventory every installed skill or bundle. On an oversized
-command namespace, publication refuses rather than silently truncating it;
-native `/commands` remains available through a typed authorized DM command.
+Group-room slash-looking prose never acquires gateway-control authority.
+No DM command starts sign-in or automatically creates an account/connection.
 
-## Interactive messages
+## Interactive controls still supported
 
-- Provider/model and flat choices are process-local callbacks; complete IDs
-  remain local and only random opaque option tokens are sent to the room.
-- Clarify and plugin `ask_choice` use the real native clarify registry. **Other**
-  arms the next typed answer. Multi-select falls back to the native typed parser;
-  v1 deliberately cannot misrepresent it as a single choice.
-- Exec approval inherits Hermes's normalized template and intersects its allowed
-  actions with the exact pending request. The plain command preview is exact,
-  never silently truncated; an unrepresentable/redacted mismatch falls back to
-  native text approval. A tap alone is not evidence that execution succeeded.
-- Slash-confirm cards use the exact native confirmation ID. Model warnings need
-  their own explicit Continue tap. No FIFO approval guess, default approval,
-  callback reconstruction or automatic execution retry occurs on restart.
-- Cards bind exact chat, verified human, membership, native session key,
-  generation, source message number and expiry (at most five minutes). Native
-  authorization must return literal True. Source erasure/revocation/closure,
-  session boundaries or request expiry disable callbacks.
-- A selected source card is immutable. Choice rows and the selected highlight
-  are normal attributed/exportable room content. Picker navigation and final
-  acknowledgments are new messages, not edits hiding an earlier decision.
+- Flat choices are process-local callbacks; complete values stay local and
+  only random opaque option tokens go to the room.
+- Clarify imports only public `get_pending`, `mark_awaiting_text` and
+  `resolve_gateway_clarify`. Cards bind the exact pending entry. **Other** arms
+  typed input; multi-select keeps the native typed parser. The adapter tracks
+  IDs actually received through its public clarify hook, not private registries.
+- Exec approval uses the public `ExecApprovalPrompt.request_id`, core-normalized
+  action set and public request-bound card resolver. Missing ID uses native
+  text fallback. Equal command bytes cannot identify a pending request.
+  A stale/settled ID cannot resolve the next FIFO waiter. Preview bytes remain
+  exact; unrepresentable payloads fail closed. A tap is not execution-success proof.
+- The plugin's local card lifetime is at most five minutes, capped by core's
+  configured approval duration; it is **not** a claim about exact native time
+  remaining. The resolver rejects requests that are no longer waiting.
+- Custom model-picker and slash-confirm overrides are absent; core's normal
+  capability detection selects native text fallback. Unsupported buttons are
+  not stubs that report success. See README **Needs a Hermes API**.
+
+Cards bind chat, verified human, membership, native session key, generation,
+source message number and expiry. Native authorization must return literal True.
+Source revocation, session changes and callback expiry fail closed. Selected
+cards remain immutable; acknowledgments are new messages, not hidden edits.
 
 ## Transport and read boundaries
 
-`command_transport.py` checks live exact DM discovery before each poll, publishes
-changed live manifests (retaining uncertain original UUID/body), and processes
-structured authenticated choices even while normal inference is busy. Idle
-manifest checks do not grow the durable operation-ID journal. Typed slash inputs
-reach the installed `BasePlatformAdapter.handle_message` / GatewayRunner as exact
-DM text with `allow_gateway_control=True`; ordinary room/model context remains
-wrapped and untrusted. Unknown and incomplete commands receive guidance.
+The adapter checks exact live DM identity, publishes changed shortcut manifests
+with retained UUID/body on uncertain sends, and processes authenticated choices
+while a normal turn is busy. Failed identity checks disable callbacks; saved
+identity is not substituted for fresh authority. Native inputs are exact
+`MessageEvent` text through `BasePlatformAdapter.handle_message`; room context
+remains wrapped and untrusted. Unknown/incomplete commands return guidance.
 
-Known source-only carryover: live DM identity discovery currently runs on each
-poll. A failure disables callbacks and blocks that poll, including ordinary DM
-processing; it does not degrade to stale identity or authorize controls from the
-saved room projection. Keep the documented server-first release order. Reducing
-this dependency requires a separate safe transport fallback, not treating a
-failed identity check as fresh authority.
+Native output uses the no-read notice route and does not mutate an ordinary
+turn's frozen context, claim model success or advance a read cursor. `handled`
+is only a transport receipt. Inputs are persisted before native admission and
+at-most-once across reconstruction; uncertain exec commands are never replayed.
+Plugin notices use plugin-owned English strings. Authored content and unknown
+localized core text remain unchanged; dynamic language-pack inheritance needs
+its own public accessor.
 
-Native control output uses the explicit no-read notice route, including while a
-normal model turn is running. It cannot mutate that turn's immutable context,
-record a model failure, claim successful processing, or advance its read cursor.
-`handled` is a separate self-reported **native-input transport receipt**, not an
-answer, comprehension or execution-success claim. The server permits it only for
-this DM's exact human inputs, including typed clarify replies. Commands are
-persisted before native admission and are at-most-once across reconstruction;
-uncertain execution is never silently rerun. A completed ordinary edit uses its
-retained UUID and the existing own-author/window/history endpoint.
-
-## Verification and explicit limits
-
-Run from this checkout with Hermes installed/on PYTHONPATH:
+## Checks and limits
 
 ```sh
 HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONPATH=/path/to/hermes-agent \
-  /path/to/hermes-agent/venv/bin/python -m unittest discover -s tests -p test_commands.py -v
-PYTHONPATH=/path/to/hermes-agent /path/to/hermes-agent/venv/bin/python \
-  -m pytest tests/controls -q
+  /path/to/prepared/python -m unittest discover -s tests -v
+PYTHONPATH=/path/to/hermes-agent /path/to/prepared/python -P \
+  -m pytest --import-mode=append tests/controls -q
 ```
 
-- Twelve focused tests construct the real native GatewayRunner, wire the actual
-  BotSeshAdapter and SQLite SessionStore, and exercise model picker → callback →
-  persisted model → `/status`, goal set/show, new confirmation/session rotation,
-  busy status/clarify/typed answers, unknown/incomplete commands, stale-card
-  invalidation, durable replay suppression, platform-specific manifest filtering
-  and no inferred native authority.
-- Transport/server projections and offline model catalog are test fixtures.
-  Native `/goal` kickoff is captured with core's own command sink so no inference
-  runs. Busy guards are owned by the test task, not a running model.
-- Thirty-eight focused callback checks exercise real clarify/slash/approval
-  primitives, boundaries, warnings, exact IDs and uncertain retries. They are
-  harness evidence, not executed-shell or model-continuation proof.
-- Product model calls: **0**. Live production accounts created: **0**. No user's
-  existing Hermes home, service, account or credentials were modified.
-
-The matching app branch additionally exercises real OAuth/HTTP/MCP authority,
-no-read fences and Chromium at 1440/390. Its 30-second film is explicitly a local
-UI/transport capture, not production or native-agent execution proof. Required
-production `/model`/goal/new + approved harmless execution + clarify continuation
-still follow reviewed server release; owner dogfood is a separate result.
+The native-command suite constructs the actual GatewayRunner and adapter with
+transport doubles, isolated SQLite homes and an offline model catalog. It tests
+native text model switches, confirmations/session rotation, busy clarify/text
+input, replay/authority boundaries and exact command bytes, with no model call.
+Control fixtures exercise the actual native request-bound approval/clarify
+primitives. Separate real-server/no-Node proof covers native CLI connection,
+menu publication and DM command replies. Neither is an automatic-model-return,
+production runtime or endurance certification.

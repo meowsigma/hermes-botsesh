@@ -10,47 +10,41 @@ from .client import BotSeshError
 
 def profile_context():
     from hermes_cli.config import get_hermes_home
-    from hermes_cli.profiles import current_profile_name
-    return Path(get_hermes_home()), current_profile_name()
+    from .identity import current_profile
+    return Path(get_hermes_home()), current_profile()
 
 
 def gateway_snapshot():
-    """Query the live owner, without ensure (which can start/replace a gateway)."""
+    """Public liveness + writer-verified status; never ensure/start or query private sockets."""
     home, profile = profile_context()
     answer = {'running': None, 'profile': profile, 'channel': 'unknown', 'since': None,
               'pid': None, 'control_home': str(home), 'instance': None}
     try:
-        from hermes_cli.gateway_runtime import discover_gateway_endpoint, control_home_for
-        from gateway.control_socket import query_gateway_control
-        from gateway.status import resolve_gateway_liveness
+        from gateway.status import (resolve_gateway_liveness, read_runtime_status,
+                                    runtime_status_is_stale, get_process_start_time,
+                                    profile_platforms_from_multiplexer)
         liveness = resolve_gateway_liveness(profile_dir=home, use_cache=False)
         answer.update(running=liveness.running if not liveness.probe_error else None,
                       pid=liveness.pid, channel='down' if not liveness.running and not liveness.probe_error else 'unknown')
-        discovery = discover_gateway_endpoint(home, timeout=2.0)
-        if discovery.endpoint is None:
+        if answer['running'] is not True:
             return answer
-        # Native standalone endpoints deliberately leave control_home unset.
-        # Let core resolve it; multiplexed profiles still use their live owner.
-        control = control_home_for(home, discovery.endpoint)
-        identify = query_gateway_control(control, 'identify', timeout=2.0)
-        live = query_gateway_control(control, 'status', timeout=2.0)
-        if not identify or not live or identify.get('pid') != live.get('answering_pid'):
+        multiplexed = liveness.source == 'multiplexer'
+        live = liveness.runtime if multiplexed else read_runtime_status(home / 'gateway_state.json')
+        if (not isinstance(live, dict) or live.get('pid') != liveness.pid
+                or live.get('start_time') is None
+                or live['start_time'] != get_process_start_time(liveness.pid)):
             return answer
-        answer.update(running=True, pid=identify['pid'], control_home=str(control),
-                      process_start=identify.get('start_time'),
-                      instance=identify.get('instance_id') or identify.get('start_time'),
-                      served_profiles=identify.get('served_profiles') or [{'profile_id': str(home)}],
-                      owner_profile=identify.get('profile'), supervisor=discovery.endpoint.supervisor)
-        platforms = live.get('platforms') or {}
-        native = platforms.get(profile + ':botsesh')
-        if native is None and (identify.get('profile') == profile or control.resolve() == home.resolve()):
-            native = platforms.get('botsesh')
-        native = native or {}
-        # A live host with an old writer's platform record is not a live channel.
-        writer_matches = (identify.get('start_time') is not None and native.get('writer_pid') == identify['pid']
-                          and native.get('writer_start_time') == identify.get('start_time'))
-        answer.update(channel='up' if native.get('state') == 'connected' and writer_matches else 'down',
-                      native_state=native.get('state', 'not_loaded'), observed_at=native.get('updated_at'))
+        answer.update(process_start=live['start_time'], instance=live['start_time'],
+                      served_profiles=live.get('served_profiles') or [{'profile_id': str(home)}],
+                      status_source='public_runtime_snapshot')
+        platforms = profile_platforms_from_multiplexer(live, profile) if multiplexed else live.get('platforms') or {}
+        native = platforms.get('botsesh') or {}
+        writer_matches = (native.get('writer_pid') == liveness.pid
+                          and native.get('writer_start_time') == live['start_time'])
+        stale = runtime_status_is_stale(live) or runtime_status_is_stale(native)
+        answer.update(channel='unknown' if stale else 'up' if native.get('state') == 'connected' and writer_matches else 'down',
+                      native_state=native.get('state', 'not_loaded'), observed_at=native.get('updated_at'),
+                      snapshot_stale=stale)
         return answer
     except (ImportError, AttributeError, OSError, ValueError, TypeError):
         return answer

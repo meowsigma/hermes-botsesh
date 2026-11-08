@@ -8,7 +8,6 @@ and optional session_key; None rejects the route. See INTEGRATION.md.
 """
 from __future__ import annotations
 
-import asyncio
 import re
 from collections import OrderedDict
 from copy import deepcopy
@@ -31,16 +30,7 @@ _NATIVE_COPY = {
 
 
 def _native_translation(key: str) -> str:
-    # Core can return the bare key when an installed language catalogue is absent.
-    # Use its profile-scoped translator first; never infer just to translate UI.
-    try:
-        from agent.i18n import t
-        fields = {'platform': 'BotSesh', 'sethome_cmd': '/sethome'} if key == 'gateway.notify.no_home_channel' else {}
-        text = t(key, **fields)
-        if isinstance(text, str) and text.strip() and not text.startswith('gateway.'):
-            return text
-    except Exception:
-        pass
+    # Plugin-owned presentation only; authored question/message bytes stay exact.
     return _NATIVE_COPY.get(key, 'Hermes status update unavailable.')
 
 
@@ -391,18 +381,21 @@ class DmControlsMixin:
 
     async def send_clarify(self, chat_id: str, question: str, choices: list | None, clarify_id: str,
                            session_key: str, metadata: dict[str, Any] | None = None) -> SendResult:
-        from tools import clarify_gateway as clarify
+        from tools.clarify_gateway import get_pending, mark_awaiting_text, resolve_gateway_clarify
         try:
             binding = self._binding(chat_id, session_key)
-            entry = clarify.get_pending(clarify_id)
+            entry = get_pending(clarify_id)
             if (entry is None or entry.session_key != session_key or entry.question != question
                     or list(entry.choices or []) != list(choices or [])):
                 raise ValueError('Clarify request is no longer pending or does not match')
+            if not hasattr(self, '_dm_pending_clarify'):
+                self._dm_pending_clarify = {}
+            self._dm_pending_clarify[session_key] = clarify_id
             snapshot = (entry.question, tuple(entry.choices or []), entry.multi_select)
             display_question = _clarify_text(question)
             if not choices or entry.multi_select:
                 # v1 is single-choice. Native typed parser retains multi-select semantics.
-                clarify.mark_awaiting_text(clarify_id)
+                mark_awaiting_text(clarify_id)
                 text = display_question
                 if choices:
                     text += '\n\n' + '\n'.join(f'{i}. {c}' for i, c in enumerate(choices, 1))
@@ -410,29 +403,29 @@ class DmControlsMixin:
                 notice_result = await self._control_notice(chat_id, text)
                 return notice_result if isinstance(notice_result, SendResult) else SendResult(success=True)
             async def selected(card, value):
-                live = clarify.get_pending(clarify_id)
+                live = get_pending(clarify_id)
                 if (live is not entry or (live.question, tuple(live.choices or []), live.multi_select) != snapshot):
                     await self._expired_notice(chat_id)
                     return
                 if value[0] == 'other':
-                    if clarify.mark_awaiting_text(clarify_id):
+                    if mark_awaiting_text(clarify_id):
                         await self._control_notice(chat_id, 'Type your answer as your next message. The question is still waiting; this tap did not answer it.')
                     else:
                         await self._expired_notice(chat_id)
-                elif clarify.resolve_gateway_clarify(clarify_id, value[1]):
+                elif resolve_gateway_clarify(clarify_id, value[1]):
                     await self._control_notice(chat_id, 'Answer submitted.')
                 else:
                     await self._expired_notice(chat_id)
             result = await self._publish(chat_id, session_key, 'clarify', (clarify_id, id(entry)), display_question,
                 [(str(c), ('answer', str(c)), 'secondary') for c in choices], selected,
                 buttons=[('Other (type answer)', ('other',), 'secondary')],
-                native_id=clarify_id, ttl=clarify.get_clarify_timeout(), binding=binding,
-                native_valid=lambda: clarify.get_pending(clarify_id) is entry and
+                native_id=clarify_id, binding=binding,
+                native_valid=lambda: get_pending(clarify_id) is entry and
                     (entry.question, tuple(entry.choices or []), entry.multi_select) == snapshot)
             if not result.success:
                 # Native fallback can capture typed text, even if the card send was uncertain.
-                if clarify.get_pending(clarify_id) is entry:
-                    clarify.mark_awaiting_text(clarify_id)
+                if get_pending(clarify_id) is entry:
+                    mark_awaiting_text(clarify_id)
             return result
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -443,59 +436,34 @@ class DmControlsMixin:
             if card.kind == 'clarify' and card.native_id == clarify_id and not card.claimed:
                 await self._retire(card, notice)
 
-    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
-                                 confirm_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
-        from tools import slash_confirm
-        entry = slash_confirm.get_pending(session_key)
-        if entry is None or entry.get('confirm_id') != confirm_id:
-            return SendResult(success=False, error='Slash confirmation no longer pending')
-        def pending():
-            return slash_confirm.get_pending(session_key) == entry and time.time() - entry['created_at'] < slash_confirm.DEFAULT_TIMEOUT_SECONDS
-        async def selected(card, value):
-            if not pending():
-                await self._expired_notice(chat_id)
-                return
-            result = await slash_confirm.resolve(session_key, confirm_id, value)
-            if self._control_current(card):
-                await self._control_notice(chat_id, result if isinstance(result, str) and result else 'Confirmation handled.' )
-        return await self._publish(chat_id, session_key, 'slash', (confirm_id, entry['created_at']),
-            f'{title}\n\n{message}', [], selected,
-            buttons=[('Approve', 'once', 'primary'), ('Always approve', 'always', 'secondary'), ('Cancel', 'cancel', 'secondary')],
-            native_id=confirm_id, ttl=max(0.001, slash_confirm.DEFAULT_TIMEOUT_SECONDS - (time.time() - entry['created_at'])),
-            native_valid=pending)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        from tools import approval
-        from gateway.platforms.base_exec_approval import approval_timeout_seconds
         try:
+            from tools.approval import resolve_gateway_approval_card
+            from gateway.platforms.base import approval_timeout_seconds
+            from .public_capabilities import capabilities
             _text(prompt.command, 4000)
-            wanted = (prompt.metadata or {}).get('request_id')
-            matches = [row for row in approval.list_gateway_approvals(prompt.session_key)
-                       if row.get('command') == prompt.command and (wanted is None or row.get('request_id') == wanted)]
-            if len(matches) != 1 or not isinstance(matches[0].get('request_id'), str) or not matches[0]['request_id']:
-                raise ValueError('Cannot bind approval to one exact native request; use text fallback')
-            snapshot = deepcopy(matches[0])
-            request_id = snapshot['request_id']
-            def pending():
-                rows = [r for r in approval.list_gateway_approvals(prompt.session_key) if r.get('request_id') == request_id]
-                return len(rows) == 1 and rows[0] == snapshot
-            # BasePlatformAdapter.send_exec_approval normalized the allowed actions.
-            # Intersect, never expand, with the native pending request's restrictions.
+            request_id = getattr(prompt, 'request_id', None)
+            if (not capabilities()['request_bound_approval'] or not isinstance(request_id, str)
+                    or not request_id):
+                raise ValueError('Native request identity unavailable; use native text approval')
+            # Core normalized this prompt's exact actions. Never infer request
+            # identity from command text or rescan a private pending queue.
             allowed = {choice for _, choice, _ in prompt.actions} & {'once', 'session', 'always', 'deny'}
-            smart = prompt.smart_denied or snapshot.get('smart_denied', False)
-            if smart or snapshot.get('allow_session', True) is False:
+            smart = prompt.smart_denied
+            if smart:
                 allowed -= {'session', 'always'}
-            if snapshot.get('allow_permanent', True) is False or 'session' not in allowed:
+            if 'session' not in allowed:
                 allowed.discard('always')
             labels = {'once': 'Approve', 'session': 'Approve for session', 'always': 'Always approve', 'deny': 'Deny'}
             buttons = [(labels[value], value, 'primary' if value == 'once' else 'danger' if value == 'deny' else 'secondary')
                        for value in ('once', 'session', 'always', 'deny') if value in allowed]
             async def selected(card, value):
-                if value not in allowed or not pending():
+                if value not in allowed:
                     await self._expired_notice(prompt.chat_id)
                     return
                 # request_id is MANDATORY: never let an old card approve the next FIFO waiter.
-                count = approval.resolve_gateway_approval(prompt.session_key, value, request_id=request_id)
+                count = resolve_gateway_approval_card(prompt.session_key, value, request_id=request_id)
                 if count == 1:
                     await self._control_notice(prompt.chat_id, 'Decision submitted: ' + labels[value] + '. Execution outcome is not yet confirmed.')
                 else:
@@ -505,101 +473,13 @@ class DmControlsMixin:
                 text += '\nThe safety reviewer denied it; only a one-time override is available.'
             text += '\nNo response means this request will not be approved.'
             # prompt.text may contain the core's truncated fenced preview: do NOT use it.
-            # Core TurnRunner owns register_gateway_settle after delivery; do not overwrite it.
+            # Local card lifetime is bounded; it is not the native remaining TTL.
+            # The request-bound resolver rejects settled/expired requests.
             return await self._publish(prompt.chat_id, prompt.session_key, 'approval', request_id, text, [], selected,
-                buttons=buttons, preview=prompt.command, ttl=approval_timeout_seconds(), native_id=request_id,
-                native_valid=pending)
+                buttons=buttons, preview=prompt.command, ttl=approval_timeout_seconds(), native_id=request_id)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
-    async def send_model_picker(self, chat_id: str, providers: list, current_model: str, current_provider: str,
-                                session_key: str, on_model_selected,
-                                metadata: dict[str, Any] | None = None) -> SendResult:
-        try:
-            initial_binding = self._binding(chat_id, session_key)
-            catalog = []
-            for provider in providers:
-                if (not isinstance(provider['slug'], str) or not provider['slug']
-                        or not isinstance(provider.get('models', []), list)
-                        or not all(isinstance(model, str) and model for model in provider.get('models', []))):
-                    raise ValueError('Expected native provider rows with string model IDs')
-                catalog.append(dict(slug=provider['slug'], name=str(provider.get('name') or provider['slug']),
-                                    models=list(provider.get('models', [])), api_url=provider.get('api_url')))
-            if not catalog:
-                raise ValueError('No providers')
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-        root_intent = (id(on_model_selected), repr(catalog), current_model, current_provider)
-
-        async def switch(card, model, provider):
-            if not self._control_current(card):
-                return
-            result = await on_model_selected(chat_id, model, provider['slug'])
-            if self._control_current(card):
-                await self._control_notice(chat_id, result if isinstance(result, str) and result else 'Model selection applied.')
-
-        async def selected(card, value):
-            action = value[0]
-            if action == 'cancel':
-                await self._control_notice(chat_id, 'Model selection cancelled.')
-            elif action == 'providers':
-                await show(None, value[1], card.binding)
-            elif action == 'models':
-                await show(value[1], value[2], card.binding)
-            elif action == 'continue':
-                await switch(card, value[1], catalog[value[2]])
-            elif action == 'model':
-                provider, model = catalog[value[1]], value[2]
-                try:
-                    from hermes_cli.model_selection_guards import combined_selection_warning
-                    kwargs = {'provider': provider['slug']}
-                    if provider['api_url']:
-                        kwargs['base_url'] = provider['api_url']
-                    warning = await asyncio.to_thread(combined_selection_warning, model, **kwargs)
-                except Exception:
-                    if self._control_current(card):
-                        await self._control_notice(chat_id, 'Could not check model selection warnings. No model change was made; retry /model later.')
-                    return
-                if not self._control_current(card):
-                    return
-                if warning is None:
-                    await switch(card, model, provider)
-                else:
-                    result = await self._publish(chat_id, session_key, 'model', (root_intent, 'warning', value[1], model),
-                        f'{warning.title}\n\n{warning.message}', [], selected,
-                        buttons=[('Continue', ('continue', model, value[1]), 'primary'), ('Cancel', ('cancel',), 'secondary')],
-                        binding=card.binding)
-                    if not result.success and self._control_current(card):
-                        await self._control_notice(chat_id, 'Could not display the model warning. No model change was made.')
-
-        async def show(provider_index, page, binding):
-            items = catalog if provider_index is None else catalog[provider_index]['models']
-            start = page * 64
-            rows = []
-            for index, item in enumerate(items[start:start + 64], start):
-                if provider_index is None:
-                    label, value = item['name'], ('models', index, 0)
-                    if item['slug'] == current_provider:
-                        label = '✓ ' + label
-                else:
-                    label, value = item, ('model', provider_index, item)
-                    if item == current_model and catalog[provider_index]['slug'] == current_provider:
-                        label = '✓ ' + label
-                rows.append((label, value, 'secondary'))
-            buttons = [('Cancel', ('cancel',), 'secondary')]
-            def page_value(target):
-                return ('providers', target) if provider_index is None else ('models', provider_index, target)
-            if page:
-                buttons.append(('Previous', page_value(page - 1), 'secondary'))
-            if start + 64 < len(items):
-                buttons.append(('Next', page_value(page + 1), 'secondary'))
-            if provider_index is not None:
-                buttons.append(('Providers', ('providers', 0), 'secondary'))
-            title = 'Choose a provider' if provider_index is None else 'Choose a model: ' + catalog[provider_index]['name']
-            title += f' (page {page + 1})' if len(items) > 64 else ''
-            result = await self._publish(chat_id, session_key, 'model', (root_intent, provider_index, page),
-                title, rows, selected, buttons=buttons, binding=binding)
-            if not result.success and binding == self._binding(chat_id, session_key):
-                await self._control_notice(chat_id, 'Could not display the model picker. Use /model <model-id> or retry the retained control operation.')
-            return result
-        return await show(None, 0, initial_binding)
+    # No custom model/slash-confirm override: Hermes detects the missing picker
+    # and uses its guarded native text path. Never call an unguarded selection
+    # callback or a private confirmation resolver just to preserve button UI.

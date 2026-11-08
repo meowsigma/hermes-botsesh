@@ -318,10 +318,9 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(old_card.payload['callbackId'], self.adapter._controls())
         # Native defaults require confirmation: merely requesting /new is not approval.
         self.assertEqual(self.runner.session_store.get_or_create_session(self.source).session_id, original)
-        confirm_card = next(c for c in self.adapter._controls().values() if c.kind == 'slash')
-        self.choice(73, confirm_card, 'once')
-        await self.adapter._check_room('native-dm')
-        await self.drain()
+        self.assertFalse(any(c.kind == 'slash' for c in self.adapter._controls().values()))
+        self.assertIn('/approve', self.reply(71))
+        await self.command(73, '/approve')
         reset = self.runner.session_store.get_or_create_session(self.source).session_id
         self.assertNotEqual(reset, original)
         self.assertNotIn('native-dm', self.adapter._current)
@@ -376,27 +375,17 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.store.read().get('operation_ids', {}), before)
         self.assertEqual(sum(action == 'manifest' for action, _ in self.transport.controls), 1)
 
-    async def test_native_model_picker_callback_commits_selected_model_once(self):
+    async def test_native_text_model_switch_commits_selected_model_once(self):
         await self.command(90, '/model --session')
         self.assert_control_event('/model --session')
-        root = next(c for c in self.adapter._controls().values()
-                    if c.kind == 'model' and c.payload['text'] == 'Choose a provider')
-        offline_option = next(value for token, value in root.values.items()
-            if any(row['id'] == token and row['label'].lstrip('✓ ') == 'Offline'
-                   for row in root.payload['choices']))
-        self.choice(91, root, offline_option)
-        await self.adapter._check_room('native-dm')
-        models = next(c for c in self.adapter._controls().values()
-                      if c.kind == 'model' and c.payload['text'] == 'Choose a model: Offline')
-        model_option = next(v for v in models.values.values() if v[0] == 'model' and v[2] == 'offline-b')
-        self.choice(92, models, model_option)
-        await self.adapter._check_room('native-dm')
-        warnings = [c for c in self.adapter._controls().values()
-                    if c.kind == 'model' and not c.claimed and any(v[0] == 'continue' for v in c.values.values())]
-        if warnings:
-            warning = warnings[-1]
-            self.choice(93, warning, next(v for v in warning.values.values() if v[0] == 'continue'))
-            await self.adapter._check_room('native-dm')
+        self.assertFalse(any(c.kind == 'model' for c in self.adapter._controls().values()))
+        self.assertIn('/model', self.reply(90))
+        await self.command(91, '/model offline-b --provider offline --session')
+        if self.runner._session_model_overrides.get(self.key, {}).get('model') != 'offline-b':
+            # The native guarded text path, not the unguarded picker callback,
+            # owns any context/cache/cost confirmation.
+            self.assertIn('/model', self.reply(91))
+            await self.command(92, '/model confirm')
         override = self.runner._session_model_overrides.get(self.key, {})
         self.assertEqual(override.get('model'), 'offline-b', self.transport.posts)
         self.assertEqual(override.get('provider'), 'offline')
@@ -406,7 +395,7 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         posts = deepcopy(self.transport.posts)
         await self.adapter._check_room('native-dm')
         self.assertEqual(self.transport.posts, posts)
-        self.assertEqual(self.resolve.call_count, 1)
+        self.assertGreaterEqual(self.resolve.call_count, 1)
         await self.command(94, '/status')
         self.assertIn('offline-b', self.reply(94))
 

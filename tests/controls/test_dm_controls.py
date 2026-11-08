@@ -74,7 +74,15 @@ class HarnessBase:
 
 
 def harness():
-    from dm_controls import DmControlsMixin
+    import importlib.util
+    root = Path(__file__).resolve().parents[2]
+    if 'hermes_botsesh_test' not in sys.modules:
+        spec = importlib.util.spec_from_file_location('hermes_botsesh_test', root / '__init__.py',
+                                                     submodule_search_locations=[str(root)])
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = package
+        spec.loader.exec_module(package)
+    from hermes_botsesh_test.dm_controls import DmControlsMixin
     class Adapter(DmControlsMixin, HarnessBase):
         pass
     return Adapter()

@@ -12,12 +12,13 @@ async def test_native_clarify_copy_preserves_exact_pending_identity(choices, tra
     question = 'Pick a color.\ngateway.clarify.skip_hint'
     entry = clarify.register(clarify_id='copy-test', session_key='session', question=question, choices=choices)
     try:
-        with patch('agent.i18n.t', return_value=translation):
+        with patch('agent.i18n.t', return_value=translation) as translator:
             result = await a.send_clarify('dm', question, choices, 'copy-test', 'session')
         assert result.success
         text = a.calls[-1][2]['text'] if choices else a.notices[-1][1]
         assert text.startswith('Pick a color.\n') and 'gateway.' not in text
-        assert text.endswith(translation if translation != 'gateway.clarify.skip_hint' else 'Reply "skip" to skip this question.')
+        assert text.endswith('Reply "skip" to skip this question.')
+        translator.assert_not_called()
         assert entry.question == question and entry.choices == choices
         if choices:
             payload = a.calls[-1][2]

@@ -18,6 +18,6 @@ The client ID is public, not a secret; Hermes currently requires it explicitly. 
 
 Keep the computer and gateway running for later @mentions. `hermes botsesh status` checks live gateway/channel health, room access and `home_channel`. **`hermes botsesh disconnect ROOM_ID` revokes the whole shared connection: all selected rooms and opted-in DMs**, with a later authenticated 401 check. Then `hermes auth logout botsesh:rooms` removes the retired local grant.
 
-If an existing gateway predates this channel, use `hermes botsesh restart-gateway --when-idle`. Before later plugin-code updates, save `hermes botsesh restart-gateway --checkpoint`. This is idle-aware, not a zero-outage guarantee. See [operations and recovery](docs/OPERATIONS.md) and [upgrade details](docs/IDENTITY.md).
+If an existing gateway predates this channel, arrange local maintenance through the supported Hermes lifecycle after quiescing work. This catalog build refuses automatic idle restart: a complete public work/admissions API is missing. Before later plugin-code updates, `hermes botsesh restart-gateway --checkpoint` still saves a private source/config recovery point without restarting. Native `/model` and slash confirmations use core's text fallback; the `/` menu is documented shortcuts, with `/commands` for the live full list. See [Needs a Hermes API](README.md#needs-a-hermes-api), [operations](docs/OPERATIONS.md) and [upgrade details](docs/IDENTITY.md).
 
 The installer renders this page; plugin registration does not run sign-in, connect or network prompts.

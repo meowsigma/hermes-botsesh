@@ -33,11 +33,12 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
         await self.make_adapter()._flush_failures('a')
         self.assertEqual(len(self.posts), 1)
 
-    async def test_localized_shutdown_is_suppressed_but_ordinary_authored_text_is_exact(self):
+    async def test_unrecognized_localized_text_is_not_guessed_or_rewritten(self):
         await self.adapter._check_room('a')
         with patch('agent.i18n.t', return_value='Hermes wird beendet.'):
             await self.adapter.send('a', 'Hermes wird beendet.', metadata={'_interim_send': True})
-        self.assertFalse(self.posts)
+        self.assertEqual(next(iter(self.posts.values()))['text'], 'Hermes wird beendet.')
+        self.posts.clear()
         text = 'Literal example: gateway.shutdown.notice_shutdown'
         self.assertTrue((await self.adapter.send('a', text)).success)
         self.assertEqual(next(iter(self.posts.values()))['text'], text)
@@ -48,13 +49,14 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue((await self.adapter.send('a', key, metadata={'_interim_send': True})).success)
         self.assertEqual({p['text'] for p in self.posts.values()}, {'Hermes is shutting down.', 'Hermes is restarting.'})
 
-    async def test_native_setup_notice_has_fallback_and_formatted_localized_copy(self):
+    async def test_native_setup_notice_uses_plugin_copy_not_private_translator(self):
         with patch('agent.i18n.t', side_effect=lambda key, **fields: key):
             self.assertTrue((await self.adapter.send('a', 'gateway.notify.no_home_channel')).success)
         self.assertNotIn('gateway.', next(iter(self.posts.values()))['text'])
         with patch('agent.i18n.t', return_value='Localized BotSesh /sethome') as translator:
             await self.adapter.send('a', 'gateway.notify.no_home_channel')
-            translator.assert_called_once_with('gateway.notify.no_home_channel', platform='BotSesh', sethome_cmd='/sethome')
+            translator.assert_not_called()
+        self.assertTrue(all('BotSesh' in p['text'] and '/sethome' in p['text'] for p in self.posts.values()))
 
     async def test_unknown_native_notice_falls_back_but_final_authored_bytes_are_not_translated(self):
         with patch('agent.i18n.t', side_effect=lambda key: key):

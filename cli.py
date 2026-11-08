@@ -132,7 +132,7 @@ def _handle_profile(args, profile):
                                             capture_output=True, text=True, timeout=40)
                     if result.returncode == 0:
                         print('Hermes gateway runtime is ready. Send a question mentioning ' + binding['display_name'] + '.')
-                        print('For an existing gateway needing the channel loaded, use `hermes botsesh restart-gateway --when-idle` (checkpoint required before plugin updates).')
+                        print('Automatic idle restart needs a public Hermes API in this catalog build. Arrange maintenance locally; see README → Needs a Hermes API.')
                     else:
                         print('Room connected; gateway is not ready. Check `hermes gateway status`, then run `hermes gateway run`.')
                 else:
@@ -141,6 +141,9 @@ def _handle_profile(args, profile):
         if args.botsesh_action == 'restart-gateway':
             from hermes_cli.config import load_config_readonly
             from .ops_restart import restart_gateway
+            from .public_capabilities import capabilities
+            if not args.checkpoint and not capabilities()['safe_idle_restart']:
+                raise BotSeshError('needs_hermes_api_safe_idle_restart_unavailable_no_restart')
             restart_gateway(client, load_config_readonly(), args)
             return
         if args.botsesh_action == 'status':

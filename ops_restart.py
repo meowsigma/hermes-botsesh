@@ -46,33 +46,14 @@ def checkpoint(client, config, *, source=False):
 
 
 def work_snapshot(runtime):
-    from gateway.control_socket import query_gateway_control
-    work = query_gateway_control(Path(runtime['control_home']), 'active-work', timeout=2.0)
-    if (not isinstance(work, dict) or type(work.get('active_agents')) is not int
-            or work['active_agents'] < 0 or not isinstance(work.get('active_work'), list)
-            or work.get('pid') != runtime.get('pid')):
-        raise BotSeshError('idle_work_unavailable_no_restart')
-    return max(work['active_agents'], len(work['active_work']))
+    # Public runtime status omits async delegations; zero there is not idle.
+    # No public plugin API/CLI provides the complete live preflight yet.
+    raise BotSeshError('needs_hermes_api_safe_idle_restart_unavailable_no_restart')
 
 
 def queued_admissions(runtime):
-    """Read all served authorities' durable FIFOs, without opening a writer DB."""
-    import sqlite3
-    import contextlib
-    homes = {str(profile_context()[0]), runtime['control_home']}
-    for profile in runtime.get('served_profiles', []):
-        if not isinstance(profile, dict) or not isinstance(profile.get('profile_id'), str):
-            raise BotSeshError('idle_queue_scope_unavailable_no_restart')
-        homes.add(profile['profile_id'])
-    count = 0
-    for home in homes:
-        path = Path(home) / 'state.db'
-        try:
-            with contextlib.closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
-                count += db.execute("SELECT COUNT(*) FROM session_admissions WHERE status IN ('queued','started','unknown')").fetchone()[0]
-        except (sqlite3.Error, ValueError):
-            raise BotSeshError('idle_queue_unavailable_no_restart') from None
-    return count
+    # Do not couple the catalog plugin to a private core database schema.
+    raise BotSeshError('needs_hermes_api_idle_queue_unavailable_no_restart')
 
 
 def pending_local(client):

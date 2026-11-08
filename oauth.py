@@ -29,11 +29,8 @@ def sign_in_instructions():
 
 def preferred_name(value=None):
     if value is None:
-        try:
-            from hermes_cli.profiles import current_profile_name
-            value = current_profile_name()
-        except (ImportError, AttributeError):
-            value = os.environ.get('HERMES_PROFILE_NAME') or os.environ.get('HERMES_PROFILE')
+        from .identity import current_profile
+        value = current_profile()
         if not value or value == 'custom':
             value = 'default'
     if (not isinstance(value, str) or not value.strip()

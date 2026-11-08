@@ -1,77 +1,51 @@
-"""Live gateway command discovery, independent of BotSesh transport.
+"""Plugin-owned DM shortcuts, not a claim to enumerate Hermes' live registry.
 
-Discovery is called in the running gateway after plugin registration, not by a
-web request and never as an authorization decision. Values remain exact; labels
-are bounded for the v1 UI transport.
+Core/plugin command discovery is not a public platform-plugin API. These common
+commands are documented in Hermes' reference/slash-commands.md; /commands always
+asks the native dispatcher for the current complete list. Configured quick
+command labels are read through the public config API, never their shell bodies.
 """
 from __future__ import annotations
 
 import re
 
 _NAME = re.compile(r'^[a-z0-9_-]{1,64}$')
+_SHORTCUTS = (
+    ('commands', 'Show the current native command list (including plugins)', ''),
+    ('help', 'Show native Hermes help', ''),
+    ('status', 'Show session, model, token and context info', ''),
+    ('model', 'List models; switch using the native guarded text command', '[model] [--provider name]'),
+    ('goal', 'Set or inspect this session’s standing goal', '[text | show | pause | resume | clear | status]'),
+    ('new', 'Start a new session', '[name]'),
+    ('reset', 'Start a new session', '[name]'),
+    ('stop', 'Stop the current turn and background work', ''),
+    ('approve', 'Approve the current native pending action', '[session|always]'),
+    ('deny', 'Deny a native pending action', '[all] [reason]'),
+    ('agents', 'Show active agents and running tasks', ''),
+    ('queue', 'Queue a prompt or manage queued prompts', '[prompt | list | clear]'),
+    ('steer', 'Steer the current turn', '<prompt>'),
+    ('compress', 'Compress the conversation context', '[focus topic]'),
+    ('context', 'Show detailed context usage', '[all]'),
+    ('resume', 'Resume a saved session', '[name]'),
+    ('sessions', 'Browse saved sessions', ''),
+    ('sethome', 'Set this DM as the native home channel', ''),
+    ('name', 'Show or rename this agent’s addressable room name', '[new name]'),
+)
 
 
 def _label(value, limit=160):
-    # BotSesh's bound uses JavaScript UTF-16 units. Avoid splitting a surrogate.
     return str(value or '').encode('utf-16-le')[:limit * 2].decode('utf-16-le', errors='ignore')
 
 
 def build_manifest():
-    from hermes_cli.commands import SUBCOMMANDS, resolve_command
-    from hermes_cli.commands_platforms import telegram_bot_commands
     from hermes_cli.config import load_config_readonly
-    from hermes_cli.plugins import get_plugin_commands
-
-    commands = {}
-
-    def add(name, description, args='', options=()):
-        if not isinstance(name, str) or not _NAME.fullmatch(name) or name in commands:
-            return
-        values = []
-        seen = set()
-        for value in options:
-            value = str(value)
-            if not value or len(value.encode('utf-16-le')) > 256 or value in seen:
-                continue
-            seen.add(value)
-            values.append({'id': value, 'label': _label(value)})
-        # No silent partial option catalog; the native command's text help stays
-        # available if a dynamic command has more than the UI's 64 finite options.
-        row = {'name': name, 'description': _label(description) or 'Run /' + name}
-        if args:
-            row['args'] = _label(args)
-        if 0 < len(values) <= 64:
-            row['options'] = values
-        commands[name] = row
-
-    for name, _ in telegram_bot_commands(include_plugins=False):
-        command = resolve_command(name)
-        if command is None:
-            continue
-        # /start acknowledges platform bot pings; /topic manages Telegram's
-        # native DM topics. Neither is an actionable BotSesh DM menu entry.
-        if command.name in ('start', 'topic'):
-            continue
-        options = SUBCOMMANDS.get('/' + command.name, ())
-        description = command.describe()
-        add(command.name, description, command.args_hint, options)
-        for alias in command.aliases:
-            add(alias, description, command.args_hint, options)
-
-    for name, command in get_plugin_commands().items():
-        add(name, command.get('description') or 'Plugin command', command.get('args_hint') or '')
-
+    commands = {name: {'name': name, 'description': description, **({'args': args} if args else {})}
+                for name, description, args in _SHORTCUTS}
     config = load_config_readonly()
     for name, command in (config.get('quick_commands') or {}).items():
-        if isinstance(command, dict) and command.get('type') in ('alias', 'exec'):
-            # Do not publish shell command bodies or alias targets as labels.
-            add(name, command.get('description') or 'Configured quick command')
-
-    # BotSesh overrides native /name (conversation naming) with the exact room
-    # participant label; it never changes a Hermes session title.
-    commands['name'] = {'name': 'name', 'description': 'Show or rename this agent’s addressable room name', 'args': '[new name]'}
-    # Canonical built-ins precede aliases/plugins/quick commands without name
-    # repair, ellipsis, or pretending an incomplete manifest is complete.
+        if (isinstance(name, str) and _NAME.fullmatch(name) and name not in commands
+                and isinstance(command, dict) and command.get('type') in ('alias', 'exec')):
+            commands[name] = {'name': name, 'description': _label(command.get('description')) or 'Configured quick command'}
     if len(commands) > 128:
-        raise ValueError('DM command catalog exceeds v1 limit; native /commands remains available')
+        raise ValueError('DM shortcuts exceed v1 limit; native /commands remains available')
     return list(commands.values())

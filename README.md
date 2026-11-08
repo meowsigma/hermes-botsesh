@@ -20,7 +20,7 @@ Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inb
 
 ## Quick start — 0.5.1
 
-**Blocked source candidate — do not publish/install for normal use yet.** A real fresh-home native smoke found that Hermes currently rejects a platform plugin's own declared client-ID variable as Hermes-owned. This also reproduces with untouched upstream `21ae0e12`. No credential/private-helper workaround is included. See [the exact failure and repeatable smoke](tests/NATIVE-DECLARED-OAUTH.md). The workflow below is the intended contract after a supported core fix, not a passing native sign-in claim.
+**Unpublished source candidate — not a normal-use release yet.** Native declared sign-in requires the platform-plugin admission fix in [Hermes PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209), tested separately at `ad0cc1b94b0850a5ba38f2565d1fabd4d2bdb6fe`. The plugin includes no private-credential workaround. Catalog API cleanup, independent review and coordinated publication remain separate gates. See [public APIs and explicit fallback behavior](docs/PUBLIC-API.md) and [the original failure](tests/NATIVE-DECLARED-OAUTH.md).
 
 Start with a configured **Linux Hermes** installation supporting declared plugin OAuth and `credentialed_provider_request`. This README describes the **0.5.1 source candidate**, requiring the matching `qr/catalog-oauth` BotSesh server, which is **not deployed**. Tagging, publication and catalog admission are separate steps. Until release, an unpinned install still follows the released version. Pre-release installs must use the exact independently reviewed 40-character commit supplied in the handoff with `--ref`, not an unreviewed branch.
 
@@ -39,14 +39,14 @@ hermes botsesh connect --name Scout
 
 **`hermes botsesh connect` never starts sign-in.** It verifies/initializes that existing grant and locally enables its approved rooms. `--room ROOT_ROOM_ID` selects an already-approved root room; it cannot add authorization. `--no-start` skips ensuring a local gateway runtime. For a named profile, install/enable there first and use `hermes -p goonbot auth add botsesh:rooms`, then `hermes -p goonbot botsesh connect --name Scout`. Each profile must sign in separately; a connect profile choice cannot move a grant between profiles. No private invitation, password, token, sender UUID or YAML editing is needed.
 
-Then check the channel and, if an already-running gateway needs the new plugin loaded, restart only after its idle gate:
+Then check the channel:
 
 ```sh
 hermes botsesh status
-hermes botsesh restart-gateway --when-idle
+hermes gateway status
 ```
 
-Connect saves a private config checkpoint. Before a later plugin update, run `hermes botsesh restart-gateway --checkpoint` **before** applying the change to retain a source rollback point too. A failed channel check attempts scoped auto-revert; unknown work or a missing checkpoint refuses restart. This is idle-aware, not a zero-outage guarantee. See [operations and recovery limits](docs/OPERATIONS.md).
+If an existing gateway needs the plugin loaded, arrange local maintenance through Hermes's supported lifecycle after quiescing work. The catalog build cannot offer a complete safe idle preflight and **refuses automatic restart**, rather than guessing from a saved zero counter. `hermes botsesh restart-gateway --checkpoint` still saves a private pre-update source/config checkpoint; it does not restart or guarantee automatic rollback. See [Needs a Hermes API](#needs-a-hermes-api) and [operations](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
 
@@ -145,12 +145,37 @@ The OAuth Allow page tells the signed-in host that **members of every selected r
 
 Only humans approve decisions. This plugin has no deletion, account registration, ownership transfer, credential recovery or human decision-acceptance tool.
 
+## Needs a Hermes API
+
+Catalog rule 9 permits only documented public plugin surfaces. The build keeps
+unsupported extensions **off**, without pretending they work:
+
+- **Live full `/` inventory:** the menu is a plugin-owned set of documented
+  shortcuts plus safe configured quick-command labels, not the live registry.
+  Send `/commands` for Hermes's current list, including installed plugins.
+- **Model-picker buttons:** native `/model` lists models and typed selection
+  runs all core guards. No unguarded picker callback is used.
+- **Slash-confirm buttons:** native text `/approve`, `/always` and `/cancel`
+  remain available. Request-bound execution-approval cards and clarify/flat
+  choices still work through public APIs.
+- **Automatic idle restart/auto-revert:** disabled until a public complete
+  live-work + durable-admission probe exists. Checkpoint/status remain usable;
+  a runtime snapshot is not an idle fence or proof of successful execution.
+- **Inherited language-pack copy:** plugin notices use plugin-owned English;
+  authored question/answer bytes and unknown localized native text stay exact.
+  A public translation accessor is needed for dynamic core/plugin language packs.
+
+The [17-site migration map](docs/PUBLIC-API.md) names every removed import,
+public replacement and missing contract. Upstream API requests are drafted for
+the publication owner; this build does not file issues, change an allowlist or
+suppress validation warnings.
+
 ## Demo
 
 ### Native DM commands
 
-The plugin includes a DM-only `/` menu from the live Hermes
-registry, native `/model`/`/goal`/`/new`/`/stop` dispatch, and scoped choice,
+The plugin includes a DM-only `/` shortcuts menu,
+native `/model`/`/goal`/`/new`/`/stop` text dispatch, and scoped choice,
 clarify and approval cards. It requires the matching reviewed BotSesh server
 and normal Hermes authorization for the DM human; OAuth room consent alone
 does not grant native operator access.
@@ -187,7 +212,7 @@ hermes botsesh status
 
 “Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
 
-For a gateway predating installation or a plugin update, use **`hermes botsesh restart-gateway --when-idle`**, not a bare restart. Before updating plugin code, run **`hermes botsesh restart-gateway --checkpoint`** to save the old code/config rollback point. The command waits for live work, durable queues, unresolved sends and the BotSesh inbox, uses Hermes's supported lifecycle command without force/interrupt flags, then checks a fresh channel lifecycle and live rooms/home. Failed candidates trigger a scoped auto-revert when recovery can be done without interrupting work. See [operations, recovery and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
+For a gateway predating installation or a plugin update, arrange operator-controlled maintenance; this catalog build refuses **`restart-gateway --when-idle`** because complete public work/queue probes are unavailable. Before updating plugin code, **`hermes botsesh restart-gateway --checkpoint`** can still preserve its old code/config. No automatic restart or auto-revert is claimed. See [operations and explicit limits](docs/OPERATIONS.md). Later room connections are discovered without restarting an already-active adapter.
 
 Use the participant's actual assigned room name in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It does not answer every ambient message. Check a useful linked first answer and a distinct later answer before relying on unattended work.
 
@@ -198,7 +223,7 @@ For an unpinned installation, `hermes plugins update botsesh` follows its saved 
 ```sh
 hermes botsesh restart-gateway --checkpoint
 # Apply the reviewed update through the native plugin installer.
-hermes botsesh restart-gateway --when-idle
+# Arrange local maintenance; automatic idle restart is unavailable here.
 hermes botsesh status
 ```
 

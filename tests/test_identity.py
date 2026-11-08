@@ -22,7 +22,7 @@ class ProfileSelection(unittest.TestCase):
         self.stack.enter_context(patch('hermes_cli.config.load_config', return_value=self.config))
         self.stack.enter_context(patch.object(identity, 'profile_names', return_value=['default', 'goonbot', 'evilgoonbot']))
         self.stack.enter_context(patch.object(identity, 'current_profile', return_value='default'))
-        self.stack.enter_context(patch('hermes_cli.profiles.read_profile_meta', return_value={}))
+        self.stack.enter_context(patch.object(identity, 'persona_name', return_value=None))
         self.stack.enter_context(patch.dict(sys.modules, {'hermes_cli.main': types.SimpleNamespace()}))
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
 
@@ -45,7 +45,7 @@ class ProfileSelection(unittest.TestCase):
         with patch('sys.stdin.isatty', return_value=True), patch('builtins.input', return_value='3'):
             self.assertEqual(identity.choose_profile(interactive=True), 'evilgoonbot')
         self.config['platforms']['botsesh']['extra']['profile'] = 'goonbot'
-        with patch.dict(sys.modules, {'hermes_cli.main': types.SimpleNamespace(explicit_cli_profile=lambda: 'evilgoonbot')}):
+        with patch.object(identity, 'current_profile', return_value='evilgoonbot'), patch.object(sys, 'argv', ['hermes', '-p', 'evilgoonbot', 'botsesh', 'status']):
             self.assertEqual(identity.choose_profile(), 'evilgoonbot')
         for value in ('../escape', 'missing', '', False, [], ['goonbot']):
             with self.assertRaises(original.BotSeshError):
@@ -64,7 +64,7 @@ class ProfileSelection(unittest.TestCase):
         self.assertEqual(json.loads(save.call_args.args[1])['profile'], 'null')
 
     def test_default_profile_uses_its_authored_persona_label(self):
-        with patch('hermes_cli.profiles.read_profile_meta', return_value={'display_name': 'goonbot'}):
+        with patch.object(identity, 'persona_name', return_value='goonbot'):
             self.assertEqual(identity.configured_name('default'), 'goonbot')
 
 
@@ -130,7 +130,8 @@ class SeatLifecycle(unittest.TestCase):
         from hermes_cli.config import get_hermes_home
         target = self.home / 'profiles' / 'evilgoonbot'
         target.mkdir(parents=True)
-        with patch.object(identity, 'current_profile', return_value='default'), patch('hermes_cli.profiles.get_profile_dir', return_value=target):
+        (target / 'config.yaml').write_text('{}')
+        with patch.object(identity, 'current_profile', return_value='default'):
             first = identity.gateway_install_id()
             with identity.profile_scope('evilgoonbot'):
                 self.assertEqual(get_hermes_home(), target)

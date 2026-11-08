@@ -114,15 +114,19 @@ class OpsTests(unittest.TestCase):
 
     def test_live_gateway_platform_requires_writer_and_exact_profile(self):
         from types import SimpleNamespace
-        identify = {'pid':123, 'start_time':'ticks', 'instance_id':'instance', 'profile':'default', 'served_profiles':[]}
-        live = {'answering_pid':123, 'platforms':{'fixture:botsesh': {'state':'connected', 'writer_pid':123, 'writer_start_time':'ticks'}}}
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        live = {'pid':123, 'start_time':42, 'updated_at':stamp,
+                'platforms':{'fixture:botsesh': {'state':'connected', 'writer_pid':123, 'writer_start_time':42, 'updated_at':stamp},
+                             'botsesh': {'state':'disconnected', 'writer_pid':123, 'writer_start_time':42, 'updated_at':stamp}}}
         with patch.object(status, 'profile_context', return_value=(self.home, 'fixture')), \
-             patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(running=True, probe_error=False, pid=123)), \
-             patch('hermes_cli.gateway_runtime.discover_gateway_endpoint', return_value=SimpleNamespace(endpoint=SimpleNamespace(control_home=None, supervisor='none'))), \
-             patch('gateway.control_socket.query_gateway_control', side_effect=lambda home, verb, **kw: identify if verb=='identify' else live):
+             patch('gateway.status.resolve_gateway_liveness', return_value=SimpleNamespace(running=True, probe_error=False, pid=123, source='multiplexer', runtime=live)), \
+             patch('gateway.status.get_process_start_time', return_value=42):
             self.assertEqual(status.gateway_snapshot()['channel'], 'up')
             live['platforms']['fixture:botsesh']['writer_pid'] = 999
             self.assertEqual(status.gateway_snapshot()['channel'], 'down')
+            live['platforms']['fixture:botsesh']['writer_pid'] = 123
+            live['updated_at'] = '2000-01-01T00:00:00Z'
+            self.assertEqual(status.gateway_snapshot()['channel'], 'unknown')
 
     def test_wait_active_then_inbox_then_restart_and_max_wait(self):
         self.store.update(lambda d: d['rooms'].clear())
@@ -155,14 +159,21 @@ class OpsTests(unittest.TestCase):
         self.assertIn('Skipping server inbox for invalid: invalid_grant', out.getvalue())
         self.assertEqual(set(self.store.read()['rooms']), {'one', 'dead', 'invalid'})
 
-    def test_queue_probe_is_readonly_and_unknown_is_not_idle(self):
+    def test_private_queue_schema_and_zero_status_never_substitute_for_public_idle_probe(self):
         db = sqlite3.connect(self.home/'state.db')
         db.execute('CREATE TABLE session_admissions(status TEXT)')
         db.executemany('INSERT INTO session_admissions VALUES (?)', [('queued',), ('started',), ('terminal',)])
         db.commit(); db.close()
-        self.assertEqual(restart.queued_admissions(self.runtime), 2)
-        with patch('gateway.control_socket.query_gateway_control', return_value=None):
-            with self.assertRaises(BotSeshError): restart.work_snapshot(self.runtime)
+        with self.assertRaisesRegex(BotSeshError, 'needs_hermes_api'):
+            restart.queued_admissions(self.runtime)
+        with self.assertRaisesRegex(BotSeshError, 'needs_hermes_api'):
+            restart.work_snapshot({**self.runtime, 'active_agents':0})
+        args = argparse.Namespace(botsesh_action='restart-gateway', checkpoint=False)
+        with patch.object(restart, 'lifecycle_command') as lifecycle:
+            with self.assertRaises(SystemExit) as error:
+                cli._handle_profile(args, 'default')
+        self.assertIn('needs_hermes_api', str(error.exception))
+        lifecycle.assert_not_called()
 
     def test_restart_cli_uses_lifecycle_no_signals_force_or_all(self):
         with patch.object(restart, 'profile_context', return_value=(self.home, 'fixture')), patch.object(restart.shutil, 'which', return_value='/fixture/hermes'), patch.object(restart.subprocess, 'run', return_value=Mock(returncode=0)) as run:

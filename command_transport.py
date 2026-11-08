@@ -141,9 +141,11 @@ class CommandTransportMixin(DmControlsMixin):
         event = MessageEvent(text=text, source=source, message_id=str(message['number']), user_id=human,
             message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=True,
             reply_expected=True, metadata={'botsesh_control': True})
-        from tools import clarify_gateway
-        typed = not event.is_command() and clarify_gateway.get_pending_for_session(
-            self._source_session_key(source), include_choice_prompts=True) is not None
+        from tools.clarify_gateway import get_pending
+        session_key = self._source_session_key(source)
+        clarify_id = getattr(self, '_dm_pending_clarify', {}).get(session_key)
+        pending = get_pending(clarify_id) if clarify_id else None
+        typed = not event.is_command() and pending is not None and pending.session_key == session_key
         if not (choice or event.is_command() or typed):
             return False
         target = message['number']

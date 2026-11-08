@@ -143,7 +143,7 @@ def test_hook_parameter_names_match_native_sources():
     from pathlib import Path
     tree = ast.parse(Path(source).read_text())
     telegram = ast.parse((Path(source).parents[2] / 'plugins/platforms/telegram/adapter.py').read_text())
-    for name in ('send_clarify', 'send_slash_confirm', 'edit_message', '_send_exec_approval_prompt', 'send_model_picker', 'send_choice_picker'):
+    for name in ('send_clarify', 'edit_message', '_send_exec_approval_prompt', 'send_choice_picker'):
         native = next(n for n in ast.walk(telegram if 'picker' in name else tree)
                       if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
         native_args = [a.arg for a in native.args.args] + [a.arg for a in native.args.kwonlyargs]

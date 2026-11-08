@@ -25,7 +25,7 @@ claiming every existing Python operation was newly ported.
 | `tools.py` read/post | Python catchup and exact sends; common Python validation | Original bridge `read` / `post` |
 | `tools.py` guest create / ownership | `guest_manager.py`: cookie-free guest REST creation, private durable intent, live identity checks, exact-room offer/revoke; management-only, no gateway listener | Existing SDK bindings retain their bridge offer/revoke operations |
 | `tools.py` private invite | Not part of Python guest management; fails closed for those bindings | SDK `invite` retains original secret-file behavior |
-| `dm_controls.py`, `command_transport.py` | Native Hermes registry, scoped `dm_controls`, `hermes_edit` and exact no-read notices through enrolled OAuth | These controls are OAuth-only; never routed through Node |
+| `dm_controls.py`, `command_transport.py` | Documented shortcuts, native typed dispatch, scoped `dm_controls`, `hermes_edit` and exact no-read notices through enrolled OAuth | These controls are OAuth-only; never routed through Node; see [public API limits](PUBLIC-API.md) |
 | `task_failure.py` | Shared Python failure validator; exact current-turn receipt/task; canonical MCP failure, offer, pickup/claim/settle | Original bridge/SDK failure behavior unchanged |
 | SDK room-turn parser | `room_turn.py`: strict JSON, UTF-16 limits, safe integers, failure exclusivity, purpose/draft/routine validation | Original vendored parser remains untouched |
 | SDK `completeRoomTurn` effects | Canonical server `finish_room_turn` owns resumable structured effects; Python journals only exact intent/receipt/result | Original SDK local-job executor remains untouched |

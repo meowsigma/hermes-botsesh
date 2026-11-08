@@ -47,7 +47,7 @@ async def test_real_base_template_normalizes_approval_actions(permanent, session
     approval._gateway_queues['session'] = [native]
     try:
         result = await BasePlatformAdapter.send_exec_approval(a, 'dm', 'printf safe', 'session',
-            allow_permanent=permanent, allow_session=session, smart_denied=smart)
+            allow_permanent=permanent, allow_session=session, smart_denied=smart, request_id='r')
         assert result.success
         wire = a.calls[-1][2]
         assert [b['label'] for b in wire['buttons']] == expected
