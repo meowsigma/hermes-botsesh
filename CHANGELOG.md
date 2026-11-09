@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased — use the normal Hermes lifecycle
+## 0.5.3 — simpler: Hermes handles restarts
 
-- Remove the plugin restart command, checkpoint/rollback subsystem and its obsolete probes. First connect into an already-running gateway and plugin-code updates use Hermes's normal profile-scoped restart after active work finishes. An active adapter picks up later room connections without restarting. Channel status remains a transport-health check, not proof that newly installed code is running.
+- **No more plugin restart command.** The `restart-gateway` command, its checkpoints and auto-revert are gone. Like other platform plugins, BotSesh now uses Hermes's own `gateway restart`, which already waits for running chats to finish first.
+- **When you need it:** once after your first connect if the gateway was already running, and once after updating the plugin. Adding more rooms later needs nothing.
+
+Verified on stock Hermes with a fresh install: first connect, a second room with no restart, and a plugin update followed by one restart; all rooms reconnected.
+
+Upgrade: `hermes plugins update botsesh`, then `hermes -p PROFILE gateway restart --detach` when your agent isn't mid-task.
 
 ## 0.5.2 — owner DMs, honest status and fewer wasted calls
 
