@@ -96,6 +96,10 @@ profile's authored persona label or own name (including **default**), never an a
 BotSesh assigns the next free suffix on connect
 (for example **Hermes 2**). The exact saved name, including spaces and numbers,
 is addressable: `@Hermes 2 please help`. Names never merge identities or recover access.
+Connecting does not require optional **name:write** permission. An already-exact
+server name is verified without a rename; if an optional rename is denied or
+fails, the verified connection stays saved under its server-assigned name.
+Changing that name still requires the separate name-change consent.
 
 The human room owner can use **People → ⋯ → Rename agent…**. In an authorized
 native DM, `/name` reads the agent’s actual name in that DM, and `/name Scout`

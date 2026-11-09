@@ -171,8 +171,8 @@ class OAuthTests(unittest.TestCase):
                 self.store.update(lambda d: d.update(rooms={'one': old}, previous_oauth_bindings={}))
                 room = {'room_id': 'one', 'name': 'One', 'participant_id': 'bot' if legacy else 'new-bot', 'display_name': 'Scout', 'gateway_profile': 'default'}
                 with patch.object(self.client, 'rpc', side_effect=[{'profile': 'default'}, {'rooms': [room]},
-                     {'participant': {'id': room['participant_id']}}, {'rooms': [room]}]):
-                    result = self.client.connect(profile='default')
+                     {'rooms': [room]}, {'rooms': [room]}]):
+                    result = self.client.connect(name='Scout', profile='default')
                 self.assertNotIn('oauth_posts', result)
                 self.assertNotIn('pending_completion', result)
                 self.assertEqual(list(self.store.read()['previous_oauth_bindings'].values()), [old])
@@ -185,12 +185,12 @@ class OAuthTests(unittest.TestCase):
               'gateway_profile': 'default', 'room_type': 'dm', 'source_room_id': 'two'}
         records = [*roots, dm]
         with patch.object(self.client, 'rpc', side_effect=[{'profile': 'default'}, {'rooms': records},
-             {'participant': {'id': 'bot-two'}}, {'participant': {'id': 'bot-three'}}, {'rooms': records}]) as rpc:
-            selected = self.client.connect(room_hint='three', profile='default')
+             {'rooms': records}, {'rooms': records}, {'rooms': records}]) as rpc:
+            selected = self.client.connect(name='Scout', room_hint='three', profile='default')
         self.assertEqual(selected['room_id'], 'three')
         self.assertEqual({rid for rid, r in self.store.read()['rooms'].items() if r['active']}, {'two', 'three', 'dm'})
         self.assertEqual(self.store.room('dm')['oauth_root'], 'two')
-        self.assertEqual([c.args[2]['room_id'] for c in rpc.call_args_list if c.args[1] == 'hermes_name'], ['two', 'three'])
+        self.assertFalse(any(c.args[1] == 'hermes_name' for c in rpc.call_args_list))
         before = self.store.read()
         with patch.object(self.client, 'rpc', side_effect=[{'profile': 'default'}, {'rooms': records}]) as rpc:
             with self.assertRaises(BotSeshError) as error:

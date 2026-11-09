@@ -131,21 +131,19 @@ class OAuthClient:
             roots = [r for r in rooms if r.get('room_type') != 'dm']
             if not roots or room_hint and not any(r['room_id'] == room_hint for r in roots):
                 raise BotSeshError('room_not_approved_run_hermes_auth_add_botsesh_rooms')
-            # Ordinary reconnect does not undo a deliberate rename. Assign only
-            # for a new participant; the server allocates collision-safe suffixes.
+            # Ordinary reconnect does not undo a deliberate rename. Optional
+            # naming of a new participant runs after durable local enrollment.
             saved_rooms = self.store.read()['rooms']
-            for room in roots:
-                prior = saved_rooms.get(room['room_id'], {})
-                if prior.get('participant_id') != room['participant_id'] or prior.get('auth_version') != AUTH_VERSION:
-                    assigned = self.rpc(provisional, 'hermes_name', {
-                        'room_id': room['room_id'], 'display_name': name, 'assign': True}).get('participant')
-                    if not assigned or assigned.get('id') != room['participant_id']:
-                        raise BotSeshError('agent_name_not_confirmed')
+            initial = [r['room_id'] for r in roots
+                       if saved_rooms.get(r['room_id'], {}).get('participant_id') != r['participant_id']
+                       or saved_rooms.get(r['room_id'], {}).get('auth_version') != AUTH_VERSION]
             verified = self.rpc(provisional, 'list_rooms').get('rooms', [])
             by_id = {r['room_id']: r for r in verified}
             for room in rooms:
-                if by_id.get(room['room_id'], {}).get('participant_id') != room['participant_id']:
+                if (by_id.get(room['room_id'], {}).get('participant_id') != room['participant_id']
+                        or by_id[room['room_id']].get('gateway_profile') != profile):
                     raise BotSeshError('room_identity_changed_retry_connect')
+                preferred_name(by_id[room['room_id']].get('display_name', ''))
             def enroll(data):
                 live = set(by_id)
                 for rid, saved in data['rooms'].items():
@@ -175,7 +173,32 @@ class OAuthClient:
             for room in verified:
                 if room.get('password_required') is False:
                     remember_access(self.store, room['room_id'], origin + '/b/' + room['room_id'])
+            for rid in initial:
+                self._initial_name(self.store.room(rid), name)
             return self.store.room(room_hint or roots[0]['room_id'])
+
+    def _initial_name(self, binding, name):
+        if binding['display_name'] != name:
+            try:
+                self.rpc(binding, 'hermes_name', {
+                    'room_id': binding['room_id'], 'display_name': name, 'assign': True})
+            except BotSeshError:
+                # The server alone enforces optional name:write. Do not infer
+                # consent from a name or broaden the requested OAuth scope.
+                pass
+        # Already-exact names are a read-only no-op. After a rename (including
+        # a lost response), trust only the same authenticated participant.
+        rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
+        exact = next((r for r in rooms if r.get('room_id') == binding['room_id']
+                      and r.get('participant_id') == binding['participant_id']
+                      and r.get('gateway_profile') == binding['profile']), None)
+        if not exact:
+            raise BotSeshError('room_identity_changed_retry_connect')
+        display_name = preferred_name(exact.get('display_name', ''))
+        self.store.update(lambda d: d['rooms'][binding['room_id']].update(display_name=display_name))
+        if display_name != name:
+            print(f'Named {display_name}; tick Let it change its own name to rename')
+        return self.store.room(binding['room_id'])
 
     def disconnect(self, room_id):
         binding = self.store.read()['rooms'].get(room_id)

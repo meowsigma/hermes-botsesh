@@ -38,12 +38,12 @@ class NameTests(unittest.TestCase):
         room = dict(room_id='two', name='Garden', participant_id='second', display_name='Hermes 2', gateway_profile='default')
         assigned = dict(room, display_name='Scout')
         with patch.object(self.client, 'rpc', side_effect=[{'profile': 'default'},
-                {'rooms':[room]}, {'participant':{'id':'second','name':'Scout'}}, {'rooms':[assigned]}]) as rpc:
+                {'rooms':[room]}, {'rooms':[room]}, {'participant':{'id':'second','name':'Scout'}}, {'rooms':[assigned]}]) as rpc:
             result = self.client.connect(name='Scout', profile='default')
         self.assertEqual(result['display_name'], 'Scout')
         self.assertEqual(self.store.room('two')['display_name'], 'Scout')
-        self.assertEqual(rpc.call_args_list[2].args[1:], ('hermes_name', {'room_id':'two', 'display_name':'Scout', 'assign':True}))
-        self.assertEqual(rpc.call_args_list[2].kwargs, {})
+        self.assertEqual(rpc.call_args_list[3].args[1:], ('hermes_name', {'room_id':'two', 'display_name':'Scout', 'assign':True}))
+        self.assertEqual(rpc.call_args_list[3].kwargs, {})
         self.assertEqual((result['auth_version'], result['oauth_id']), (2, 'rooms'))
         self.assertFalse(self.store.read()['rooms']['one']['active'])
 
@@ -61,7 +61,7 @@ class NameTests(unittest.TestCase):
         before = self.store.read()
         with patch.object(self.client,'rpc',side_effect=[{'profile': 'default'},
                 {'rooms':[dict(room_id='two',name='Garden',participant_id='second',display_name='Hermes',gateway_profile='default')]},
-                {'participant':{'id':'second','name':'Scout'}}, {'rooms':[]}]):
+                {'rooms':[]}]):
             with self.assertRaises(original.BotSeshError) as error:self.client.connect(name='Scout', profile='default')
             self.assertEqual(error.exception.code, 'room_identity_changed_retry_connect')
         self.assertNotIn('two',self.store.read()['rooms'])

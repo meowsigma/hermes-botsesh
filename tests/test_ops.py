@@ -202,7 +202,7 @@ class DeclaredCliContract(unittest.TestCase):
                     cli._handle_profile(parser.parse_args(['status', '--json']), 'default')
                 self.assertTrue(json.loads(out.getvalue())['home_channel']['live'])
                 self.assertEqual(calls[0][0], 'hermes_initialize')
-                self.assertEqual([args['room_id'] for name, args in calls if name == 'hermes_name'], ['one', 'two'])
+                self.assertFalse(any(name == 'hermes_name' for name, args in calls))
                 self.assertFalse((home / 'auth.json').exists())
 
 
