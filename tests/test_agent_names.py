@@ -39,12 +39,12 @@ class NameTests(unittest.TestCase):
         assigned = dict(room, display_name='Scout')
         fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
         with patch.object(oauth, 'login', return_value=fields), patch.object(self.client, 'rpc', side_effect=[
-                {'rooms':[room]}, {'participant':{'id':'second','name':'Scout'}}, {'rooms':[assigned]}]) as rpc:
+                {'rooms':[room]}, {'rooms':[room]}, {'participant':{'id':'second','name':'Scout'}}, {'rooms':[assigned]}]) as rpc:
             result = self.client.connect(name='Scout', profile='default')
         self.assertEqual(result['display_name'], 'Scout')
         self.assertEqual(self.store.room('two')['display_name'], 'Scout')
-        self.assertEqual(rpc.call_args_list[1].args[1:], ('hermes_name', {'room_id':'two', 'display_name':'Scout', 'assign':True}))
-        self.assertEqual(rpc.call_args_list[1].kwargs, {'token':'B'*43})
+        self.assertEqual(rpc.call_args_list[2].args[1:], ('hermes_name', {'room_id':'two', 'display_name':'Scout', 'assign':True}))
+        self.assertEqual(rpc.call_args_list[2].kwargs, {})
         self.assertEqual(len(oauth._rows()), 2)
 
     def test_name_read_and_rename_verify_canonical_identity_before_storage(self):
@@ -61,9 +61,9 @@ class NameTests(unittest.TestCase):
         fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
         with patch.object(oauth,'login',return_value=fields), patch.object(oauth,'_http',return_value={}) as http, patch.object(self.client,'rpc',side_effect=[
                 {'rooms':[dict(room_id='two',name='Garden',participant_id='second',display_name='Hermes',gateway_profile='default')]},
-                {'participant':{'id':'second','name':'Scout'}}, {'rooms':[]}]):
+                {'rooms':[]}]):
             with self.assertRaises(original.BotSeshError) as error:self.client.connect(name='Scout', profile='default')
-            self.assertEqual(error.exception.code, 'agent_name_not_confirmed')
+            self.assertEqual(error.exception.code, 'room_identity_changed_retry_connect')
         self.assertEqual(http.call_args.args, ('https://botsesh.com','/oauth/revoke'))
         self.assertNotIn('two',self.store.read()['rooms'])
         self.assertEqual(len(oauth._rows()),1)

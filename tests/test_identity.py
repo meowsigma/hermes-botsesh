@@ -101,7 +101,7 @@ class SeatLifecycle(unittest.TestCase):
         for index in range(3):
             fields = {'access_token': str(index)*43, 'refresh_token': str(index+3)*43, 'expires_in': 300}
             with patch.object(original.oauth, 'login', return_value=fields), patch.object(self.client, 'rpc', side_effect=[
-                    {'rooms': [room]}, {'participant': {'id': 'bot', 'name': 'goonbot'}}, {'rooms': [room]}]):
+                    {'rooms': [room]}, {'rooms': [room]}, {'rooms': [room]}]):
                 saved = self.client.connect(name='goonbot', profile='goonbot')
             self.assertEqual(saved['participant_id'], 'bot')
             self.assertEqual(len(original.oauth._rows()), 1)

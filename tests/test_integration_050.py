@@ -22,13 +22,14 @@ class Integration050(unittest.TestCase):
         fields = dict(access_token='B'*43, refresh_token='S'*43, expires_in=300)
         with patch.object(original.oauth, 'login', return_value=fields) as login, \
              patch.object(self.client, 'rpc', side_effect=[{'rooms': [room]},
-                 {'participant': {'id': 'bot', 'name': 'Scout'}}, {'rooms': [room]}]):
+                 {'rooms': [room]}, {'rooms': [room]}]) as rpc:
             binding = self.client.connect(name='Scout', profile='goonbot', paste_redirect=True)
         self.assertEqual(login.call_args.kwargs['timeout'], 300)
         self.assertTrue(login.call_args.kwargs['paste_redirect'])
         self.assertEqual(login.call_args.kwargs['profile'], 'goonbot')
         self.assertEqual(login.call_args.kwargs['previous']['participant_id'], 'bot')
         self.assertEqual(binding['participant_id'], 'bot')
+        self.assertEqual([c.args[1] for c in rpc.call_args_list], ['list_rooms']*3)
         self.assertEqual(self.store.room('one')['oauth_posts'], journal)
         self.assertEqual(self.store.read()['forgotten_rooms'], {'other': True})
         access = room_lifecycle.private_store(self.store).read()['rooms']['one']

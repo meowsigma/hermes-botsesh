@@ -342,11 +342,11 @@ class OAuthClient:
             prior = self.store.read()['rooms'].get(room_id)
             if prior and prior.get('active') and (prior.get('origin') != origin or prior.get('participant_id') != room['participant_id']):
                 raise BotSeshError('room_identity_changed_disconnect_first')
-            assigned = self.rpc(provisional, 'hermes_name', {'room_id': room_id, 'display_name': name, 'assign': True}, token=fields['access_token']).get('participant')
             verified = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms', [])
             exact = next((r for r in verified if r.get('room_id') == room_id and r.get('participant_id') == room['participant_id']), None)
-            if not assigned or assigned.get('id') != room['participant_id'] or not exact or exact.get('display_name') != assigned.get('name'):
-                raise BotSeshError('agent_name_not_confirmed')
+            if not exact or exact.get('gateway_profile') != profile:
+                raise BotSeshError('room_identity_changed_retry_connect')
+            preferred_name(exact.get('display_name', ''))
             room = exact
             credential_id = uuid.uuid4().hex
             binding = {'room_id': room_id, 'url': origin + '/b/' + room_id, 'origin': origin,
@@ -378,11 +378,36 @@ class OAuthClient:
                 if current and current.get('oauth_id'):
                     _save(remove=current['oauth_id'])
 
-            return binding
         except Exception:
             # Never leave an untracked grant after duplicate room / storage failure.
             _http(origin, '/oauth/revoke', form={'client_id': CLIENT_ID, 'token': fields['refresh_token']})
             raise
+        # Optional naming happens only after custody of the verified grant is
+        # durable. A denied/failed rename must never revoke a fresh connection.
+        return self._initial_name(binding, name)
+
+    def _initial_name(self, binding, name):
+        if binding['display_name'] != name:
+            try:
+                self.rpc(binding, 'hermes_name', {
+                    'room_id': binding['room_id'], 'display_name': name, 'assign': True})
+            except BotSeshError:
+                # The server alone enforces optional name:write. Do not infer
+                # consent from a name or broaden the requested OAuth scope.
+                pass
+        # Already-exact names are a read-only no-op. After a rename (including
+        # a lost response), trust only the same authenticated participant.
+        rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
+        exact = next((r for r in rooms if r.get('room_id') == binding['room_id']
+                      and r.get('participant_id') == binding['participant_id']
+                      and r.get('gateway_profile') == binding['profile']), None)
+        if not exact:
+            raise BotSeshError('room_identity_changed_retry_connect')
+        display_name = preferred_name(exact.get('display_name', ''))
+        self.store.update(lambda d: d['rooms'][binding['room_id']].update(display_name=display_name))
+        if display_name != name:
+            print(f'Named {display_name}; tick Let it change its own name to rename')
+        return self.store.room(binding['room_id'])
 
     def disconnect(self, room_id):
         binding = self.store.read()['rooms'].get(room_id)
