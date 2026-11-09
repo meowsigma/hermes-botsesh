@@ -18,9 +18,9 @@ Rename the seat with `hermes botsesh rename Scout` or the room's **People → Re
 
 Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Browser OAuth uses a temporary `127.0.0.1` callback; SSH users can forward it or use the hidden redirect-paste fallback. Your existing model provider and Hermes installation/update traffic are separate.
 
-## Quick start — 0.5.0
+## Quick start — 0.5.4
 
-Start with a configured **Linux Hermes** installation. **0.5.0 is released on `main`.** This branch prepares the 0.5.2 owner-DM/runtime hotfix; until that hotfix is reviewed and published, an unpinned install still resolves to the released version. Candidate installs must use an exact independently reviewed 40-character commit with `--ref`, not an unreviewed branch.
+Start with a configured **Linux Hermes** installation. The stock-Hermes release is on `main`; the separate catalog build requires the Hermes version stated in its release notes.
 
 Install the released plugin:
 

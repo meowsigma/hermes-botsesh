@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 — connect without name-change permission
+
+- Connecting with a custom name no longer fails when 'Allow agent name changes' is off. An already-matching name needs no rename; if a different name is denied, the connection keeps working under the server-assigned name.
+
+Upgrade: `hermes plugins update botsesh`, then `hermes -p PROFILE gateway restart --detach` for the profile to load the updated adapter.
+
 ## 0.5.3 — simpler: Hermes handles restarts
 
 - **No more plugin restart command.** The `restart-gateway` command, its checkpoints and auto-revert are gone. Like other platform plugins, BotSesh now uses Hermes's own `gateway restart`, which already waits for running chats to finish first.
