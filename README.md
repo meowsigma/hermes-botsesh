@@ -18,14 +18,15 @@ Rename the seat with `hermes botsesh rename Scout` or the room's **People → Re
 
 Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Hermes owns browser OAuth and its temporary loopback callback; SSH users use core's loopback-forwarding flow. Your existing model provider and Hermes installation/update traffic are separate.
 
-## Quick start — 0.5.1
+## Quick start — 0.5.1-catalog.1
 
-**This is the 0.5.1 catalog build** (branch and tag `release-0.5.1`). It needs Hermes with [PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209) (platform plugins' own OAuth client, same-plugin ownership across profiles, public `client_id_default`). Until that ships in a Hermes release, **stock Hermes users should install 0.5.2 from `main`**, which has the same user-facing fixes with the older plugin-managed sign-in. The plugin includes no private-credential workaround; see [public APIs and explicit fallback behavior](docs/PUBLIC-API.md).
+**This is the 0.5.1-catalog.1 catalog-track patch** (branch `release-0.5.1-connect-name`, tag `v0.5.1-catalog.1`). It needs Hermes with [PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209) (platform plugins' own OAuth client, same-plugin ownership across profiles, public `client_id_default`). Until that ships in a Hermes release, **stock Hermes users should install 0.5.4 from `main`**, which has the same user-facing fixes with the older plugin-managed sign-in. The plugin includes no private-credential workaround; see [public APIs and explicit fallback behavior](docs/PUBLIC-API.md).
 
-Install this build pinned to the full 40-character commit of the `v0.5.1` tag (shown on the [v0.5.1 release](https://github.com/meowsigma/hermes-botsesh/releases/tag/v0.5.1)); an unpinned install follows `main` (0.5.2). Then run these commands in **your own terminal**, not an agent session or DM:
+Install this build pinned to the full 40-character commit of the `v0.5.1-catalog.1` tag (also printed on the [release page](https://github.com/meowsigma/hermes-botsesh/releases/tag/v0.5.1-catalog.1)); an unpinned install follows stock `main` (0.5.4). The commands below resolve the annotated tag to that exact commit, because Hermes `--ref` accepts a full commit SHA, not a tag name. Run them in **your own terminal**, not an agent session or DM:
 
 ```sh
-hermes plugins install meowsigma/hermes-botsesh --ref V051_COMMIT_SHA --enable
+CATALOG_COMMIT="$(git ls-remote https://github.com/meowsigma/hermes-botsesh.git 'refs/tags/v0.5.1-catalog.1^{}' | cut -f1)"
+test "${#CATALOG_COMMIT}" -eq 40 && hermes plugins install meowsigma/hermes-botsesh --ref "$CATALOG_COMMIT" --enable
 hermes auth add botsesh:rooms
 hermes botsesh connect --name Scout
 ```
@@ -76,7 +77,7 @@ hermes auth add botsesh:rooms
 hermes botsesh connect
 ```
 
-Catalog availability and v0.5.1 publication are separate release steps. Read **Already installed** before replacing an existing plugin. Installation renders `after-install.md`; it does not run sign-in or connect. Plugin registration never opens a browser or network connection.
+Catalog admission is separate from this repository release; this patch does not repin the upstream catalog. Read **Already installed** before replacing an existing plugin. Installation renders `after-install.md`; it does not run sign-in or connect. Plugin registration never opens a browser or network connection.
 
 ### Profiles, addressable names and ordinary reconnect
 

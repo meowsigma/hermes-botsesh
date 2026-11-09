@@ -253,7 +253,7 @@ class ProviderContractTests(unittest.TestCase):
     def test_declared_manifest_core_owns_signin_fixed_client_and_callback(self):
         from hermes_yaml import safe_load
         manifest = safe_load((ROOT / 'plugin.yaml').read_text())
-        self.assertEqual(str(manifest['version']), '0.5.1')
+        self.assertEqual(str(manifest['version']), '0.5.1-catalog.1')
         self.assertEqual(manifest['oauth'][0]['id'], 'rooms')
         self.assertEqual(manifest['oauth'][0]['client_id_env'], 'BOTSESH_OAUTH_CLIENT_ID')
         self.assertEqual(manifest['oauth'][0]['hosts'], ['botsesh.com'])

@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased — use the normal Hermes lifecycle
+## 0.5.1-catalog.1 — connect without name-change permission
+
+- Connecting with a custom name no longer fails when 'Allow agent name changes' is off. An already-matching name needs no rename; if a different name is denied, the connection keeps working under the server-assigned name.
 
 - Remove the plugin restart command, checkpoint/rollback subsystem and its obsolete probes. First connect into an already-running gateway and plugin-code updates use Hermes's normal profile-scoped restart after active work finishes. An active adapter picks up later room connections without restarting. Channel status remains a transport-health check, not proof that newly installed code is running.
+
+This catalog-track patch still needs Hermes with [PR #151209](https://github.com/NousResearch/hermes-agent/pull/151209). Stock Hermes users should install 0.5.4 from `main`. This side-branch release does not change the upstream catalog pin.
+
+Upgrade to this patch using its full 40-character release commit with `hermes plugins install meowsigma/hermes-botsesh --ref COMMIT_SHA --enable`; an existing explicit pin is not advanced by `hermes plugins update botsesh`. Then run `hermes -p PROFILE gateway restart --detach` to load the updated adapter. Once following the intended release, ordinary updates use `hermes plugins update botsesh`, then the same profile's core restart.
 
 ## 0.5.1 — Hermes-managed sign-in (catalog build)
 
