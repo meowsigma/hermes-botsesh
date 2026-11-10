@@ -60,6 +60,7 @@ export async function invoke(req,directory){
     if(path==='/context')return Response.json({enabled:true,revision:1,markdown:'Fixture Brief',decisions:[]});
     if(path==='/participants')return Response.json({participants:[person,{id:participant,name:'Fixture agent',verified:true}]});
     if(path==='/wake/status')return Response.json({participants:[]});
+    if(path==='/wake/quiet-turn')return Response.json({passed:true});
     if(path==='/continuity')return Response.json({});
     if(path==='/routines')return Response.json({routines:[]});
     throw new Error('Unexpected offline request '+method+' '+path);

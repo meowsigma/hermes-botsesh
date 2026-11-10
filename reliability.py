@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import time
 
-TERMINAL = {'replied', 'failed'}
+TERMINAL = {'replied', 'failed', 'passed', 'completed_unread'}
 
 def backoff(attempt, minimum=1, retry_after=0):
     """Full jitter with a floor; honor server Retry-After even above our cap."""

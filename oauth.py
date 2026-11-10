@@ -571,8 +571,6 @@ class OAuthClient:
         def complete(data):
             room = data['rooms'][room_id]
             room['oauth_turns'][client_id].update(complete=True, result=result)
-            if 'failure' not in intent:
-                room.get('oauth_receipts', {}).pop(receipt_id, None)
         self.store.update(complete)
         return result
 
@@ -625,7 +623,7 @@ class OAuthClient:
                 raise BotSeshError('listener_state_denied')
             return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
-            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id') if args.get(k)})})
+            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id', 'batch_id') if args.get(k)})})
         if op == 'tool_policy':
             from .tool_policy import validate_policy
             require_client_id(args['client_id'])
@@ -678,8 +676,12 @@ class OAuthClient:
             if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > 160000:
                 raise BotSeshError('context_limit')
             def save_receipt(data):
-                receipts = data['rooms'][room_id].setdefault('oauth_receipts', {})
-                used = {r.get('receipt_id') for r in data['rooms'][room_id].get('processing_receipts', {}).values() if r.get('state') not in ('replied', 'failed')}
+                room = data['rooms'][room_id]
+                receipts = room.setdefault('oauth_receipts', {})
+                numbers = [m['number'] for m in messages]
+                if numbers:
+                    room['latest_seen_number'] = max(room.get('latest_seen_number', 0), max(numbers))
+                used = {r.get('receipt_id') for r in data['rooms'][room_id].get('processing_receipts', {}).values() if r.get('state') not in ('replied', 'failed', 'passed', 'completed_unread')}
                 for key in list(receipts):
                     if receipts[key]['expires'] <= time.time() and key not in used:
                         del receipts[key]
@@ -720,14 +722,34 @@ class OAuthClient:
                     raise BotSeshError('oauth_structured_reply_target_not_supported')
                 result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'))
                 return {'client_id': client_id, 'number': result['reply_number'], 'read_effect': result['read_effect']}
-            # Native runtime notices use an explicit no-read server capability,
-            # NEVER implicit-last-batch send_message semantics.
+            # Deliberate authored content has no implicit-last-batch read effect.
+            # Runtime failures must use delivery status, never this capability.
             if args.get('processed') is not True:
-                result = self.rpc(binding, 'hermes_notice', {'room_id': room_id, 'text': text, 'client_id': client_id, **({'reply_to': args['reply_to']} if args.get('reply_to') is not None else {}), **({'failure_code': args['failure_code']} if args.get('failure_code') else {})})
+                if args.get('failure_code'):
+                    raise BotSeshError('runtime_failure_status_only')
+                prior = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
+                seen_number = (prior['exact'].get('seen_number') if prior else self.store.room(room_id).get('latest_seen_number'))
+                if 'seen_number' not in args and seen_number is not None:
+                    args['seen_number'] = seen_number  # Metadata only, never an ack/permission.
+                exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number') if k in args}
+                saved = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
+                if saved and saved['exact'] != exact:
+                    raise BotSeshError('pending_send_mismatch')
+                if saved and saved.get('failed'):
+                    raise BotSeshError(**saved['failed'], rejected=True)
+                if saved and saved.get('complete'):
+                    self.call(binding, 'verify')
+                    return saved['result']
+                if not saved:
+                    saved = self._journal(room_id, 'oauth_posts', client_id, exact)
+                result = self._journal_rpc(binding, 'oauth_posts', client_id, 'hermes_authored', {'room_id': room_id, 'text': text,
+                    'client_id': client_id, **{k: args[k] for k in ('reply_to', 'seen_number') if args.get(k) is not None}})
                 message = result.get('message') or {}
                 if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                     raise BotSeshError('send_not_confirmed_retry_same_intent')
-                return {'client_id': client_id, 'number': message['number'], 'read_effect': 'none'}
+                completed = {'client_id': client_id, 'number': message['number'], 'read_effect': 'none'}
+                self.store.update(lambda d: d['rooms'][room_id]['oauth_posts'][client_id].update(complete=True, result=completed))
+                return completed
             if not receipt_id:
                 raise BotSeshError('processed_receipt_required')
             exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to') if k in args}
@@ -756,7 +778,6 @@ class OAuthClient:
                 raise BotSeshError('send_not_confirmed_retry_same_intent')
             completed = {'client_id': client_id, 'number': message['number'], 'read_effect': 'processed_frozen_receipt'}
             self.store.update(lambda d: d['rooms'][room_id]['oauth_posts'][client_id].update(complete=True, result=completed))
-            self.store.update(lambda d: d['rooms'][room_id].get('oauth_receipts', {}).pop(receipt_id, None))
             return completed
         if op == 'retry':
             turn = self.store.room(room_id).get('oauth_turns', {}).get(args.get('client_id'))

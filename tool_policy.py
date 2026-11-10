@@ -38,12 +38,12 @@ def enforce_tools(*, session_id='', turn_id='', **kwargs):
                 # toolsets/approvals; this authenticated seam is OAuth-only.
                 return None
             if (not session_id or not turn_id or current.get('hook_turn') != (session_id, turn_id)
-                    or current.get('hook_terminal') or current.get('delivered')
+                    or current.get('hook_terminal')
                     or not (current.get('tool_policy') or {}).get('toolsAllowed')):
                 return dict(DENIED)
             row = binding.get('processing_receipts', {}).get(target, {})
             if (not binding.get('active') or row.get('state') not in ('admitting', 'admitted', 'started')
-                    or row.get('receipt_id') != current.get('receipt_id') or row.get('explicit_failure')):
+                    or row.get('receipt_id') != current.get('receipt_id') or row.get('explicit_failure') or row.get('explicit_pass')):
                 return dict(DENIED)
             frozen = row.get('frozen') or {}
             source = [m for m in frozen.get('batch', {}).get('messages', []) if str(m.get('number')) == target]

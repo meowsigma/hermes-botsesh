@@ -129,6 +129,8 @@ class Client:
                     # Tool and gateway sends share a receipt, not necessarily a UUID.
                     # Remember only a confirmed reply to this exact addressed turn.
                     for row in room.get('processing_receipts', {}).values():
+                        if row.get('receipt_id') == args.get('receipt_id'):
+                            row['read_attested'] = True
                         if (row.get('receipt_id') == args.get('receipt_id')
                                 and args.get('reply_to', row['target']) == row['target']):
                             row['posted_reply'] = result

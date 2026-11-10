@@ -1685,6 +1685,18 @@ export class BotSeshAgent {
     return this.#request('POST', '/wake/test', {});
   }
 
+  // Plugin-owned additive seam: quiet only the already-processed frozen batch.
+  // Never fetch new context or invent a read acknowledgment here.
+  async pluginQuietTurn(batch) {
+    if(!batch || batch.hasMore || batch.skippedCount || !Array.isArray(batch.messages) || batch.messages.length && !Number.isSafeInteger(batch.through))throw new ClientError('Use the complete frozen batch.','receipt_scope');
+    await this.verify();
+    if(batch.messages.length && this.state.readCheckpoint<batch.through)throw new ClientError('Process and acknowledge the frozen batch before passing.','processed_receipt_required');
+    for(const message of batch.messages){
+      if(message.isOwn || !Number.isSafeInteger(message.number))continue;
+      await this.#request('POST','/wake/quiet-turn',{throughNumber:message.number});
+    }
+  }
+
   async wakeStatus() {
     // Status polling itself is an authenticated return; this is not proof
     // of a Hermes run. Do not perform an extra access call on every poll.

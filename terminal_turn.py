@@ -1,14 +1,14 @@
-"""Stop native inference only after this addressed turn is durably settled.
+"""Explicit pass/cant_do may end a native turn; ordinary posts never do.
 
 Hermes exposes a public scoped interrupt, not a successful complete-turn API.
 Keep that native interrupted verdict honest; confirmed room outcomes own delivery
-and read attestation independently, so no second prose final is needed.
+and read attestation independently. Never reinterpret an ordinary post as a stop.
 """
 import json
 
 
 def settled_turn(*, tool_name='', args=None, result='', **kwargs):
-    if tool_name not in ('botsesh_cant_do', 'botsesh_post'):
+    if tool_name not in ('botsesh_cant_do', 'botsesh_pass'):
         return
     from gateway.session_context import get_session_env
     if get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh':
@@ -40,7 +40,7 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
             settled = [row for row in rows if args.get('room_id') == room
                        and args.get('processed') is True and args.get('receipt_id')
                        and row.get('receipt_id') == args['receipt_id']
-                       and row.get('posted_reply') == outcome
+                       and row.get('explicit_pass', {}).get('result') == outcome
                        and outcome.get('read_effect') == 'processed_frozen_receipt']
         if len(settled) != 1:
             return
@@ -49,4 +49,4 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
     if agent is not None and agent.platform == 'botsesh':
         # Do not mutate private loop state or fabricate a successful model final.
         # This stop targets only the current agent, not the backup's native turn.
-        agent.interrupt(hard_cancel=True, tool_reason='botsesh_task_settled')
+        agent.interrupt(hard_cancel=True, tool_reason='botsesh_passed' if tool_name == 'botsesh_pass' else 'botsesh_task_settled')

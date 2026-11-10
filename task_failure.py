@@ -54,8 +54,6 @@ def flush_failure(client, room_id, target):
         row = data['rooms'][room_id]['processing_receipts'][str(target)]
         row['explicit_failure']['result'] = result
         row.update(state='failed', failure_code='cant_do', failure_pending=False)
-        row.pop('frozen', None)
-        row.pop('text', None)
     client.store.update(finish)
     return result
 

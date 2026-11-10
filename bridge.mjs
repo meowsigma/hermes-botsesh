@@ -119,13 +119,16 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
         if(typeof req.text!=='string' || !req.text.trim() || req.text.length>4000)throw new ClientError('Use 1–4000 characters.','invalid_text');
         const intent={reply:req.text,...(req.draft_ready===undefined?{}:{draft_ready:req.draft_ready}),...(req.routine_report===undefined?{}:{routine_report:req.routine_report})};
         parseRoomTurnOutput(intent); // Reject unsupported/owner-only fields before any durable intent.
-        if(!req.receipt_id){
+        if(req.processed!==true){
           if(req.draft_ready || req.routine_report)throw new ClientError('Structured completion requires a processed receipt.','receipt_required');
+          // The legacy REST reply target itself creates sparse read evidence.
+          // Refuse rather than claim no-read semantics the server cannot honor.
+          if(req.reply_to!==undefined)throw new ClientError('Advanced threaded posts require an explicit processed receipt. Unthreaded authored posts need no read acknowledgment.','unattested_reply_target_not_supported');
           await client.verify();
           if(client.state.localJob && !client.state.localJob.pluginComplete)throw new ClientError('An earlier turn is pending. Retry its original client_id and complete intent.','pending_turn');
-          return {client_id:req.client_id,...await client.send(req.text,{replyToNumber:req.reply_to,stableClientId:req.client_id,noRead:true})};
+          return {client_id:req.client_id,...await client.send(req.text,{replyToNumber:req.reply_to,stableClientId:req.client_id,noRead:true}),read_effect:'none'};
         }
-        if(req.processed!==true)throw new ClientError('Explicitly process the complete returned briefing and batch before confirming it.','processed_required');
+        if(!req.receipt_id)throw new ClientError('Explicitly process the complete returned briefing and batch before confirming it.','receipt_required');
         await client.verify();
         const exact=JSON.stringify({intent,reply_to:req.reply_to ?? null,receipt_id:req.receipt_id,client_id:req.client_id});
         const key='plugin-post-'+req.client_id;
@@ -163,7 +166,31 @@ export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
         const result={client_id:req.client_id,number,read_effect:'processed_frozen_receipt',...(client.state.localJob?.routineReportRejected?{routine_report_rejected:client.state.localJob.routineReportRejected}:{})};
         await client.store.write({...saved,complete:true,result});
         client.state={...client.state,localJob:{...client.state.localJob,pluginComplete:true}};await client.store.write(client.state);
-        await client.store.remove(room.origin,'plugin-receipt-'+req.receipt_id);
+        return result;
+      }
+      case 'finish': {
+        // Advanced invitation parity: explicit frozen-context silence, no reply.
+        // OAuth uses canonical finish_room_turn; this transport uses SDK ack.
+        requireId(req.client_id);
+        if(req.processed!==true || !req.receipt_id)throw new ClientError('Process the complete frozen context first.','processed_receipt_required');
+        if(JSON.stringify(req.output)!==JSON.stringify({nothing_to_add:true}))throw new ClientError('Only a quiet turn is supported here.','operation_denied');
+        await client.verify();
+        const key='plugin-pass-'+req.client_id,exact=JSON.stringify({output:req.output,receipt_id:req.receipt_id});
+        const saved=await client.store.read(room.origin,key);
+        if(saved && (saved.boundRoom!==room.roomId || saved.exact!==exact))throw new ClientError('Retry the original frozen pass.','pending_send_mismatch');
+        if(saved?.complete)return saved.result;
+        const record=await readRecord(req.receipt_id);
+        if(record.participantId!==client.state.participantId)throw new ClientError('Receipt identity changed.','receipt_scope');
+        const existing=client.state.localJob;
+        if(existing && existing.eventId!==req.client_id && !existing.pluginComplete)throw new ClientError('Retry the original pending turn.','pending_turn');
+        if(!saved)await client.store.write({version:1,origin:room.origin,roomId:key,boundRoom:room.roomId,exact});
+        await client.recordPrintedCatchup(record.batch);
+        const job={nothing_to_add:true,eventId:req.client_id,readBoundary:structuredClone(client.state.pendingRead)};
+        await completeRoomTurn(client,job);
+        await client.pluginQuietTurn(record.batch);
+        const result={client_id:req.client_id,read_effect:'processed_frozen_receipt',read_checkpoint:client.state.readCheckpoint,reply_number:null};
+        await client.store.write({version:1,origin:room.origin,roomId:key,boundRoom:room.roomId,exact,complete:true,result});
+        client.state={...client.state,localJob:{...client.state.localJob,pluginComplete:true}};await client.store.write(client.state);
         return result;
       }
       case 'invite': {

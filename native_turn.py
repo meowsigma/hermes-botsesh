@@ -68,10 +68,16 @@ class NativeTurnMixin:
             return  # Side effects unknown: neither replay nor invent a terminal.
         if row['status'] != 'terminal':
             return
+        from gateway.response_filters import is_intentional_silence_response
+        if current.get('model_processed') and is_intentional_silence_response(value.get('final_response')):
+            current['intentional_silence'] = True
+        saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
         # An actual output is still owed by the core delivery ledger. Its exact
         # final may contain native media-egress warnings; never synthesize it
         # from the redacted state.db result or manufacture a replacement UUID.
         if (current.get('model_processed') and value.get('final_response')
+                and not current.get('intentional_silence') and not saved.get('explicit_pass')
+                and not saved.get('explicit_post_calls')
                 and not current.get('delivered') and not current.get('failure_delivered')):
             if not await self._posted_reply(room_id, current['target'], current['receipt_id']):
                 return
@@ -81,14 +87,43 @@ class NativeTurnMixin:
         await self._finish_current(room_id, current, code)
 
     async def _finish_current(self, room_id, current, code):
+        calls = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_post_calls', {})
+        for client_id, call in calls.items():
+            if call.get('result') or call.get('rejected') or not call.get('payload'):
+                continue
+            try:
+                result = await asyncio.to_thread(self.client.enrolled, room_id, 'post', **call['payload'])
+            except BotSeshError as error:
+                if not error.definitive:
+                    raise  # Preserve the exact unresolved send and frozen context.
+                self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(current['target'])]['explicit_post_calls'][client_id].update(rejected={'code': error.code, 'status': error.status}))
+            else:
+                self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(current['target'])]['explicit_post_calls'][client_id].update(result=result))
         # Do not release identity until the durable final/failure is journaled.
         if await self._posted_reply(room_id, current['target'], current['receipt_id']):
             current['delivered'] = True
         room = self.client.store.room(room_id)
-        if room.get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
+        row = room.get('processing_receipts', {}).get(str(current['target']), {})
+        if row.get('explicit_pass') or (current.get('model_processed') and current.get('intentional_silence')
+                                       and not row.get('explicit_post_calls')):
+            from .room_pass import pass_frozen
+            await asyncio.to_thread(pass_frozen, self.client, room_id, current['receipt_id'], True, target=current['target'])
+            for target in current.get('batch_targets', [current['target']]):
+                self._mark_handled(room_id, target, state='replied' if row.get('posted_reply') else 'passed')
+        elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
-        elif current.get('delivered'):
-            self._mark_handled(room_id, current['target'])
+        elif current.get('delivered') or row.get('read_attested'):
+            if current.get('model_processed') is True:
+                await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
+                for target in current.get('batch_targets', [current['target']]):
+                    self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
+            else:
+                self._queue_failure(room_id, current['target'], code)
+                await self._flush_failures(room_id)
+        elif row.get('explicit_post_calls') and current.get('model_processed'):
+            # An authored no-read post is not implicit read permission. Retain
+            # local completion separately; no read checkpoint is advanced.
+            receipt(self.client.store, room_id, current['target'], state='completed_unread')
         elif room.get('pending_completion'):
             health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
         elif not current.get('failure_delivered') and not room.get('pending_final'):
@@ -98,6 +133,12 @@ class NativeTurnMixin:
         await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
         if self._current.get(room_id) is current:
             self._current.pop(room_id)
+        # Only terminal native settlement retires frozen policy context.
+        def retire(data):
+            row = data['rooms'][room_id]['processing_receipts'][str(current['target'])]
+            row.pop('frozen', None)
+            row.pop('text', None)
+        self.client.store.update(retire)
 
     def _restore_native(self, room_id, row):
         """Restore only the same saved target; never rerun an uncertain model turn."""
@@ -115,5 +156,6 @@ class NativeTurnMixin:
             user_id=message['senderParticipantId'], message_type=MessageType.TEXT,
             raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
+        current['batch_targets'] = row.get('batch_targets', [row['target']])
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'))
         self._current[room_id] = current

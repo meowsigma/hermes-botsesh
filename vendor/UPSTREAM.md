@@ -15,6 +15,8 @@ The original sidecar is retained as `UPSTREAM.sha256`. The bundled file is sourc
 
 **`cantdo` candidate seam:** the strict exclusive failure parser, `reportTaskFailure()` and failure-only `completeRoomTurn()` branch reuse B63 TAKEOVER1 semantics from BotSesh server source `85e41a4b57e708030195b6b03e1f2a4bf4302d68`. They preserve stable identity and never send/acknowledge a failed turn. Only these narrow SDK hunks were adapted; unrelated upstream changes were not imported. `docs/SDK-CANTDO.diff` contains the v0.3.0→candidate SDK patch. The original sidecar above identifies the original unmodified upstream file, not the locally adapted bundled bytes.
 
+**Living-chat seam:** `pluginQuietTurn(batch)` uses the existing authenticated `/wake/quiet-turn` route for exact numbers in an already acknowledged frozen batch. It does not fetch or fabricate a read. The original sidecar still identifies the unmodified upstream file, not these adapted bytes.
+
 The wrapper activates only the fixed operations in `bridge.mjs`. The canonical SDK also contains standalone CLI/runtime/service/keyring helpers; those code paths are not invoked by this plugin. In particular it does not run another Hermes, install a service, import another application's login or use the SDK's OS-keyring backend. Own generated access is stored under the active profile's plugin data directory, as explicitly disclosed in README.
 
 BotSesh source is maintained by meowsigma; the standalone plugin and vendored client are distributed under the repository's MIT license.
