@@ -429,6 +429,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     self._queue_failure(room_id, target, 'runtime_error')
                     await self._flush_failures(room_id)
                     continue
+            if policy and policy.get('ongoing_replies') is True:
+                text += '\n\nOngoing replies are on for this room. This is the live grant state, not a request to set up or consent again.'
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
             receipt(self.client.store, room_id, target, tool_policy=policy)
             from .owner_operator import pin_operator_binding
@@ -724,6 +726,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 else:
                     result = await self._post_payload(chat_id, replay['payload'])
                 return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
+            if not (metadata or {}).get('notify'):
+                # Core setup/progress/runtime notices are not authored room
+                # answers. Never classify by localized or model-like prose.
+                # Exact saved gateway replays and native commands were handled
+                # above. Keep content private to local diagnostics only.
+                logger.info('BotSesh suppressed native runtime notice for room %s', chat_id)
+                health(self.client.store, chat_id, last_status=time.time())
+                return SendResult(success=True)
             if current:
                 posted = await self._posted_reply(chat_id, current['target'], current['receipt_id'])
                 if posted:

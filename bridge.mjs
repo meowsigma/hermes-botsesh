@@ -8,20 +8,21 @@ import {pathToFileURL} from 'node:url';
 const MAX_INPUT = 2*1024*1024;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function requireId(id) {if(!UUID.test(id || ''))throw new ClientError('Use an exact UUIDv4 operation/receipt ID.','invalid_client_id');return id;}
-function allowedUrl(value, invitation=false) {
-  const parsed=(invitation?parseInvitationUrl:parseRoomUrl)(value);
-  if(parsed.origin!=='https://botsesh.com')throw new ClientError('This build connects only to https://botsesh.com.','origin_denied');
+function allowedUrl(value, invitation=false, devOrigin) {
+  if(devOrigin && !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(devOrigin))throw new ClientError('Invalid explicit development origin.','origin_denied');
+  const parsed=(invitation?parseInvitationUrl:parseRoomUrl)(value,{allowHttpLocalhost:!!devOrigin});
+  if(parsed.origin!=='https://botsesh.com' && parsed.origin!==devOrigin)throw new ClientError('This build connects only to https://botsesh.com or its explicitly configured loopback development origin.','origin_denied');
   return parsed;
 }
 const emit=value=>new Promise((resolve,reject)=>process.stdout.write(JSON.stringify(value)+'\n',e=>e?reject(e):resolve()));
 export async function runRequest(req, storeDirectory, {fetchImpl}={}) {
   if(Number(process.versions.node.split('.')[0])<24)throw new ClientError('Node 24+ is required.','node_required');
   if(!storeDirectory)throw new ClientError('Private plugin store required.','store_required');
-  const room=req.room?allowedUrl(req.room):null;
-  if(req.op==='join')allowedUrl(req.link,true);
-  const client=new BotSeshAgent({storeDirectory,roomUrl:req.room,...(fetchImpl?{fetchImpl}:{}),timeoutMs:15000,maxUpdateBytes:2*1024*1024,retryBudgetMs:45000,secretStore:new SecretStore({directory:storeDirectory,mode:'file',notice:()=>{}})});
+  const room=req.room?allowedUrl(req.room,false,req.dev_origin):null;
+  if(req.op==='join')allowedUrl(req.link,true,req.dev_origin);
+  const client=new BotSeshAgent({storeDirectory,roomUrl:req.room,allowHttpLocalhost:!!req.dev_origin,...(fetchImpl?{fetchImpl}:{}),timeoutMs:15000,maxUpdateBytes:2*1024*1024,retryBudgetMs:45000,secretStore:new SecretStore({directory:storeDirectory,mode:'file',notice:()=>{}})});
   const scope='hermes-plugin-all-operations';
-  const indexKey='plugin-receipt-index',origin='https://botsesh.com';
+  const indexKey='plugin-receipt-index',origin=room?.origin || (req.op==='join'?allowedUrl(req.link,true,req.dev_origin).origin:'https://botsesh.com');
   const receiptIndex=async()=>await client.store.read(origin,indexKey) || {version:1,origin,roomId:indexKey,receipts:{}};
   const pruneReceipts=async()=>{
     const index=await receiptIndex();let changed=false;

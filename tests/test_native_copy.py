@@ -39,27 +39,29 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter.send('a', 'Hermes wird beendet.', metadata={'_interim_send': True})
         self.assertFalse(self.posts)
         text = 'Literal example: gateway.shutdown.notice_shutdown'
-        self.assertTrue((await self.adapter.send('a', text)).success)
+        self.adapter._current['a']['model_processed'] = True
+        self.assertTrue((await self.adapter.send('a', text, metadata={'notify': True})).success)
         self.assertEqual(next(iter(self.posts.values()))['text'], text)
 
     async def test_idle_shutdown_uses_core_translation_or_english_fallback(self):
         for key in ('gateway.shutdown.notice_shutdown', 'gateway.shutdown.notice_restart'):
             with patch('agent.i18n.t', side_effect=lambda key: key):
                 self.assertTrue((await self.adapter.send('a', key, metadata={'_interim_send': True})).success)
-        self.assertEqual({p['text'] for p in self.posts.values()}, {'Hermes is shutting down.', 'Hermes is restarting.'})
+        self.assertEqual(self.posts, {})  # Runtime notices stay local, including idle shutdown.
 
     async def test_native_setup_notice_has_fallback_and_formatted_localized_copy(self):
         with patch('agent.i18n.t', side_effect=lambda key, **fields: key):
             self.assertTrue((await self.adapter.send('a', 'gateway.notify.no_home_channel')).success)
-        self.assertNotIn('gateway.', next(iter(self.posts.values()))['text'])
+        self.assertEqual(self.posts, {})
         with patch('agent.i18n.t', return_value='Localized BotSesh /sethome') as translator:
             await self.adapter.send('a', 'gateway.notify.no_home_channel')
             translator.assert_called_once_with('gateway.notify.no_home_channel', platform='BotSesh', sethome_cmd='/sethome')
+        self.assertEqual(self.posts, {})
 
     async def test_unknown_native_notice_falls_back_but_final_authored_bytes_are_not_translated(self):
         with patch('agent.i18n.t', side_effect=lambda key: key):
             await self.adapter.send('a', 'gateway.future.notice', metadata={'_interim_send': True})
-        self.assertEqual(next(iter(self.posts.values()))['text'], 'Hermes status update unavailable.')
+        self.assertEqual(self.posts, {})
         self.posts.clear()
         await self.adapter._check_room('a')
         self.adapter._current['a']['model_processed'] = True

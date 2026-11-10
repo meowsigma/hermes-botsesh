@@ -107,7 +107,7 @@ class Boundaries(unittest.TestCase):
             with self.assertRaises(BotSeshError): tools.create_room({}, ctx)
     def test_schemas_only_scoped_non_destructive_tools(self):
         names = {s['name'] for s in tools.SCHEMAS}
-        self.assertEqual(names, {'botsesh_create_room', 'botsesh_offer_ownership', 'botsesh_revoke_ownership_offer', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_cant_do', 'botsesh_takeover_claim'})
+        self.assertEqual(names, {'botsesh_join', 'botsesh_create_room', 'botsesh_offer_ownership', 'botsesh_revoke_ownership_offer', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_cant_do', 'botsesh_takeover_claim'})
         for schema in tools.SCHEMAS:
             self.assertFalse(schema['parameters']['additionalProperties'])
     def test_guarded_error_never_echoes_request(self):
@@ -130,7 +130,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 adapter = BotSeshAdapter(PlatformConfig())
             adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 3, 'client_id': 'uuid-a', 'delivered': False}
             await adapter.send('a', 'progress')
-            self.assertNotIn('receipt_id', client.enrolled.call_args.kwargs)
+            client.enrolled.assert_not_called()  # Native progress is local only.
             # A native refusal/error can also be a notify-marked response: still no attestation.
             await adapter.send('a', 'native admission error', metadata={'notify': True})
             self.assertNotIn('receipt_id', client.enrolled.call_args.kwargs)

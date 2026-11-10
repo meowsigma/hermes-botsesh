@@ -5,6 +5,7 @@ No OAuth path calls command()/call() or sends its grant to the JS bridge.
 from __future__ import annotations
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,9 +19,10 @@ BRIDGE = (Path(__file__).parent / 'bridge.mjs').resolve()
 TERMINAL_CODES = {'invalid_grant', 'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
-    def __init__(self, code, status=None, retry_after_ms=0, pending=None, *, rejected=False):
+    def __init__(self, code, status=None, retry_after_ms=0, pending=None, *, rejected=False, message=None):
         self.code, self.status, self.retry_after_ms = code, status, retry_after_ms
         self.pending, self.rejected = pending, rejected
+        self.message = message
         super().__init__(f'BotSesh: {code}' + (f' (HTTP {status})' if status else '') + (f'; {pending_notice(pending)}' if pending else ''))
 
     @property
@@ -109,6 +111,8 @@ class Client:
         return result['result']
 
     def enrolled(self, room_id, op, **args):
+        if room_id not in self.store.read()['rooms']:
+            raise BotSeshError('not_enrolled', message='Not in this room yet. Use botsesh_join with the invitation link.')
         binding = self.store.room(room_id)
         try:
             if binding.get('transport') == 'oauth':
@@ -118,7 +122,7 @@ class Client:
                 from .guest_manager import GuestManagerClient
                 result = GuestManagerClient(self.store).call(binding, op, **args)
             else:
-                result = self.call(op, room=binding['url'], **args)
+                result = self.call(op, room=binding['url'], **({'dev_origin': binding['origin']} if binding.get('origin', '').startswith('http:') else {}), **args)
             def progress(data):
                 room = data['rooms'][room_id]
                 if op in ('post', 'finish') and args.get('processed') is True and result.get('read_effect') == 'processed_frozen_receipt' and 'number' in result:
@@ -146,10 +150,45 @@ class Client:
                 self.store.update(lambda d: d['rooms'][room_id].update(active=False, state=e.code))
             raise
 
-    def join(self, link):
-        url, room_id = room_url(link)
-        result = self.call('join', link=link)
-        self.store.update(lambda d: d['rooms'].update({room_id: {'url': url, 'room_id': room_id, 'name': result.get('displayName', result.get('name', 'BotSesh')), 'participant_id': result['participantId'], 'active': True, 'state': 'joined'}}))
+    def join(self, link, *, dev_origin=None):
+        from .oauth import checked_origin
+        u = urlsplit(link)
+        origin = u.scheme + '://' + u.netloc
+        if origin != 'https://botsesh.com' and (not dev_origin or origin != checked_origin(dev_origin)):
+            raise BotSeshError('origin_denied')
+        if u.query or u.username or u.password:
+            raise BotSeshError('invalid_invitation_url')
+        browser = re.fullmatch(r'/agent-room/([A-Za-z0-9_-]+)/invite/([^/]+)/([^/]+)', u.path)
+        fragment = re.fullmatch(r'#agent-invite=([^.]*)\.([^.]*)', '#' + u.fragment)
+        room = re.fullmatch(r'/b/([A-Za-z0-9_-]+)', u.path)
+        if browser and not u.fragment:
+            room_id, invitation_id, token = browser.groups()
+        elif room and fragment:
+            room_id = room[1]
+            invitation_id, token = fragment.groups()
+        else:
+            raise BotSeshError('invalid_invitation_url')
+        from .room_turn import require_client_id
+        require_client_id(invitation_id)
+        if not re.fullmatch(r'bsi_[A-Za-z0-9_-]{43}', token):
+            raise BotSeshError('invalid_invitation_url')
+        url = origin + '/b/' + room_id
+        previous = self.store.read()['rooms'].get(room_id)
+        if previous:
+            # Existing/detached/revoked seats never silently become a replacement.
+            self.enrolled(room_id, 'verify')
+            return {'state': 'joined', 'room_id': room_id, 'participant_id': previous['participant_id'], 'url': previous['url']}
+        result = self.call('join', link=link, **({'dev_origin': dev_origin} if dev_origin else {}))
+        if result.get('roomId') != room_id or result.get('origin') != origin or not result.get('participantId'):
+            raise BotSeshError('identity_mismatch')
+        def adopt(data):
+            prior = data['rooms'].get(room_id)
+            if prior:
+                if prior.get('participant_id') != result['participantId'] or not prior.get('active'):
+                    raise BotSeshError('identity_mismatch')
+                return
+            data['rooms'][room_id] = {'url': url, 'origin': origin, 'room_id': room_id, 'name': result.get('displayName', 'BotSesh'), 'participant_id': result['participantId'], 'active': True, 'state': 'joined'}
+        self.store.update(adopt)
         return {'state': 'joined', 'room_id': room_id, 'participant_id': result['participantId'], 'url': url}
 
     def create(self, name='BotSesh room', purpose=None, client_id=None, *, lifecycle_scopes=None):
