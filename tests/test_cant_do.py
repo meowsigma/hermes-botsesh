@@ -97,7 +97,7 @@ class CantDoNativeTests(SolidTests):
         finally: clear_session_vars(tokens)
         sent=await self.adapter.send('a','I could not generate that image.',metadata={'notify':True})
         self.assertTrue(sent.success)
-        await self.adapter.on_processing_complete(self.adapter.handle_message.call_args.args[0], __import__('gateway.platforms.event',fromlist=['ProcessingOutcome']).ProcessingOutcome.SUCCESS)
+        await self.adapter.on_processing_complete(self.adapter._admit_event.call_args.args[0], __import__('gateway.platforms.event',fromlist=['ProcessingOutcome']).ProcessingOutcome.SUCCESS)
         row=self.client.store.room('a')['processing_receipts']['3']
         self.assertEqual(row['state'],'failed');self.assertEqual(row['failure_code'],'cant_do')
         self.assertNotIn('frozen',row);self.assertNotIn('processed_cursor',self.client.store.room('a'))
@@ -128,9 +128,9 @@ class CantDoNativeTests(SolidTests):
         finally:clear_session_vars(tokens)
         frozen=self.client.store.room('a')['processing_receipts']['3']['explicit_failure']['payload']
         self.client.enrolled.side_effect=original;self.targets['a']=[]
-        restarted=self.make_adapter();restarted.handle_message=Mock()
+        restarted=self.make_adapter();restarted._admit_event=Mock()
         await restarted._check_room('a')
-        restarted.handle_message.assert_not_called()
+        restarted._admit_event.assert_not_called()
         self.assertEqual([x[2] for x in self.calls if x[1]=='fail_task'],[frozen,frozen])
         self.assertEqual(self.posts,{})
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'failed')

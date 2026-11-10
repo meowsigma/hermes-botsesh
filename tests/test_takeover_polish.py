@@ -32,7 +32,7 @@ class FinalTests(SolidTests):
     async def test_final_is_clean_before_gateway_and_local_journals(self):
         await self.adapter._check_room('a')
         self.adapter._current['a']['model_processed'] = True
-        event = self.adapter.handle_message.call_args.args[0]
+        event = self.adapter._admit_event.call_args.args[0]
         parent = next(cls for cls in type(self.adapter).__mro__[1:] if 'send_final_ledgered' in cls.__dict__)
         with patch.object(parent, 'send_final_ledgered', new_callable=AsyncMock, return_value=('sent', self.adapter)) as ledger:
             await self.adapter.send_final_ledgered(event, 'session', RAW, {}, reply_to='3')

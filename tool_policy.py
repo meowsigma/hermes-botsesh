@@ -32,11 +32,15 @@ def enforce_tools(*, session_id='', turn_id='', **kwargs):
             if len(matches) != 1:
                 return dict(DENIED)
             adapter, current = matches[0]
+            binding = adapter.client.store.room(room_id)
+            if binding.get('transport') != 'oauth':
+                # Advanced invitation bindings retain their original native
+                # toolsets/approvals; this authenticated seam is OAuth-only.
+                return None
             if (not session_id or not turn_id or current.get('hook_turn') != (session_id, turn_id)
                     or current.get('hook_terminal') or current.get('delivered')
-                    or not current.get('tool_policy', {}).get('toolsAllowed')):
+                    or not (current.get('tool_policy') or {}).get('toolsAllowed')):
                 return dict(DENIED)
-            binding = adapter.client.store.room(room_id)
             row = binding.get('processing_receipts', {}).get(target, {})
             if (not binding.get('active') or row.get('state') not in ('admitting', 'admitted', 'started')
                     or row.get('receipt_id') != current.get('receipt_id') or row.get('explicit_failure')):

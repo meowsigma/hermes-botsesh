@@ -13,7 +13,7 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
     make_adapter = _SolidTests.make_adapter
     async def test_core_shutdown_status_is_suppressed_before_one_linked_failure(self):
         await self.adapter._check_room('a')
-        event = self.adapter.handle_message.call_args.args[0]
+        event = self.adapter._admit_event.call_args.args[0]
         current = self.adapter._current['a']
         with patch('agent.i18n.t', side_effect=lambda key: key):
             result = await GatewayRunner._send_notice_logged(

@@ -117,6 +117,92 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.store.room('room')['processing_receipts']['3']['state'], 'admitted')
         self.assertNotIn('handled', self.client.store.room('room'))
 
+    async def test_advanced_intake_and_native_tools_do_not_require_oauth_policy(self):
+        # Legacy Advanced bindings have no transport key. Keep that real format.
+        self.client.store.update(lambda d: d['rooms']['room'].pop('transport'))
+        self.message['authorParticipant']['verified'] = True
+        def enrolled(room, op, **kw):
+            if op == 'check':
+                return {'mentions': [3]}
+            if op == 'read':
+                return self.frozen
+            self.fail('Advanced must not request OAuth operation: ' + op)
+        self.client.enrolled = Mock(side_effect=enrolled)
+        self.a._admit_event = AsyncMock(return_value=True)
+        await self.a._check_room('room')
+        self.a._admit_event.assert_awaited_once()
+        self.assertIsNone(self.a._current['room']['tool_policy'])
+        current = self.a._current['room']
+        mod.processed_turn(user_message=current['text'], platform='botsesh', session_id='s', turn_id='t')
+        env = dict(HERMES_SESSION_PLATFORM='botsesh', HERMES_SESSION_CHAT_ID='room', HERMES_SESSION_MESSAGE_ID='3')
+        from hermes_cli import plugins
+        with patch('gateway.session_context.get_session_env', side_effect=lambda k, default='': env.get(k, default)), \
+             patch('hermes_cli.lifecycle.invoke_hook', side_effect=lambda name, **kw: [tool_policy.enforce_tools(**kw)]):
+            for tool in ('terminal', 'botsesh_post', 'botsesh_cant_do'):
+                self.assertIsNone(plugins._get_pre_tool_call_directive_details(tool, {}, session_id='s', turn_id='t').action)
+            # The exemption is binding-specific, never a missing-policy fallback.
+            self.client.store.update(lambda d: d['rooms']['room'].update(transport='oauth'))
+            self.assertEqual(plugins._get_pre_tool_call_directive_details('terminal', {}, session_id='s', turn_id='t').action, 'block')
+        self.assertEqual([call.args[1] for call in self.client.enrolled.call_args_list], ['check', 'read'])
+        self.assertEqual(self.posts, [])
+        self.assertNotIn('handled', self.client.store.room('room'))
+
+    async def test_unavailable_or_malformed_oauth_policy_fails_once_and_admits_later_target(self):
+        for bad in (BotSeshError('method_not_found', 404), BotSeshError('temporarily_unavailable', 503),
+                    None, dict(self.policy, toolsAllowed='true'), dict(self.policy, room_id='foreign')):
+            with self.subTest(policy=bad):
+                self.client.store.update(lambda d: d['rooms'].update(room=dict(self.binding)))
+                self.a._current.clear()
+                self.posts.clear()
+                self.a._admit_event = AsyncMock(return_value=True)
+                def enrolled(room, op, **kw):
+                    if op == 'check':
+                        return {'mentions': [3, 5]}
+                    if op == 'read':
+                        n = kw['target_number']
+                        return dict(receipt_id='batch-' + str(n), batch={'messages': [dict(self.message, number=n)]})
+                    if op == 'tool_policy':
+                        if kw['target'] == 3:
+                            if isinstance(bad, BotSeshError):
+                                raise bad
+                            return bad
+                        return dict(self.policy, number=5, batch_id='batch-5')
+                    self.fail(op)
+                self.client.enrolled = Mock(side_effect=enrolled)
+                await self.a._check_room('room')
+                self.a._admit_event.assert_awaited_once()
+                self.assertEqual(self.a._admit_event.call_args.args[0].message_id, '5')
+                row = self.client.store.room('room')['processing_receipts']['3']
+                self.assertEqual(row['state'], 'failed')
+                self.assertFalse(row['failure_pending'])
+                self.assertEqual(row['tool_policy_error']['code'], bad.code if isinstance(bad, BotSeshError) else 'native_tool_policy_scope_mismatch')
+                self.assertEqual(self.posts[0]['text'], "Scout couldn't do it.")
+                self.assertEqual(self.posts[0]['failure_code'], 'runtime_error')
+                self.assertEqual(self.posts[0]['reply_to'], 3)
+                self.assertNotIn('processed', self.posts[0])
+                self.assertNotIn('receipt_id', self.posts[0])
+                for _ in range(2):
+                    await self.a._check_room('room')
+                self.assertEqual(len(self.posts), 1)
+                self.assertEqual(self.a._current['room']['target'], 5)
+                self.assertNotIn('handled', self.client.store.room('room'))
+
+    async def test_terminal_policy_revocation_never_sends_fallback_notice(self):
+        def enrolled(room, op, **kw):
+            if op == 'check':
+                return {'mentions': [3]}
+            if op == 'read':
+                return self.frozen
+            raise BotSeshError('authorization_revoked', 401)
+        self.client.enrolled = Mock(side_effect=enrolled)
+        self.a._admit_event = AsyncMock()
+        with self.assertRaises(BotSeshError):
+            await self.a._check_room('room')
+        self.a._admit_event.assert_not_awaited()
+        self.assertNotIn('room', self.a._current)
+        self.assertEqual(self.posts, [])
+        self.assertNotIn('handled', self.client.store.room('room'))
+
     async def test_terminal_cancel_interruption_and_pre_hook_failure_never_ack(self):
         for outcome, code in [('cancelled', 'cancelled'), ('interrupted', 'interrupted'), ('failed', 'runtime_error')]:
             with self.subTest(outcome=outcome):

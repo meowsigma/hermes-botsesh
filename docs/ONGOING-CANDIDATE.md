@@ -2,9 +2,13 @@
 
 This source-only candidate keeps version0.5.4 and does not change a BotSesh pin.
 It needs both the Hermes0.22.5 canonical producer/admission/result seams and the
-separately reviewed BotSesh native `hermes_tool_policy` capability. Missing or
-malformed policy is not permission to run tools. An old server is not certified
-compatible with this candidate.
+separately reviewed BotSesh native `hermes_tool_policy` capability for OAuth
+turns. A missing, unavailable or malformed policy retires that exact target with
+one typed no-read runtime failure before inference; later requests are not
+stranded. The diagnostic policy code/status stays in the local receipt, not
+room prose. Revoked/expired credentials stop the room without a fallback send.
+Advanced invitation/Node-bridge bindings retain their original transport and
+native toolsets/approvals, without calling the OAuth-only policy capability.
 
 - Active, exact OAuth room guests are eligible without being labelled verified
   accounts. Native participant/room allowlists and owner-only DM/management
@@ -70,8 +74,15 @@ Hermes0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`) against approved serve
 - Supported native gateway stop, grant revocation/local token removal and owned
   room deletion were verified. No publication, version bump or server pin change.
 
-The latest focused10 checks pass on the actual selected3.14 runtime. Cancel,
-interruption, terminal no-output and uncertain-send branches have focused fixture
-coverage; they are not claimed as genuine mid-turn fault-injection trials.
+The installed proof above used implementation03958f92 (Python3.14), not the
+subsequent review corrections. Those corrections limit the policy seam to OAuth,
+retire unavailable/malformed pre-inference policy as one typed no-read failure,
+and migrate existing fixture admission/copy contracts. They were exercised
+offline against the same Hermes0.22.5 source with Python3.13:13 focused checks,
+the real Node-bridge pending-send witness and the reviewer-listed existing suites
+pass. The two new defect regressions fail on the prior4bd0ac90 candidate. No new
+model requests or installed final-source runtime certification are claimed.
+Cancel, interruption, terminal no-output and uncertain-send branches have focused
+fixture coverage, not genuine mid-turn fault-injection trials.
 Independent source review and an explicitly authorized publication remain required.
 LIMITED OWNER-AUTHORIZED SMOKE COVERAGE, not exhaustive certification.

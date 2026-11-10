@@ -24,7 +24,7 @@ class OwnerDmAdmissionTests(SolidTests):
         self.adapter._publish_dm_manifest = AsyncMock()  # catalog is unrelated to management authority
         self.client.create = Mock(return_value={'room_id': 'new', 'share_link': 'https://botsesh.com/b/new'})
         await self.adapter._check_room('a')
-        event = self.adapter.handle_message.call_args.args[0]
+        event = self.adapter._admit_event.call_args.args[0]
         self.assertEqual(event.source.message_id, '3')
         self.assertEqual(self.adapter._current['a']['operator_binding'], {
             'participant_id': 'agent', 'oauth_id': 'grant', 'oauth_root': 'source', 'origin': 'https://botsesh.com',

@@ -46,9 +46,9 @@ class PartialRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Reply #8 posted.', result.error)
             self.assertNotIn('pending_final', client.store.room('offline'))
             await adapter.on_processing_complete(Mock(source=Mock(chat_id='offline'), message_id='7'), ProcessingOutcome.FAILURE)
-            adapter.handle_message = AsyncMock()
+            adapter._admit_event = AsyncMock()
             await adapter._check_room('offline')
-            adapter.handle_message.assert_not_called()
+            adapter._admit_event.assert_not_called()
             self.assertNotIn('handled', client.store.room('offline'))
             with patch.object(tools, 'Client', return_value=client):
                 status = json.loads(tools.command('status', platform='cli'))
@@ -65,10 +65,10 @@ class PartialRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('pending_completion', client.store.room('offline'))
             adapter._is_sender_authorized = lambda author, *a: author == '7f5081ed-bb74-4304-9fb7-12bd396831f7'
             async def admitted(event):
-                event._gateway_accepted = True
-            adapter.handle_message = AsyncMock(side_effect=admitted)
+                return True
+            adapter._admit_event = AsyncMock(side_effect=admitted)
             await adapter._check_room('offline')
-            self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '10')
+            self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '10')
             state = json.loads(state_path.read_text())
             self.assertEqual((len(state['messages']), state['checkpoint'], len(state['acks'])), (1, 70, 1))
             self.assertEqual(state['messages'][0]['text'], text)

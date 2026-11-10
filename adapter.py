@@ -411,10 +411,24 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 continue
             client_id = saved.get('client_id') if saved else None
             client_id = client_id or str(uuid.uuid4())
-            policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
-                                            receipt_id=result['receipt_id'], client_id=client_id)
-            from .tool_policy import validate_policy
-            validate_policy(policy, binding, target, result['receipt_id'], author)
+            policy = None
+            if binding.get('transport') == 'oauth':
+                from .tool_policy import validate_policy
+                try:
+                    policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
+                                                    receipt_id=result['receipt_id'], client_id=client_id)
+                    validate_policy(policy, binding, target, result['receipt_id'], author)
+                except BotSeshError as error:
+                    if error.terminal:
+                        raise  # Revocation cannot authorize even a fallback notice.
+                    # This read-only capability has no uncertain tool/send effects.
+                    # Retire this target once, without inference/read attestation,
+                    # rather than starving every later request on an old server.
+                    receipt(self.client.store, room_id, target,
+                            tool_policy_error={'code': error.code, 'status': error.status})
+                    self._queue_failure(room_id, target, 'runtime_error')
+                    await self._flush_failures(room_id)
+                    continue
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
             receipt(self.client.store, room_id, target, tool_policy=policy)
             from .owner_operator import pin_operator_binding

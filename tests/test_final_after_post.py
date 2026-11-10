@@ -40,6 +40,10 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
             if name == 'hermes_inbox':
                 return {'targets': [{'number': n} for n in self.targets[room]],
                         'has_more': False, 'backlog': len(self.targets[room])}
+            if name == 'hermes_tool_policy':
+                return {'room_id':room,'participant_id':binding['participant_id'],
+                        'number':args['number'],'batch_id':args['batch_id'],'toolsAllowed':True,
+                        'requester':{'id':'owner','isOwner':True}}
             if name == 'catchup':
                 n = args['target_number']
                 return {'batch_id': 'receipt-' + room + '-' + str(n), 'ack_eligible': True,
@@ -79,15 +83,13 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
             with patch('hermes_botsesh_test.adapter.Client', return_value=self.client):
                 adapter = BotSeshAdapter(PlatformConfig())
             adapter._is_sender_authorized = lambda *args: True
-            async def admit(event):
-                event._gateway_accepted = True
-            adapter.handle_message = AsyncMock(side_effect=admit)
+            adapter._admit_event = AsyncMock(return_value=True)
             self.adapters[room] = adapter
 
     async def begin(self, room='a'):
         adapter = self.adapters[room]
         await adapter._check_room(room)
-        event = adapter.handle_message.call_args.args[0]
+        event = adapter._admit_event.call_args.args[0]
         await adapter.on_processing_start(event)
         return adapter, event
 
@@ -107,6 +109,35 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(tools, 'Client', return_value=self.client), \
              patch.object(tools, 'calling_scope', return_value=('botsesh', room)):
             return tools.post(args, Mock())
+
+    async def test_real_oauth_policy_capability_errors_do_not_strand_received_target(self):
+        original = OAuthClient.rpc
+        for bad in (BotSeshError('method_not_found', 404), None, {'toolsAllowed': 'true'}):
+            with self.subTest(result=bad):
+                self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}))
+                self.adapters['a']._current.clear()
+                self.messages.clear()
+                self.requests.clear()
+                def unavailable(api, binding, name, args=None, **kwargs):
+                    if name == 'hermes_tool_policy' and args['number'] == 3:
+                        if isinstance(bad, BotSeshError):
+                            raise bad
+                        return bad
+                    return original(api, binding, name, args, **kwargs)
+                with patch.object(OAuthClient, 'rpc', unavailable):
+                    adapter = self.adapters['a']
+                    adapter._admit_event.reset_mock()
+                    await adapter._check_room('a')
+                    await adapter._check_room('a')
+                adapter._admit_event.assert_awaited_once()
+                self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
+                row = self.client.store.room('a')['processing_receipts']['3']
+                self.assertEqual(row['state'], 'failed')
+                self.assertEqual(row['tool_policy_error']['code'], bad.code if isinstance(bad, BotSeshError) else 'native_tool_policy_scope_mismatch')
+                self.assertEqual(len(self.messages), 1)
+                self.assertEqual(next(iter(self.messages.values()))['text'], "Hermes couldn't do it.")
+                self.assertNotIn('processed_cursor', self.client.store.room('a'))
+                self.assertFalse(any(name in ('send_message', 'ack', 'finish_room_turn') for _, name, _ in self.requests))
 
     async def test_rejected_cant_do_uses_failure_notice_and_admits_next_target(self):
         from hermes_botsesh_test.adapter import _ADAPTERS
@@ -150,7 +181,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.messages), 1)
             self.assertNotIn('Do not turn rejection', next(iter(self.messages.values()))['text'])
             await adapter._check_room('a')
-            self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+            self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
 
     async def test_rejected_final_post_uses_one_notice_and_admits_next_target(self):
         adapter, event = await self.begin()
@@ -174,7 +205,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('processed_cursor', room)
             self.assertEqual(room['processing_receipts']['3']['state'], 'failed')
             await adapter._check_room('a')
-            self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+            self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
 
     async def test_tool_post_then_final_settles_both_adapters_and_admits_later_turn(self):
         for room in ('a', 'b'):
@@ -195,8 +226,8 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('pending_final', state)
                 self.assertEqual(len([k for k in self.messages if k[0] == room]), 1)
                 await adapter._check_room(room)
-                self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
-                self.assertEqual(adapter.handle_message.await_count, 2)
+                self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
+                self.assertEqual(adapter._admit_event.await_count, 2)
 
     async def test_native_final_ledger_does_not_journal_a_second_answer(self):
         adapter, event = await self.begin()
@@ -245,7 +276,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         state = self.client.store.room('a')
         self.assertEqual(state['processing_receipts']['3']['state'], 'replied')
         self.assertNotIn('pending_final', state)
-        self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+        self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
         # A stale core-ledger retry must not post or disturb the NEW active turn.
         new_current = adapter._current['a']
         newer_payload = {'text': 'New turn final, not sent yet', 'client_id': new_current['client_id'],
@@ -285,9 +316,9 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state['processing_receipts']['3']['state'], 'failed')
         self.assertNotIn('pending_final', state)
         self.assertNotIn(3, state.get('handled', []))
-        self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+        self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
         self.assertEqual(len(self.messages), 1)
-        self.assertIn("Hermes couldn't answer:", next(iter(self.messages.values()))['text'])
+        self.assertEqual("Hermes couldn't do it.", next(iter(self.messages.values()))['text'])
         self.assertEqual(len([1 for _, name, _ in self.requests if name == 'send_message']), 0)
         for _ in range(2):
             result = await adapter.send('a', RECOVERED_MARKER + payload['text'])
@@ -319,7 +350,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         original_id = next(iter(self.messages))[1]
         await adapter._check_room('a')
         self.assertNotIn('pending_final', self.client.store.room('a'))
-        self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+        self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
         self.assertEqual(len(self.messages), 1)
         notices = [args for _, name, args in self.requests if name == 'hermes_notice']
         self.assertEqual([args['client_id'] for args in notices], [original_id, original_id])
@@ -333,7 +364,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         await adapter._check_room('a')
         self.assertEqual(len(self.messages), 1)
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')
-        self.assertEqual(adapter.handle_message.call_args.args[0].message_id, '5')
+        self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
 
     async def test_unthreaded_post_requires_the_same_durable_addressed_receipt(self):
         adapter, event = await self.begin()

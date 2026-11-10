@@ -53,7 +53,7 @@ class OwnerOfferTests(SolidTests):
 
     async def test_exact_create_then_make_me_owner_transcript(self):
         await self.adapter._check_room('a')
-        event = self.adapter.handle_message.call_args.args[0]
+        event = self.adapter._admit_event.call_args.args[0]
         self.assertIn(LINE, event.text)
         self.assertTrue(event.text.endswith('"Make a room for my plant swap and send me the link"'))
         result = self.call('botsesh_create_room', {'name': 'Plant Swap'})
@@ -64,7 +64,7 @@ class OwnerOfferTests(SolidTests):
         self.adapter._current['a']['delivered'] = True
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         await self.adapter._check_room('a')
-        event = self.adapter.handle_message.call_args.args[0]
+        event = self.adapter._admit_event.call_args.args[0]
         self.assertIn(LINE, event.text)
         self.assertIn('Most recent room created from this owner DM:', event.text)
         self.assertIn(ROOM, event.text)
@@ -91,7 +91,7 @@ class OwnerOfferTests(SolidTests):
                 self.live.update(changes)
                 if label == 'group': self.client.store.update(lambda d: d['rooms']['a'].update(room_type='room'))
                 await self.adapter._check_room('a')
-                event = self.adapter.handle_message.call_args.args[0]
+                event = self.adapter._admit_event.call_args.args[0]
                 self.assertNotIn('You are in a private DM with your owner', event.text)
                 self.assertFalse(self.call('botsesh_create_room', {'name': 'Plant Swap'})['ok'])
                 self.assertFalse(self.call('botsesh_offer_ownership', {'room': 'the room you just made', 'user_requested': True})['ok'])

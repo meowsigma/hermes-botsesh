@@ -170,7 +170,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                         # New contract: failures are visible, but NEVER attest reads.
                         self.assertNotIn('receipt_id', kwargs)
                         self.assertNotIn('processed', kwargs)
-                        self.assertIn("Hermes couldn't answer:", kwargs['text'])
+                        self.assertEqual("Hermes couldn't do it.", kwargs['text'])
                         return {'number': 8}
                     self.assertEqual(operation, 'read')
                     target = kwargs['target_number']
@@ -191,10 +191,11 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                     adapter = BotSeshAdapter(PlatformConfig())
                 adapter._is_sender_authorized = lambda author, *args: author == 'owner'
                 async def handle(event):
-                    event._gateway_accepted = not (reason == 'rejected' and event.message_id == '3')
-                    if event._gateway_accepted:
+                    accepted = not (reason == 'rejected' and event.message_id == '3')
+                    if accepted:
                         dispatched.append(event)
-                adapter.handle_message = AsyncMock(side_effect=handle)
+                    return accepted
+                adapter._admit_event = AsyncMock(side_effect=handle)
                 if reason == 'dedup':
                     client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={'3': {'target': 3, 'state': 'replied'}}))
                 await adapter._check_room('a')
@@ -226,10 +227,10 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
             adapter._skipped_targets.add(('a', 3))  # A failed turn must not suppress its saved final.
-            adapter.handle_message = AsyncMock()
+            adapter._admit_event = AsyncMock()
             await adapter._check_room('a')
             self.assertEqual(client.enrolled.call_args_list[0].kwargs, payload)
-            adapter.handle_message.assert_not_called()
+            adapter._admit_event.assert_not_called()
             self.assertNotIn('pending_final', client.store.room('a'))
             self.assertEqual(client.store.room('a')['handled'], [3])
 
