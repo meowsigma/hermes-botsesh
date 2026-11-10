@@ -113,13 +113,12 @@ class NativeTurnMixin:
         elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
         elif current.get('delivered') or row.get('read_attested'):
-            if current.get('model_processed') is True:
-                await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
-                for target in current.get('batch_targets', [current['target']]):
-                    self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
-            else:
-                self._queue_failure(room_id, current['target'], code)
-                await self._flush_failures(room_id)
+            # A confirmed processed:true post/ack is its own explicit read
+            # attestation, even if the runtime fails after that useful answer.
+            # Keep the native failure ledger, not a failed/unanswered room ask.
+            await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
+            for target in current.get('batch_targets', [current['target']]):
+                self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
         elif row.get('explicit_post_calls') and current.get('model_processed'):
             # An authored no-read post is not implicit read permission. Retain
             # local completion separately; no read checkpoint is advanced.

@@ -189,15 +189,26 @@ class LivingChatTests(unittest.IsolatedAsyncioTestCase):
                              for _, name, args in self.requests))
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
 
-    async def test_failed_model_after_post_never_completes_frozen_batch(self):
+    async def test_runtime_failure_after_explicit_processed_reply_does_not_strand_answered_turn(self):
         adapter, event = await self.begin()
         self.post(receipt_id=adapter._current['a']['receipt_id'], processed=True)
         self.model_ended(adapter, failed=True)
         await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
         self.assertEqual(len(self.messages), 1)
-        self.assertFalse(any(name == 'hermes_delivery' and args['state'] == 'completed' for _, name, args in self.requests))
-        self.assertNotIn('processed_cursor', self.client.store.room('a'))
-        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'failed')
+        self.assertTrue(any(name == 'hermes_delivery' and args['state'] == 'completed' for _, name, args in self.requests))
+        self.assertFalse(any(name == 'hermes_delivery' and args['state'] == 'failed' for _, name, args in self.requests))
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')
+        self.assertNotIn('a', adapter._current)
+
+    async def test_queued_failure_recovers_only_its_confirmed_processed_answer(self):
+        adapter, event = await self.begin()
+        receipt = adapter._current['a']['receipt_id']
+        self.post(receipt_id=receipt, processed=True)
+        adapter._queue_failure('a', 3, 'runtime_error')
+        await adapter._flush_failures('a')
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')
+        self.assertEqual(self.client.store.room('a')['failure_outbox'], {})
+        self.assertTrue(any(name == 'hermes_delivery' and args['state'] == 'completed' for _, name, args in self.requests))
 
     async def test_lost_unattested_post_retries_exact_id_without_a_final(self):
         adapter, event = await self.begin()

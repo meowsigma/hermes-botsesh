@@ -522,7 +522,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     async def _flush_failures(self, room_id):
         for target, saved in list(self.client.store.room(room_id).get('failure_outbox', {}).items()):
             # Even pre-upgrade queued runtime notices are status-only now.
-            await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
+            row = self.client.store.room(room_id).get('processing_receipts', {}).get(target, {})
+            posted = await self._posted_reply(room_id, int(target), row.get('receipt_id'))
+            if posted:
+                # Recover an older failure queued after an already-confirmed
+                # answer. Exact posted identity + live verify, never prose.
+                await self._delivery(room_id, int(target), 'completed', batch_id=row['receipt_id'])
+                self._mark_handled(room_id, int(target), state='replied')
+            else:
+                await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
             def finish(data):
                 room = data['rooms'][room_id]
                 row = room['processing_receipts'][target]
