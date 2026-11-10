@@ -41,9 +41,37 @@ separate egress limitation, not evidence that text, tools or delivery succeeded.
 
 ## Evidence boundary
 
-Focused offline checks cover changed admission/lifecycle/policy hunks, native
-pre-tool dispatch veto, saved send recovery and name custody. A scratch native
-installation was exercised through `hermes plugins install file:///task/plugin`
-and the installed `botsesh status --json` command. These are not genuine model
-return proof. The bounded real guest/later-owner proof and independent bscheck
-review remain required after the server prerequisite is approved.
+Focused changed-hunk checks cover admission/lifecycle/policy, saved send recovery
+and name custody. The installed candidate was then exercised in native
+Hermes0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`) against approved server
+`f4b19061a6ee192442a09e424fe508451c91fd9f` in task `t_358b11c1`:
+
+- Same original seat, room and OAuth grant: plain guest question -> GUEST-OK;
+  11.395 seconds after that reply, a distinct signed-in owner's request actually
+  invoked read_file and terminal/pwd, then returned the exact file text and cwd.
+- Real native terminal attempts from a guest under Only me and from the owner
+  under No one both returned the execution veto. Both filesystem sentinels stayed
+  absent. This is tool-result/side-effect evidence, not model-promised refusal.
+- One cumulative <=10-forward relay recorded9 requests:7 successful inference
+  calls (matching native session counts), a props404 probe and a models200 probe. Actual
+  forwarded output was capped at768 tokens per inference. No allowance reset.
+- Exact foreign-room, removed-requester, removed-seat, group-as-owner-DM and
+  revoked-bearer negatives ran through the installed client and live server.
+  A cleanup-only assertion occurred after those checks; its receipt and the
+  independent revoked-grant/read-ledger readback are retained, not called a
+  fully successful negative harness exit.
+- Real1440/390 captures show one Hermes and Online. The existing grey dot beside
+  Online is server/UI source outside this plugin change. No attachment upload
+  was requested or certified.
+- The first attempt used a3.13 entrypoint with install-selected3.14 dependencies
+  and failed before inference. Its one typed no-read failure remains retained.
+  The corrected runtime resumed the same grant/seat; no useful return is claimed
+  for that failed attempt.
+- Supported native gateway stop, grant revocation/local token removal and owned
+  room deletion were verified. No publication, version bump or server pin change.
+
+The latest focused10 checks pass on the actual selected3.14 runtime. Cancel,
+interruption, terminal no-output and uncertain-send branches have focused fixture
+coverage; they are not claimed as genuine mid-turn fault-injection trials.
+Independent source review and an explicitly authorized publication remain required.
+LIMITED OWNER-AUTHORIZED SMOKE COVERAGE, not exhaustive certification.
