@@ -308,15 +308,15 @@ class OAuthClient:
         return data
 
     def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
-                name=None, profile=None, paste_redirect=False):
+                name=None, profile=None, paste_redirect=False, preserve_name=False):
         # Serialize complete browser enrollments separately from refresh: two
         # concurrent callbacks must not replace a newer local grant with an old
         # grant that the server just superseded. Refresh can continue meanwhile.
         with _lock(self.store, connect=True):
             return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
-                                 name=name, profile=profile, paste_redirect=paste_redirect)
+                                 name=name, profile=profile, paste_redirect=paste_redirect, preserve_name=preserve_name)
 
-    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect):
+    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect, preserve_name=False):
         from .identity import current_profile, gateway_install_id
         profile = profile or current_profile()
         name = preferred_name(name)  # Refuse invalid names before creating a grant.
@@ -384,7 +384,7 @@ class OAuthClient:
             raise
         # Optional naming happens only after custody of the verified grant is
         # durable. A denied/failed rename must never revoke a fresh connection.
-        return self._initial_name(binding, name)
+        return self._initial_name(binding, binding['display_name'] if preserve_name else name)
 
     def _initial_name(self, binding, name):
         if binding['display_name'] != name:
@@ -626,6 +626,14 @@ class OAuthClient:
             return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
             return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id') if args.get(k)})})
+        if op == 'tool_policy':
+            from .tool_policy import validate_policy
+            require_client_id(args['client_id'])
+            if not is_number(args.get('target')) or args.get('receipt_id') not in self.store.room(room_id).get('oauth_receipts', {}):
+                raise BotSeshError('receipt_scope')
+            value = self.rpc(binding, 'hermes_tool_policy', {'room_id': room_id, 'number': args['target'],
+                'batch_id': args['receipt_id'], 'launch_id': args['client_id']})
+            return validate_policy(value, binding, args['target'], args['receipt_id'])
         if op == 'working':
             return self.rpc(binding, 'working', {'room_id': room_id, 'status': 'Hermes is working…', **({'mention_number': args['target']} if args.get('target') is not None else {})})
         if op in ('verify', 'pending'):

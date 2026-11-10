@@ -10,6 +10,7 @@ import weakref
 import time
 import threading
 from .provider_text import visible_text
+from .native_turn import NativeTurnMixin
 
 _ADAPTERS = weakref.WeakSet()
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ def ended_turn(*, platform='', session_id=None, turn_id=None, completed=False, f
             for current in list(adapter._current.values()):
                 if current.get('hook_turn') == (session_id, turn_id) and session_id and turn_id:
                     current['model_processed'] = completed is True and failed is False and interrupted is False
+                    current['hook_terminal'] = True
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -78,7 +80,7 @@ HINT = (
     'No owner-only or destructive operations.'
 )
 
-class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
+class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4000
     supports_code_blocks = True
 
@@ -282,6 +284,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
     async def _check_room(self, room_id):
         await self._refresh_dm_controls(room_id)
         await self._control_sweep()
+        await self._reconcile_native(room_id)
         # One in-flight event per room: never merge mutable later context into an earlier answer.
         if room_id in self._current:
             await self._receive_while_busy(room_id)
@@ -310,6 +313,12 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         await self._flush_failures(room_id)
         for saved in list(self.client.store.room(room_id).get('processing_receipts', {}).values()):
             if saved['state'] in ('admitting', 'admitted', 'started') and saved.get('instance') != self._instance:
+                if saved.get('native_admission'):
+                    self._restore_native(room_id, saved)
+                    await self._reconcile_native(room_id)
+                    if room_id in self._current:
+                        return
+                    continue
                 if await self._posted_reply(room_id, saved['target'], saved.get('receipt_id')):
                     continue
                 # Started tools may have external effects. Never silently replay an
@@ -374,7 +383,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             author = message.get('senderParticipantId')
             if await self._control_ingest(room_id, message):
                 continue
-            if not author or participant.get('id') != author or participant.get('verified') is not True:
+            if not self._sender_identity_admitted(room_id, message):
                 self._queue_failure(room_id, target, 'admission_denied')
                 await self._flush_failures(room_id)
                 continue
@@ -402,14 +411,18 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
                 continue
             client_id = saved.get('client_id') if saved else None
             client_id = client_id or str(uuid.uuid4())
+            policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
+                                            receipt_id=result['receipt_id'], client_id=client_id)
+            from .tool_policy import validate_policy
+            validate_policy(policy, binding, target, result['receipt_id'], author)
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
+            receipt(self.client.store, room_id, target, tool_policy=policy)
             from .owner_operator import pin_operator_binding
             operator_binding = pin_operator_binding(binding, getattr(self, '_dm_contexts', {}).get(room_id))
-            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding}
+            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
             source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
             event = MessageEvent(text=text, source=source, message_id=str(target), user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
-            await self.handle_message(event)
-            if getattr(event, '_gateway_accepted', False):
+            if await self._admit_event(event):
                 current_receipt = self.client.store.room(room_id)['processing_receipts'][str(target)]
                 if current_receipt['state'] == 'admitting':
                     receipt(self.client.store, room_id, target, state='admitted', admitted_at=time.time())
@@ -418,6 +431,20 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             self._current.pop(room_id, None)
             self._queue_failure(room_id, target, 'admission_denied')
             await self._flush_failures(room_id)
+
+    def _sender_identity_admitted(self, room_id, message):
+        participant = message.get('authorParticipant') or {}
+        author = message.get('senderParticipantId')
+        binding = self.client.store.room(room_id)
+        if not author or participant.get('id') != author or binding.get('active') is not True:
+            return False
+        if participant.get('active') is False:
+            return False
+        # Canonical membership, not an account/owner upgrade. Keep legacy
+        # verified identities; only exact active OAuth room guests are additive.
+        return participant.get('verified') is True or (
+            binding.get('transport') == 'oauth' and binding.get('room_type') != 'dm'
+            and participant.get('active') is True)
 
     async def _receive_while_busy(self, room_id):
         # Durable pickup is independent of starting inference. Queued questions
@@ -445,7 +472,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if await self._control_ingest(room_id, message):
                 continue
             chat_type = 'dm' if self.client.store.room(room_id).get('room_type') == 'dm' else 'group'
-            if not author or participant.get('id') != author or participant.get('verified') is not True or self._is_sender_authorized(author, chat_type, room_id) is not True:
+            if not self._sender_identity_admitted(room_id, message) or self._is_sender_authorized(author, chat_type, room_id) is not True:
                 self._queue_failure(room_id, target, 'admission_denied')
                 continue
             receipt(self.client.store, room_id, target, frozen=frozen, receipt_id=frozen['receipt_id'])
@@ -466,7 +493,7 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
             if row.get('state') == 'failed' and row.get('failure_pending') is False:
                 return
             exact_code = row.get('failure_code') or code
-            payload = {'text': failure_notice(exact_code), 'reply_to': target, 'client_id': client_id, 'failure_code': exact_code}
+            payload = {'text': failure_notice(exact_code, room.get('display_name') or 'Hermes'), 'reply_to': target, 'client_id': client_id, 'failure_code': exact_code}
             row.update(state='failed', failure_code=exact_code, failure_pending=True, updated_at=time.time())
             room.setdefault('failure_outbox', {}).setdefault(str(target), {'payload': payload, 'code': exact_code})
         self.client.store.update(save)
@@ -771,22 +798,16 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         room_id = event.source.chat_id
         if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
             return
-        current = self._current.pop(room_id, None)
-        if current and await self._posted_reply(room_id, current['target'], current['receipt_id']):
-            current['delivered'] = True
-        if current and self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {}).get('explicit_failure'):
-            await self._flush_explicit_failure(room_id, current['target'])
-        elif current and current['delivered']:
-            self._mark_handled(room_id, current['target'])
-        elif current and self.client.store.room(room_id).get('pending_completion'):
-            health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
-        elif current and not current.get('failure_delivered') and not self.client.store.room(room_id).get('pending_final'):
-            code = 'cancelled' if outcome == ProcessingOutcome.CANCELLED else 'runtime_error' if outcome == ProcessingOutcome.FAILURE else 'empty_response'
-            self._queue_failure(room_id, current['target'], code)
-            await self._flush_failures(room_id)
-        # Silence, model failure and cancellation never acknowledge fetched context.
-        if current:
-            await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
+        current = self._current[room_id]
+        if current.get('native_admission'):
+            await self._reconcile_native(room_id)
+            return
+        # Inline compatibility: a success ACK without a terminal model hook is
+        # not evidence of no output. Native production always has a receipt.
+        if outcome == ProcessingOutcome.SUCCESS and not current.get('hook_terminal') and not current.get('delivered'):
+            return
+        code = 'cancelled' if outcome == ProcessingOutcome.CANCELLED else 'runtime_error' if outcome == ProcessingOutcome.FAILURE else 'empty_response'
+        await self._finish_current(room_id, current, code)
 
     async def get_chat_info(self, chat_id):
         room = self.client.store.room(chat_id)
@@ -837,6 +858,19 @@ class BotSeshAdapter(CommandTransportMixin, BasePlatformAdapter):
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)
+        target_row = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(event.message_id), {})
+        if target_row.get('state') == 'failed':
+            # A terminal pre-hook failure can settle before core delivers its
+            # apology. The exact typed notice owns it, not a new raw message.
+            await self._flush_failures(event.source.chat_id)
+            return SendResult(success=True), self
+        if current is None or str(current['target']) != str(event.message_id):
+            posted = await self._posted_reply(event.source.chat_id, int(event.message_id), target_row.get('receipt_id'))
+            if posted:
+                return SendResult(success=True, message_id=str(posted['number'])), self
+            return SendResult(success=False, error='Native final has no exact current BotSesh target.'), self
+        if current and current.get('native_admission'):
+            await self._native_state(current)
         if current:
             posted = await self._posted_reply(event.source.chat_id, current['target'], current['receipt_id'])
             if posted:

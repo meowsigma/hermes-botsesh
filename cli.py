@@ -63,9 +63,11 @@ def configure(binding):
     if not platform.get('home_channel'):
         set_config_value('platforms.botsesh.home_channel', json.dumps({
             'platform': 'botsesh', 'chat_id': binding['room_id'], 'name': binding['name']}))
-    tools = cfg.get('platform_toolsets', {}).get('botsesh', [])
-    if 'botsesh' not in tools:
-        set_config_value('platform_toolsets.botsesh', json.dumps([*tools, 'botsesh']))
+    platform_tools = cfg.get('platform_toolsets') or {}
+    if 'botsesh' not in platform_tools:
+        from hermes_cli.tools_config import _get_platform_tools
+        inherited = sorted(_get_platform_tools(cfg, 'cli'))
+        set_config_value('platform_toolsets.botsesh', json.dumps(list(dict.fromkeys([*inherited, 'botsesh']))))
     enabled = cfg.get('plugins', {}).get('enabled', [])
     if 'botsesh' not in enabled:
         set_config_value('plugins.enabled', json.dumps([*enabled, 'botsesh']))
@@ -155,6 +157,7 @@ def _handle_profile(args, profile):
             from .identity import configured_name, save_identity_config
             binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout,
                                     room_hint=args.room, name=configured_name(profile, args.name), profile=profile,
+                                    preserve_name=args.name is None,
                                     **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}))
             configure(binding)
             save_identity_config(profile=profile, display_name=binding['display_name'])

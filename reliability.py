@@ -37,10 +37,7 @@ def failure_code(text):
         return 'provider_budget'
     return 'provider_error'
 
-def failure_notice(code):
-    why = {'provider_budget': 'ran out of usage', 'provider_error': 'model/provider error',
-           'interrupted': 'gateway restarted mid-turn; tool execution may be incomplete. Check before retrying',
-           'cancelled': 'turn cancelled', 'empty_response': 'no answer was returned',
-           'admission_denied': 'gateway did not admit this message; in your local terminal run hermes botsesh status for this agent’s profile, then reconnect with Private DMs enabled using the account that authorized the agent. Ask the gateway operator to check its participant allowlist if access is still denied', 'context_limit': 'room context is too large',
-           'runtime_error': 'gateway processing error'}.get(code, 'gateway processing error')
-    return "Hermes couldn't answer: " + why + '.'
+def failure_notice(code, name='Hermes'):
+    # Code/reason stays in the typed receipt and status. Only new transport
+    # notices use this copy; old durable UUIDs retain their original bytes.
+    return str(name) + " couldn't do it."
