@@ -241,13 +241,20 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     async def _room_loop(self, room_id):
         changed = asyncio.Event()
+        stream_transport = self.client.store.read()['rooms'].get(room_id, {}).get('transport')
         stream = asyncio.create_task(self._stream(room_id, changed))
         delay = self.poll_seconds
         attempt = 0
         try:
             while self._running:
-                self.client.store.room(room_id)
-                if stream.done():
+                binding = self.client.store.room(room_id)
+                if stream.done() or binding.get('transport') != stream_transport:
+                    # First-paste invitation access can be upgraded on this
+                    # SAME seat by Allow. Retire its old Node notification loop
+                    # so the new grant's listener heartbeat/SSE starts normally.
+                    stream.cancel()
+                    await asyncio.gather(stream, return_exceptions=True)
+                    stream_transport = binding.get('transport')
                     logger.warning('BotSesh room %s notification listener restarting; durable inbox polling remains active.', room_id)
                     stream = asyncio.create_task(self._stream(room_id, changed))
                 try:
@@ -731,7 +738,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 # answers. Never classify by localized or model-like prose.
                 # Exact saved gateway replays and native commands were handled
                 # above. Keep content private to local diagnostics only.
-                logger.info('BotSesh suppressed native runtime notice for room %s', chat_id)
+                logger.info('BotSesh native runtime notice (local only, room %s): %s', chat_id, content)
                 health(self.client.store, chat_id, last_status=time.time())
                 return SendResult(success=True)
             if current:

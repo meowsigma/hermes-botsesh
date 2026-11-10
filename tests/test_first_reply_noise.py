@@ -65,6 +65,33 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
         await adapter.send('a', text, metadata={'notify': True})
         self.assertEqual([m['text'] for m in self.messages.values()], [text])
 
+    async def test_invitation_upgrade_replaces_notification_stream_without_reenrollment(self):
+        import asyncio
+        adapter = self.adapters['a']
+        self.client.store.update(lambda d: d['rooms']['a'].pop('transport'))
+        adapter._running = True
+        adapter.poll_seconds = 0.001
+        starts, cancelled = [], []
+        async def stream(room, changed):
+            transport = self.client.store.room(room).get('transport')
+            starts.append(transport)
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.append(transport)
+        async def check(room):
+            await asyncio.sleep(0)
+            if starts == [None]:
+                self.client.store.update(lambda d: d['rooms']['a'].update(transport='oauth'))
+            if len(starts) == 2:
+                adapter._running = False
+        with patch.object(adapter, '_stream', stream), patch.object(adapter, '_check_room', check), patch.object(self.client, 'enrolled', return_value={}):
+            await asyncio.wait_for(adapter._room_loop('a'), 1)
+        self.assertEqual(starts, [None, 'oauth'])
+        self.assertEqual(cancelled, starts)
+        self.assertEqual(self.messages, {})
+        self.assertNotIn('processed_cursor', self.client.store.room('a'))
+
     async def test_live_grant_state_is_only_added_for_literal_true_projection(self):
         original = OAuthClient.rpc
         for state in (None, False, 'true', True):
