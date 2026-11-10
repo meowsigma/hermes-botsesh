@@ -26,7 +26,7 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
             self.calls.append((room,op,args))
             if op=='check':return {'mentions':self.targets[room],'replies':[],'backlog':len(self.targets[room])}
             if op=='read':
-                n=args['target_number'];return {'receipt_id':'receipt-'+str(n),'batch':{'messages':[{'id':n+100,'number':n,'isOwn':False,'text':'question '+str(n),'senderParticipantId':'owner','authorParticipant':{'id':'owner','verified':True,'name':'Owner'}}]}}
+                n=args['target_number'];return {'receipt_id':'receipt-'+str(n),'batch':{'nextCheckpoint':n,'messages':[{'id':n+100,'number':n,'isOwn':False,'text':'question '+str(n),'senderParticipantId':'owner','authorParticipant':{'id':'owner','verified':True,'name':'Owner'}}]}}
             if op=='tool_policy':
                 return {'room_id':room,'participant_id':self.client.store.room(room)['participant_id'],
                         'number':args['target'],'batch_id':args['receipt_id'],'toolsAllowed':True,

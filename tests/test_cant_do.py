@@ -98,6 +98,8 @@ class CantDoNativeTests(SolidTests):
         sent=await self.adapter.send('a','I could not generate that image.',metadata={'notify':True})
         self.assertTrue(sent.success)
         await self.adapter.on_processing_complete(self.adapter._admit_event.call_args.args[0], __import__('gateway.platforms.event',fromlist=['ProcessingOutcome']).ProcessingOutcome.SUCCESS)
+        # The event callback is not terminal native settlement any more.
+        await self.adapter._finish_current('a',self.adapter._current['a'],'cant_do')
         row=self.client.store.room('a')['processing_receipts']['3']
         self.assertEqual(row['state'],'failed');self.assertEqual(row['failure_code'],'cant_do')
         self.assertNotIn('frozen',row);self.assertNotIn('processed_cursor',self.client.store.room('a'))
