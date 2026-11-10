@@ -11,7 +11,7 @@ class InitialNameConsentTests(unittest.TestCase):
     setUp=original.OAuthTests.setUp
     tearDown=original.OAuthTests.tearDown
 
-    def connect(self, room, rename=None):
+    def connect(self, room, rename=None, preserve_name=False):
         def rpc(binding, tool, args=None, **kwargs):
             if tool=='hermes_initialize':return {'profile':'default'}
             if tool=='list_rooms':return {'rooms':[room]}
@@ -22,9 +22,16 @@ class InitialNameConsentTests(unittest.TestCase):
         login=patch.object(oauth,'login',return_value={'access_token':'B'*43,'refresh_token':'S'*43,'expires_in':300}) if hasattr(oauth,'login') else contextlib.nullcontext()
         http=patch.object(oauth,'_http',return_value={}) if hasattr(oauth,'_http') else contextlib.nullcontext()
         with login,http as revoke,patch.object(self.client,'rpc',side_effect=rpc) as calls,contextlib.redirect_stdout(io.StringIO()) as output:
-            binding=self.client.connect(name='Scout',profile='default')
+            binding=self.client.connect(name='Scout',profile='default',preserve_name=preserve_name)
         if revoke:revoke.assert_not_called()
         return binding,calls,output.getvalue()
+
+    def test_profile_default_does_not_rename_an_existing_seat_even_with_name_consent(self):
+        room=dict(room_id='two',name='Garden',participant_id='second',display_name='Hermes',gateway_profile='default')
+        def rename(*_):self.fail('A profile default must not rename the exact existing seat')
+        binding,calls,output=self.connect(room,rename,preserve_name=True)
+        self.assertEqual(binding['display_name'],'Hermes')
+        self.assertFalse(any(c.args[1]=='hermes_name' for c in calls.call_args_list))
 
     def test_exact_initial_name_is_verified_without_a_rename(self):
         room=dict(room_id='two',name='Garden',participant_id='second',display_name='Scout',gateway_profile='default')

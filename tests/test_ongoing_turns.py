@@ -90,6 +90,33 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.posts[0]['failure_code'], 'empty_response')
         self.assertNotIn('handled', self.client.store.room('room'))
 
+    async def test_normal_guest_intake_freezes_identity_policy_and_receipt_before_admission(self):
+        def enrolled(room, op, **kw):
+            self.assertEqual(room, 'room')
+            if op == 'check':
+                return {'mentions': [3], 'replies': []}
+            if op == 'read':
+                self.assertEqual(kw['target_number'], 3)
+                return self.frozen
+            if op == 'tool_policy':
+                self.assertEqual(kw['receipt_id'], 'batch')
+                return self.policy
+            self.fail(op)
+        self.client.enrolled = Mock(side_effect=enrolled)
+        async def admitted(event):
+            row = self.client.store.room('room')['processing_receipts']['3']
+            self.assertEqual(row['frozen'], self.frozen)
+            self.assertEqual(row['tool_policy'], self.policy)
+            self.assertEqual(event.source.user_id, 'guest')
+            self.assertFalse(event.allow_gateway_control)
+            self.assertEqual(event.message_id, '3')
+            return True
+        self.a._admit_event = AsyncMock(side_effect=admitted)
+        await self.a._check_room('room')
+        self.a._admit_event.assert_awaited_once()
+        self.assertEqual(self.client.store.room('room')['processing_receipts']['3']['state'], 'admitted')
+        self.assertNotIn('handled', self.client.store.room('room'))
+
     async def test_terminal_cancel_interruption_and_pre_hook_failure_never_ack(self):
         for outcome, code in [('cancelled', 'cancelled'), ('interrupted', 'interrupted'), ('failed', 'runtime_error')]:
             with self.subTest(outcome=outcome):
