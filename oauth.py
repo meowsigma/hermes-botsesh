@@ -655,7 +655,7 @@ class OAuthClient:
                 payload.update(batch_id=args['receipt_id'], reason=args['reason'], processed=True)
             return self.rpc(binding, 'hermes_takeover', payload)
         if op == 'read':
-            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100, **({'target_number': args['target_number']} if args.get('target_number') is not None else {})})
+            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100, **({'target_number': args['target_number'], 'turn_mode': 'living_chat'} if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
                 raise BotSeshError('context_limit')
             messages = []

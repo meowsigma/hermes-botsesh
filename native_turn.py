@@ -123,7 +123,9 @@ class NativeTurnMixin:
         elif row.get('explicit_post_calls') and current.get('model_processed'):
             # An authored no-read post is not implicit read permission. Retain
             # local completion separately; no read checkpoint is advanced.
-            receipt(self.client.store, room_id, current['target'], state='completed_unread')
+            await self._delivery(room_id, current['target'], 'completed_unread', batch_id=current['receipt_id'])
+            for target in current.get('batch_targets', [current['target']]):
+                receipt(self.client.store, room_id, target, state='completed_unread')
         elif room.get('pending_completion'):
             health(self.client.store, room_id, state='completion_pending', error='retry_original_operation')
         elif not current.get('failure_delivered') and not room.get('pending_final'):
