@@ -690,7 +690,19 @@ class OAuthClient:
                 payload.update(batch_id=args['receipt_id'], reason=args['reason'], processed=True)
             return self.rpc(binding, 'hermes_takeover', payload)
         if op == 'read':
-            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100, **({'target_number': args['target_number'], 'turn_mode': 'living_chat'} if args.get('target_number') is not None else {})})
+            takeover = args.get('takeover_event_id')
+            if takeover is not None:
+                saved = self.store.room(room_id).get('processing_receipts', {}).get(str(args.get('target_number')), {})
+                offer = saved.get('takeover_offer', {})
+                if (offer.get('event_id') != takeover or offer.get('number') != args.get('target_number')
+                        or offer.get('accepted') is not True or offer.get('inference_authorized') is not True):
+                    raise BotSeshError('live_takeover_offer_required')
+            # accept already reserved the canonical takeover fence. Ordinary
+            # living_chat would try to reopen the source's completed ambient
+            # delivery and is correctly refused by the unchanged server.
+            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100,
+                **({'target_number': args['target_number'], **({} if takeover is not None else {'turn_mode': 'living_chat'})}
+                   if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
                 raise BotSeshError('context_limit')
             messages = []

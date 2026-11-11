@@ -155,10 +155,11 @@ class NativeTurnMixin:
         source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id),
             chat_type='dm' if binding.get('room_type') == 'dm' else 'group',
             user_id=message['senderParticipantId'], message_id=str(row['target']))
-        event = MessageEvent(text=row['text'], source=source, message_id=str(row['target']),
+        event = MessageEvent(text=row['text'], source=source, message_id=row.get('event_id', str(row['target'])),
             user_id=message['senderParticipantId'], message_type=MessageType.TEXT,
             raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
         current['batch_targets'] = row.get('batch_targets', [row['target']])
+        current['event_id'] = row.get('event_id', str(row['target']))
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'))
         self._current[room_id] = current

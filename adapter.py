@@ -107,7 +107,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from .client import Client, BotSeshError, child_env, pending_notice
 from .storage import StorageError
 from .task_failure import flush_failure, settle_takeover
-from .reliability import receipt, health, backoff, failure_code
+from .reliability import receipt, health, backoff, failure_code, TERMINAL, can_begin_takeover, begin_takeover
 from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 from .dm_controls import _shutdown_notice, _native_notice
 
@@ -397,17 +397,27 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if offer.get('retry_after_ms', 0) > 0:
                 continue
             target = offer['number']
-            if self.client.store.room(room_id).get('processing_receipts', {}).get(str(target)):
-                continue  # Never replace a terminal or uncertain target journal.
+            if not can_begin_takeover(self.client.store.room(room_id), target, offer['event_id']):
+                continue  # Same work item, or an older execution is still unresolved.
             admitted = await asyncio.to_thread(self.client.enrolled, room_id, 'takeover_accept', event_id=offer['event_id'])
             if admitted.get('accepted') is True and admitted.get('inference_authorized') is True:
-                receipt(self.client.store, room_id, target, takeover_offer=admitted)
+                if (any(admitted.get(k) != offer.get(k) for k in ('event_id', 'number', 'task_id', 'version'))
+                        or admitted.get('read_effect') != 'none'):
+                    raise BotSeshError('takeover_admission_mismatch')
+                begin_takeover(self.client.store, room_id, target, admitted)
                 check.setdefault('takeover_targets', []).append({'number': target, 'takeover': {'event_id': offer['event_id']}})
                 break
+        # A completed ambient delivery is absent from inbox.targets even after
+        # accept. Recover only our confirmed exact offer, never an inferred one.
+        for saved in self.client.store.room(room_id).get('processing_receipts', {}).values():
+            if saved.get('takeover_offer') and saved['state'] not in TERMINAL:
+                check.setdefault('takeover_targets', []).append({'number': saved['target'], 'takeover': saved['takeover_offer']})
+        takeover_targets = set()
         for target in check.get('takeover_targets', []):
             saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target['number']), {})
             if saved.get('takeover_offer', {}).get('event_id') == target['takeover']['event_id']:
                 check['mentions'].append(target['number'])
+                takeover_targets.add(target['number'])
             else:
                 health(self.client.store, room_id, error='takeover_admission_uncertain_no_replay')
         targets = sorted(_input_numbers(check))
@@ -415,14 +425,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target))
             if saved and saved['state'] in ('replied', 'failed', 'passed', 'completed_unread'):
                 continue
-            if target in handled or (room_id, target) in self._skipped_targets:
+            if target not in takeover_targets and (target in handled or (room_id, target) in self._skipped_targets):
                 continue
             result = saved.get('frozen') if saved else None
             if not result:
                 try:
                     offer = saved.get('takeover_offer') if saved else None
                     pickup = await asyncio.to_thread(self.client.enrolled, room_id, 'takeover_pickup', event_id=offer['event_id']) if offer else None
-                    result = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
+                    result = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target,
+                        **({'takeover_event_id': offer['event_id']} if offer else {}))
                     if pickup:
                         result['takeover_offer'] = {'event_id': offer['event_id'], 'task': pickup['task'], 'instructions': 'This is an offered replacement, NOT your claim. Consume the complete supplied context, then call botsesh_takeover_claim(processed=true, reason=your own reason) before work, reply or cant_do. Continue this same native turn only if granted. No tool or outside authority is implied by partial notes.'}
                 except BotSeshError as error:
@@ -432,7 +443,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     await self._flush_failures(room_id)
                     continue
             batch = result['batch']
-            batch_targets = [number for number in targets if number not in handled
+            batch_targets = [number for number in targets if (number not in handled or number in takeover_targets)
                 and any(m.get('number') == number and not m.get('isOwn') for m in batch['messages'])
                 and number <= batch.get('nextCheckpoint', batch.get('through', -1))
                 and self.client.store.room(room_id).get('processing_receipts', {}).get(str(number), {}).get('state')
@@ -498,9 +509,13 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             receipt(self.client.store, room_id, target, tool_policy=policy)
             from .owner_operator import pin_operator_binding
             operator_binding = pin_operator_binding(binding, getattr(self, '_dm_contexts', {}).get(room_id))
-            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
+            # Hermes producer ingress dedupes event.message_id. Keep the source
+            # number for native tool scope/reply anchors, but not ingress identity.
+            event_id = 'takeover:' + saved['takeover_offer']['event_id'] if saved and saved.get('takeover_offer') else str(target)
+            receipt(self.client.store, room_id, target, event_id=event_id)
+            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
             source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
-            event = MessageEvent(text=text, source=source, message_id=str(target), user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
+            event = MessageEvent(text=text, source=source, message_id=event_id, user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
             if await self._admit_event(event):
                 current_receipt = self.client.store.room(room_id)['processing_receipts'][str(target)]
                 if current_receipt['state'] == 'admitting':
@@ -878,7 +893,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return
         room_id = event.source.chat_id
         current = self._current.get(room_id)
-        if current and str(current['target']) == event.message_id:
+        if current and current.get('event_id', str(current['target'])) == event.message_id:
             receipt(self.client.store, room_id, current['target'], state='started', started_at=time.time())
             await self._delivery(room_id, current['target'], 'started')
 
@@ -886,7 +901,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return
         room_id = event.source.chat_id
-        if str(self._current.get(room_id, {}).get('target')) != str(event.message_id):
+        current = self._current.get(room_id, {})
+        if current.get('event_id', str(current.get('target'))) != str(event.message_id):
             return
         current = self._current[room_id]
         if current.get('native_admission'):
@@ -908,7 +924,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return await self._control_notice(event.source.chat_id, 'Native command failed. Check /status before retrying; execution was not replayed.')
         # Core invokes this *after* completion on an escaping tool/runtime error.
         # Reuse the same durable notice rather than posting a second raw traceback.
-        self._queue_failure(event.source.chat_id, int(event.message_id), 'runtime_error')
+        target = int(event.source.message_id if str(event.message_id).startswith('takeover:') else event.message_id)
+        saved = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(target), {})
+        if saved.get('event_id', str(target)) != str(event.message_id):
+            return  # A late ambient callback cannot fail a later takeover.
+        self._queue_failure(event.source.chat_id, target, 'runtime_error')
         try:
             await self._flush_failures(event.source.chat_id)
         except BotSeshError as failure:
@@ -948,14 +968,17 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)
-        target_row = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(event.message_id), {})
+        target = int(event.source.message_id if str(event.message_id).startswith('takeover:') else event.message_id)
+        target_row = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(target), {})
+        if target_row.get('event_id', str(target)) != str(event.message_id):
+            return SendResult(success=False, error='Native final belongs to a different BotSesh work item.'), self
         if target_row.get('state') == 'failed':
             # A terminal pre-hook failure can settle before core delivers its
             # apology. The exact typed notice owns it, not a new raw message.
             await self._flush_failures(event.source.chat_id)
             return SendResult(success=True), self
-        if current is None or str(current['target']) != str(event.message_id):
-            posted = await self._posted_reply(event.source.chat_id, int(event.message_id), target_row.get('receipt_id'))
+        if current is None or current.get('event_id', str(current['target'])) != str(event.message_id):
+            posted = await self._posted_reply(event.source.chat_id, target, target_row.get('receipt_id'))
             if posted:
                 return SendResult(success=True, message_id=str(posted['number'])), self
             return SendResult(success=False, error='Native final has no exact current BotSesh target.'), self

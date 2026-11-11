@@ -5,6 +5,51 @@ import time
 
 TERMINAL = {'replied', 'failed', 'passed', 'completed_unread'}
 
+def work_id(row, target=None):
+    """A source number is an ambient delivery, not every later offer for it."""
+    offer = row.get('takeover_offer') or {}
+    return 'takeover:' + offer['event_id'] if offer else 'message:' + str(row.get('target', target))
+
+def can_begin_takeover(room, target, event_id):
+    key = 'takeover:' + event_id
+    if key in room.get('work_receipts', {}):
+        return False
+    prior = room.get('processing_receipts', {}).get(str(target))
+    if not prior:
+        return True
+    if work_id(prior, target) == key or prior.get('state') not in TERMINAL:
+        return False
+    # Terminal state alone cannot retire an uncertain operation or native turn.
+    return not (prior.get('failure_pending')
+        or prior.get('explicit_pass') and not prior['explicit_pass'].get('result')
+        or prior.get('explicit_failure') and not prior['explicit_failure'].get('result')
+        or prior.get('takeover_offer') and not prior.get('takeover_settled')
+        or any(not (call.get('result') or call.get('rejected'))
+               for call in prior.get('explicit_post_calls', {}).values())
+        or room.get('pending_completion') or room.get('pending_final')
+        or str(target) in room.get('failure_outbox', {}))
+
+def begin_takeover(store, room_id, target, admitted):
+    """Select a NEW accepted work item; preserve the previous terminal journal.
+
+    processing_receipts remains the active per-source view used by tools and
+    recovery. Archived identities dedupe older work without resurrecting it.
+    """
+    def save(data):
+        room = data['rooms'][room_id]
+        if not can_begin_takeover(room, target, admitted['event_id']):
+            raise RuntimeError('BotSesh work item changed during takeover admission.')
+        rows = room.setdefault('processing_receipts', {})
+        prior = rows.get(str(target))
+        if prior:
+            history = room.setdefault('work_receipts', {})
+            history[work_id(prior, target)] = prior
+            for old in list(history)[:-1000]:
+                del history[old]
+        rows[str(target)] = {'target': target, 'state': 'received',
+            'received_at': time.time(), 'takeover_offer': admitted}
+    store.update(save)
+
 def backoff(attempt, minimum=1, retry_after=0):
     """Full jitter with a floor; honor server Retry-After even above our cap."""
     return max(float(retry_after), random.uniform(minimum, min(300, minimum * 2 ** min(attempt, 8))))
