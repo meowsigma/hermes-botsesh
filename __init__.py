@@ -5,10 +5,10 @@ def register(ctx):
     register_cli(ctx)
     from .tools import register_tools
     register_tools(ctx)
-    from .adapter import BotSeshAdapter, HINT, standalone_send, processed_turn, ended_turn
+    from .adapter import BotSeshAdapter, HINT, standalone_send, processed_turn, started_turn, ended_turn
     from functools import partial
     ctx.register_hook('post_llm_call', processed_turn)
-    ctx.register_hook('pre_llm_call', processed_turn)
+    ctx.register_hook('pre_llm_call', started_turn)
     ctx.register_hook('on_session_end', ended_turn)
     from .tool_policy import enforce_tools
     ctx.register_hook('pre_tool_call', enforce_tools)

@@ -46,6 +46,50 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
                         and re.search(r'"addressed_message_number"\s*:\s*' + re.escape(str(current['target'])) + r'\s*[,}]', user_message)):
                     current['hook_turn'] = (session_id, turn_id)
 
+def started_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
+    """Direct producer ingress skips base processing/typing hooks.
+
+    pre_llm_call is the real turn-entry boundary, not queue admission or a
+    terminal result. Report it synchronously before any model/tool output.
+    Invitation/Advanced seats do not acquire native OAuth authority here.
+    """
+    processed_turn(user_message=user_message, platform=platform, session_id=session_id, turn_id=turn_id)
+    if platform != 'botsesh' or not session_id or not turn_id:
+        return
+    with _HOOK_LOCK:
+        turns = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
+                 for room_id, current in list(adapter._current.items())
+                 if current.get('hook_turn') == (session_id, turn_id)
+                 and not current.get('hook_terminal') and not current.get('start_reported')]
+    for adapter, room_id, current in turns:
+        binding = adapter.client.store.room(room_id)
+        saved = binding.get('processing_receipts', {}).get(str(current['target']), {})
+        if (binding.get('transport') != 'oauth' or not binding.get('active')
+                or saved.get('receipt_id') != current.get('receipt_id')
+                or saved.get('state') not in ('admitting', 'admitted', 'started')
+                or saved.get('explicit_failure') or saved.get('explicit_pass')):
+            continue
+        try:
+            # No hook lock across network I/O. This is content-free and has no
+            # read effect; only the server's actual receipt confirms the start.
+            result = adapter.client.enrolled(room_id, 'delivery', target=current['target'], state='started')
+            started = (result.get('delivery') or {}).get('startedAt')
+            if type(started) is not int:
+                raise BotSeshError('native_start_unconfirmed')
+        except BotSeshError as error:
+            health(adapter.client.store, room_id, start_error=error.code)
+            logger.warning('BotSesh native turn start unconfirmed (%s).', error.code)
+            continue  # Never reconstruct a start from a later answer/completion.
+        with _HOOK_LOCK:
+            latest = adapter.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
+            if (adapter._current.get(room_id) is current
+                    and latest.get('receipt_id') == current.get('receipt_id')
+                    and latest.get('state') in ('admitting', 'admitted', 'started')
+                    and not latest.get('explicit_failure') and not latest.get('explicit_pass')):
+                current['start_reported'] = True
+                receipt(adapter.client.store, room_id, current['target'], state='started', started_at=started / 1000)
+
+
 def ended_turn(*, platform='', session_id=None, turn_id=None, completed=False, failed=True, interrupted=True, **kwargs):
     if platform != 'botsesh':
         return

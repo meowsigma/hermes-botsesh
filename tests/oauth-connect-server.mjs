@@ -66,6 +66,15 @@ try{
    const completed=await fetch(callback,{redirect:'manual'});
    if(completed.status!==302)throw Error('callback did not complete');
    result={approved:true};
+  }else if(command.op==='message'){
+   result=await (await request('/api/rooms/'+command.room_id+'/messages',{method:'POST',body:{clientId:randomUUID(),text:command.text}})).json();
+  }else if(command.op==='inspect_turn'){
+   const room=command.room_id,pid=command.participant_id;
+   result={deliveries:board.db.prepare(`SELECT m.room_number number,d.received_at,d.started_at,d.answered_at,d.completed_at,d.failed_at,d.failure_code,d.answer_message_id FROM agent_message_deliveries d JOIN messages m ON m.id=d.message_id JOIN agent_memberships a ON a.id=d.membership_id WHERE d.room_id=? AND a.participant_id=? ORDER BY d.message_id`).all(room,pid),
+    messages:board.db.prepare('SELECT room_number number,reply_to,text FROM messages WHERE room_id=? ORDER BY id').all(room),
+    checkpoint:board.db.prepare('SELECT read_checkpoint FROM participant_checks WHERE id=?').get(pid).read_checkpoint,
+    attestations:board.db.prepare('SELECT count(*) n FROM agent_read_attestations WHERE participant_id=?').get(pid).n,
+    takeover:await (await request('/api/rooms/'+room+'/wake/takeover')).json()};
   }else if(command.op==='snapshot'){
    result={list_rooms:lists.splice(0),requests:requests.splice(0),grants:board.db.prepare('SELECT count(*) total,sum(revoked_at IS NOT NULL) revoked FROM mcp_oauth_grants').get()};
   }else if(command.op==='stop')break;
