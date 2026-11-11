@@ -331,52 +331,84 @@ class OAuthClient:
         provisional = {'origin': origin}
         try:
             rooms = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms')
-            if not isinstance(rooms, list) or len(rooms) != 1:
+            if not isinstance(rooms, list) or not rooms:
                 raise BotSeshError('one_room_required')
-            room = rooms[0]
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
-                raise BotSeshError('invalid_room_binding')
-            room_id = room['room_id']
-            if room.get('gateway_profile') != profile:
-                raise BotSeshError('gateway_identity_not_confirmed_update_server')
-            prior = self.store.read()['rooms'].get(room_id)
-            if prior and prior.get('active') and (prior.get('origin') != origin or prior.get('participant_id') != room['participant_id']):
-                raise BotSeshError('room_identity_changed_disconnect_first')
+            identities = {}
+            for room in rooms:
+                if (not isinstance(room, dict) or not isinstance(room.get('room_id'), str)
+                        or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room['room_id'])
+                        or not room.get('participant_id') or room['room_id'] in identities):
+                    raise BotSeshError('invalid_room_binding')
+                if room.get('gateway_profile') != profile:
+                    raise BotSeshError('gateway_identity_not_confirmed_update_server')
+                identities[room['room_id']] = room['participant_id']
+            if room_hint:
+                if room_hint not in identities:
+                    raise BotSeshError('requested_room_not_authorized')
+                room_id = room_hint
+            else:
+                # The account picker includes an owner DM alongside selected
+                # shared rooms. It is not a second shared-room choice.
+                choices = [r for r in rooms if r.get('room_type') != 'dm'] or rooms
+                if len(choices) != 1:
+                    raise BotSeshError('one_room_required')
+                room_id = choices[0]['room_id']
             verified = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms', [])
-            exact = next((r for r in verified if r.get('room_id') == room_id and r.get('participant_id') == room['participant_id']), None)
-            if not exact or exact.get('gateway_profile') != profile:
+            if (not isinstance(verified, list) or len(verified) != len(identities)
+                    or any(not isinstance(r, dict) or not isinstance(r.get('room_id'), str)
+                           or r['room_id'] not in identities
+                           or identities[r['room_id']] != r.get('participant_id')
+                           or r.get('gateway_profile') != profile for r in verified)
+                    or len({r['room_id'] for r in verified}) != len(identities)):
                 raise BotSeshError('room_identity_changed_retry_connect')
-            preferred_name(exact.get('display_name', ''))
-            room = exact
             credential_id = uuid.uuid4().hex
-            binding = {'room_id': room_id, 'url': origin + '/b/' + room_id, 'origin': origin,
-                       'name': room['name'], 'display_name': room['display_name'],
-                       'participant_id': room['participant_id'], 'oauth_id': credential_id, 'profile': profile,
-                       'active': True, 'state': 'connected', 'transport': 'oauth'}
+            bindings = {}
+            for room in verified:
+                preferred_name(room.get('display_name', ''))
+                rid = room['room_id']
+                bindings[rid] = {'room_id': rid, 'url': origin + '/b/' + rid, 'origin': origin,
+                    'name': room['name'], 'display_name': room['display_name'],
+                    'participant_id': room['participant_id'], 'oauth_id': credential_id, 'profile': profile,
+                    'room_type': room.get('room_type', 'room'),
+                    **({'oauth_root': room_id} if rid != room_id else {}),
+                    'active': True, 'state': 'connected', 'transport': 'oauth'}
+            binding = bindings[room_id]
             with _lock(self.store):
-                # Recheck after the browser round trip and under the shared lock.
-                current = self.store.read()['rooms'].get(room_id)
-                if current and current.get('active') and (current.get('origin') != origin or current.get('participant_id') != room['participant_id']):
-                    raise BotSeshError('room_identity_changed_disconnect_first')
-                if room.get('password_required') is False:
-                    from .room_lifecycle import remember_access
-                    remember_access(self.store, room_id, binding['url'])
+                # Validate EVERY saved seat before writing any grant/binding;
+                # --room chooses the primary, not a filter on approved rooms.
+                current = self.store.read()['rooms']
+                replaced = set()
+                for rid, new in bindings.items():
+                    saved = current.get(rid)
+                    if saved and saved.get('active') and (saved.get('origin') != origin or saved.get('participant_id') != new['participant_id']):
+                        raise BotSeshError('room_identity_changed_disconnect_first')
+                    if saved and saved.get('oauth_id'):
+                        replaced.add(saved['oauth_id'])
+                for room in verified:
+                    if room.get('password_required') is False:
+                        from .room_lifecycle import remember_access
+                        remember_access(self.store, room['room_id'], bindings[room['room_id']]['url'])
                 _save({'id': credential_id, 'provider': POOL, 'auth_type': 'oauth',
                        'source': 'manual:loopback_pkce', 'label': 'BotSesh room', **fields,
-                       'extra': {'origin': origin, 'room_id': room_id, 'client_id': CLIENT_ID, 'scope': 'botsesh:rooms'}})
+                       'extra': {'origin': origin, 'room_id': room_id, 'room_ids': list(bindings),
+                                 'client_id': CLIENT_ID, 'scope': 'botsesh:rooms'}})
                 def replace(data):
-                    # Keep delivery journals/cursors for the SAME participant; a
-                    # grant rotation must not resend already handled messages.
-                    saved = data['rooms'].get(room_id, {})
-                    data['rooms'][room_id] = {**saved, **binding}
-                    data.get('forgotten_rooms', {}).pop(room_id, None)
-                    if saved.get('oauth_id') and saved['oauth_id'] != credential_id:
-                        for descendant in data['rooms'].values():
-                            if descendant.get('oauth_root') == room_id and descendant.get('oauth_id') == saved['oauth_id']:
-                                descendant.update(active=False, state='reconnect_required')
+                    # Keep delivery journals/cursors only for the same exact
+                    # participant; grant rotation must not replay handled input.
+                    for saved in data['rooms'].values():
+                        if saved.get('oauth_root') == room_id and saved.get('oauth_id') in replaced:
+                            saved.update(active=False, state='reconnect_required')
+                    for rid, new in bindings.items():
+                        saved = data['rooms'].get(rid, {})
+                        if saved.get('origin') != origin or saved.get('participant_id') != new['participant_id']:
+                            saved = {}
+                        saved.pop('oauth_root', None)
+                        data['rooms'][rid] = {**saved, **new}
+                        data.get('forgotten_rooms', {}).pop(rid, None)
                 self.store.update(replace)
-                if current and current.get('oauth_id'):
-                    _save(remove=current['oauth_id'])
+                live_ids = {r.get('oauth_id') for r in self.store.read()['rooms'].values() if r.get('active')}
+                for old_id in replaced - live_ids:
+                    _save(remove=old_id)
 
         except Exception:
             # Never leave an untracked grant after duplicate room / storage failure.
@@ -439,10 +471,13 @@ class OAuthClient:
             _save(remove=row['id'])
 
     def discover(self, binding):
-        """Only server-authorized exact DM descendants, never names/invitations."""
+        """Refresh this authenticated grant, without hiding its owner DM/rooms."""
         rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
         root = binding.get('oauth_root', binding['room_id'])
-        accepted = [room for room in rooms if room.get('room_id') == root or room.get('source_room_id') == root and room.get('room_type') == 'dm']
+        # list_rooms is already scoped by this exact credential. Account owner
+        # DMs can source themselves rather than a selected shared room; filtering
+        # by source_room_id would silently remove consented access on refresh.
+        accepted = rooms
         if not any(room.get('room_id') == root for room in accepted):
             raise BotSeshError('authorization_revoked', 401)
         for room in accepted:
