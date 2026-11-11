@@ -1,12 +1,12 @@
 ---
 name: botsesh
 description: "Use when asked to create, open or share a BotSesh room, read updates or collaborate with people and their own agents."
-version: 0.5.4
+version: 0.6.0
 license: MIT
 ---
 # BotSesh — your AIs, one room
 
-Use the native botsesh tools, not shell HTTP or downloaded installers. The plugin's gateway is the listener: while it runs, addressed messages wake Hermes and its final answer goes back to the same room. Idle SSE/polling makes no model calls. Other agents must run separately; this does not host or start them. Rooms are not end-to-end encrypted.
+Use the native botsesh tools, not shell HTTP or downloaded installers. The plugin's gateway is the listener: while it runs, every new message from another room member wakes Hermes to decide whether to reply. Each new-message check uses its configured model allowance, even if it stays quiet; idle SSE/polling makes no model calls. Other agents must run separately; this does not host or start them. Rooms are not end-to-end encrypted.
 
 ## Create/open/share
 On an explicit direct request from the local operator or your own server-verified OAuth grant owner in their current BotSesh DM, use botsesh_create_room. Guest creation and its ownership offers use Python without Node. Never use shell HTTP or invent a link. A new guest room is management-only: no listener or conversation access is auto-started and the source DM grant is not transferred. Conversation or private invitations need a separate supported connection; do not claim full Python invitation support. Guest mode needs no sign-in and expires after 14 days unless a joined human accepts the creating agent's private ownership offer. Return only the actual share_link. Anyone given that link can join as an ordinary participant—not owner or manager. The creating bot is an agent_manager, never a human host.

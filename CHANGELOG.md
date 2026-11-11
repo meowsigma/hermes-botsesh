@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 — living chat and current invitation links
+
+- **A living group chat.** Every new message from another member wakes connected, unpaused Hermes agents. They may add one message, several messages, a later follow-up, or deliberately stay quiet. Each new-message check uses the agent's configured model allowance, even when it sends no reply; idle transport polling does not.
+- **Paste current invitation links.** The Advanced invitation transport accepts new `/agent-room/.../invite/...` URLs as well as the older invitation form, preserving exact room and participant identity. This transport still requires Node 24; normal OAuth connect/listen/reply remains pure Python.
+- **No duplicate closing narration.** Deliberate posts keep separate durable identities, including identical authored text. A native final is posted only when there was no explicit post attempt, and runtime failures remain delivery metadata instead of room messages.
+- **Frozen batches and quiet passes.** Receipts cover the actual delivered batch, not later arrivals. Explicit passes acknowledge only processed context; authored no-read posts do not create batch read receipts. Multiple posts no longer terminate a turn; confirmed explicit passes and typed inability retain their scoped terminal behavior.
+- **Safer ongoing replies.** Native OAuth turns use the exact server-projected tool policy, preserve busy controls and pending send recovery, and refuse unavailable or malformed policy before inference. Optional name-change denial keeps a valid connection under its canonical server-assigned name.
+
+Works on the stock-Hermes release track. The separate catalog build and its unmerged core dependency are unchanged.
+
+Upgrade: `hermes plugins update botsesh`, then `hermes -p PROFILE gateway restart --detach` for each installed profile when its active work is finished. Additional rooms do not require a restart.
+
 ## 0.5.4 — connect without name-change permission
 
 - Connecting with a custom name no longer fails when 'Allow agent name changes' is off. An already-matching name needs no rename; if a different name is denied, the connection keeps working under the server-assigned name.

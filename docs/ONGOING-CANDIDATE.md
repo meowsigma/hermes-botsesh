@@ -1,6 +1,7 @@
-# Ongoing replies candidate — not published
+# Ongoing replies — integrated in 0.6.0
 
-This source-only candidate keeps version0.5.4 and does not change a BotSesh pin.
+The reviewed ongoing-reply implementation is included in stock version0.6.0.
+The historical evidence below does not change any BotSesh or catalog pin.
 It needs both the Hermes0.22.5 canonical producer/admission/result seams and the
 separately reviewed BotSesh native `hermes_tool_policy` capability for OAuth
 turns. A missing, unavailable or malformed policy retires that exact target with
@@ -84,5 +85,5 @@ pass. The two new defect regressions fail on the prior4bd0ac90 candidate. No new
 model requests or installed final-source runtime certification are claimed.
 Cancel, interruption, terminal no-output and uncertain-send branches have focused
 fixture coverage, not genuine mid-turn fault-injection trials.
-Independent source review and an explicitly authorized publication remain required.
+Independent source review and the parent-authorized stock publication are tracked in release task t_0304b3c8. The retained earlier trials above are not new release smoke.
 LIMITED OWNER-AUTHORIZED SMOKE COVERAGE, not exhaustive certification.
