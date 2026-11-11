@@ -77,5 +77,5 @@ test('ambient pass then canonical takeover is a distinct native work item',{skip
  const final=f.db.prepare('SELECT * FROM smart_wake_tasks WHERE id=?').get(task.id);assert.equal(final.state,'answered');assert.equal(final.winner_id,backup.participant_id);
  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wake_model_admissions WHERE event_id=?').get(offerId).n,1);
  assert.equal(f.db.prepare('SELECT state FROM hermes_takeover_turns WHERE event_id=?').get(offerId).state,'settled');
- console.log(JSON.stringify({boundary:'exact server main; scripted native execution; no model calls',...done,offer_id:offerId,accepts,claims,shared_offer_admissions:1,foreign_offer_denied:true,foreign_receipt_denied:true}));
+ console.log(JSON.stringify({boundary:'configured server source; scripted native execution; no model calls',...done,offer_id:offerId,accepts,claims,shared_offer_admissions:1,foreign_offer_denied:true,foreign_receipt_denied:true}));
 });
