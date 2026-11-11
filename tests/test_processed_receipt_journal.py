@@ -138,6 +138,17 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(error.exception.definitive)
         self.assertEqual(len(self.messages), 1)
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+        before = copy.deepcopy(self.client.store.room('a')['oauth_posts'])
+        # Even a structured local refusal must not settle this real uncertain
+        # ordinary send's UUID (the other transport journal owns it).
+        with self.assertRaises(BotSeshError) as invalid:
+            self.client.enrolled('a', 'finish', output={'reply': payload['text']},
+                receipt_id=payload['receipt_id'], client_id=payload['client_id'], processed=False)
+        self.assertFalse(invalid.exception.definitive)
+        with self.assertRaises(BotSeshError) as invalid:
+            self.client.enrolled('a', 'post', **{**payload, 'draft_ready': self.draft()})
+        self.assertFalse(invalid.exception.definitive)
+        self.assertEqual(self.client.store.room('a')['oauth_posts'], before)
         changed = {**payload, 'text': payload['text'] + 'changed'}
         with self.assertRaises(BotSeshError) as mismatch:
             self.post(changed)
@@ -150,6 +161,165 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sends[0]['client_id'], payload['client_id'])
         self.assertEqual(len(self.messages), 1)
         self.assertTrue(self.client.store.room('a')['processing_receipts']['3']['read_attested'])
+
+    def draft(self):
+        return {'title': 'Deliverable', 'recipientId': str(uuid.uuid4())}
+
+    async def structured_refusal(self, *, processed, receipt):
+        adapter, _ = await self.begin()
+        payload = self.payload(draft_ready=self.draft())
+        if not processed:
+            payload.pop('processed')
+        if receipt:
+            payload['receipt_id'] = adapter._current['a']['receipt_id']
+        with self.assertRaises(BotSeshError) as error:
+            self.post(payload)
+        self.assertEqual(error.exception.code, 'processed_receipt_required')
+        self.assertTrue(error.exception.definitive)
+        self.assertIsNone(error.exception.pending)
+        saved = self.calls()[payload['client_id']]
+        self.assertEqual(saved['payload'], payload)
+        self.assertEqual(saved['rejected']['code'], 'processed_receipt_required')
+        with self.assertRaises(BotSeshError) as mismatch:
+            self.post({**payload, 'processed': True,
+                       'receipt_id': adapter._current['a']['receipt_id']})
+        self.assertEqual(mismatch.exception.code, 'pending_send_mismatch')
+        # Simulate an old audit persisted without definitive metadata; normal
+        # native exact-payload reconciliation must settle it, not resend it.
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['3']
+            ['explicit_post_calls'][payload['client_id']].pop('rejected'))
+        before_b = copy.deepcopy(self.client.store.room('b'))
+        self.model_ended(adapter)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        row = self.client.store.room('a')['processing_receipts']['3']
+        self.assertEqual(self.calls()[payload['client_id']]['payload'], payload)
+        self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], 'processed_receipt_required')
+        self.assertNotIn('result', self.calls()[payload['client_id']])
+        self.assertEqual(self.messages, {})
+        self.assertEqual(self.client.store.room('a').get('oauth_turns', {}), {})
+        self.assertEqual(self.client.store.room('a').get('oauth_posts', {}), {})
+        self.assertFalse(any(name in ('send_message', 'hermes_authored', 'finish_room_turn', 'ack')
+                             for _, name, _ in self.requests))
+        self.assertNotIn('read_attested', row)
+        self.assertNotIn('processed_cursor', self.client.store.room('a'))
+        self.assertEqual(row['state'], 'completed_unread')
+        self.assertFalse(any(name == 'hermes_delivery' and args['state'] == 'completed'
+                             for _, name, args in self.requests))
+        self.assertEqual(self.client.store.room('b'), before_b)
+        await adapter._check_room('a')
+        self.assertEqual(adapter._current['a']['target'], 5)
+        self.assertEqual(adapter._admit_event.await_count, 2)
+
+    async def test_structured_missing_receipt_settles_new_and_persisted_attempt(self):
+        await self.structured_refusal(processed=True, receipt=False)
+
+    async def test_structured_missing_processed_settles_new_and_persisted_attempt(self):
+        await self.structured_refusal(processed=False, receipt=True)
+
+    async def test_other_structured_local_refusals_do_not_poison_native_audit(self):
+        adapter, _ = await self.begin()
+        receipt = adapter._current['a']['receipt_id']
+        routine = {'routineId': str(uuid.uuid4()), 'revision': 1, 'stepIndex': 0,
+                   'scheduledFor': 0, 'status': 'completed'}
+        for options, code in (
+                ({'draft_ready': {'title': 'Missing recipient'}}, 'invalid_runtime_answer'),
+                ({'routine_report': routine}, 'oauth_routine_report_not_supported'),
+                ({'draft_ready': self.draft(), 'reply_to': 3}, 'oauth_structured_reply_target_not_supported')):
+            with self.subTest(code=code):
+                payload = self.payload(receipt_id=receipt, **options)
+                with self.assertRaises(BotSeshError) as error:
+                    self.post(payload)
+                self.assertEqual(error.exception.code, code)
+                self.assertTrue(error.exception.definitive)
+                self.assertIsNone(error.exception.pending)
+                self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], code)
+        # file_refs is only available on finish(), not the advertised post tool.
+        with self.assertRaises(BotSeshError) as error:
+            self.client.enrolled('a', 'finish', output={'reply': 'Draft', 'file_refs': ['F1']},
+                receipt_id=receipt, client_id=str(uuid.uuid4()), processed=True)
+        self.assertEqual(error.exception.code, 'file_bytes_not_supplied')
+        self.assertTrue(error.exception.definitive)
+        self.model_ended(adapter)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertEqual(self.messages, {})
+        self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+        await adapter._check_room('a')
+        self.assertEqual(adapter._current['a']['target'], 5)
+
+    async def test_structured_lost_response_keeps_journal_and_retries_same_identity(self):
+        adapter, _ = await self.begin()
+        payload = self.payload(draft_ready=self.draft(), receipt_id=adapter._current['a']['receipt_id'])
+        accepted, attempts = {}, []
+        original = OAuthClient.rpc
+        def finish(api, binding, name, args=None, **kwargs):
+            if name != 'finish_room_turn':
+                return original(api, binding, name, args, **kwargs)
+            self.requests.append((binding['room_id'], name, copy.deepcopy(args)))
+            attempts.append(copy.deepcopy(args))
+            key = (binding['room_id'], args['client_id'])
+            result = accepted.setdefault(key, {'reply_number': 101, 'read_checkpoint': 3})
+            if len(attempts) == 1:
+                raise BotSeshError('connection_failed_retry_same_intent')
+            return result
+        with patch.object(OAuthClient, 'rpc', finish):
+            with self.assertRaises(BotSeshError) as error:
+                self.post(payload)
+            self.assertFalse(error.exception.definitive)
+            self.assertEqual(error.exception.pending['client_id'], payload['client_id'])
+            before = copy.deepcopy(self.client.store.room('a')['oauth_turns'])
+            self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+            # A caller's different/invalid retry cannot retire an existing UUID.
+            # These local guards must remain uncertain if EITHER journal owns it.
+            for output, processed, receipt in (
+                    ({'reply': payload['text'], 'draft_ready': payload['draft_ready']}, False, payload['receipt_id']),
+                    ({'reply': 'Bad', 'draft_ready': {}}, True, payload['receipt_id']),
+                    ({'reply': 'Bad', 'file_refs': ['F1']}, True, payload['receipt_id']),
+                    ({'reply': 'Bad'}, True, None)):
+                with self.subTest(output=output):
+                    with self.assertRaises(BotSeshError) as invalid:
+                        self.client.enrolled('a', 'finish', output=output, processed=processed,
+                            receipt_id=receipt, client_id=payload['client_id'])
+                    self.assertFalse(invalid.exception.definitive)
+            with self.assertRaises(BotSeshError) as invalid:
+                self.client.enrolled('a', 'post', **{**payload, 'reply_to': 3})
+            self.assertFalse(invalid.exception.definitive)
+            self.assertEqual(self.client.store.room('a')['oauth_turns'], before)
+            with self.assertRaises(BotSeshError) as mismatch:
+                self.post({**payload, 'text': 'Changed'})
+            self.assertEqual(mismatch.exception.code, 'pending_send_mismatch')
+            self.assertNotIn('rejected', self.calls()[payload['client_id']])
+            self.model_ended(adapter)
+            await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(attempts, [attempts[0], attempts[0]])
+        self.assertEqual(attempts[0]['client_id'], payload['client_id'])
+        self.assertEqual(attempts[0]['output']['reply'].encode(), payload['text'].encode())
+        self.assertTrue(self.client.store.room('a')['oauth_turns'][payload['client_id']]['complete'])
+        self.assertTrue(self.client.store.room('a')['processing_receipts']['3']['read_attested'])
+        self.assertNotIn('a', adapter._current)
+
+    async def test_structured_unknown_receipt_stays_pending_without_read_or_send(self):
+        adapter, _ = await self.begin()
+        other, _ = await self.begin('b')
+        before_b = copy.deepcopy(self.client.store.room('b'))
+        for receipt in ('unknown-receipt', other._current['b']['receipt_id']):
+            with self.subTest(receipt=receipt):
+                payload = self.payload(draft_ready=self.draft(), receipt_id=receipt)
+                with self.assertRaises(BotSeshError) as error:
+                    self.post(payload)
+                self.assertEqual(error.exception.code, 'receipt_expired')
+                self.assertFalse(error.exception.definitive)
+                self.assertEqual(self.calls()[payload['client_id']], {'payload': payload})
+        self.model_ended(adapter)
+        with self.assertRaises(BotSeshError) as error:
+            await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertEqual(error.exception.code, 'receipt_expired')
+        self.assertIn('a', adapter._current)
+        self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+        self.assertEqual(self.client.store.room('a').get('oauth_turns', {}), {})
+        self.assertFalse(any(name in ('send_message', 'hermes_authored', 'finish_room_turn', 'ack')
+                             for _, name, _ in self.requests))
+        self.assertEqual(self.client.store.room('b'), before_b)
 
     async def test_wrong_receipt_and_foreign_room_remain_fail_closed(self):
         adapter, event = await self.begin()

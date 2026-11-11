@@ -568,17 +568,23 @@ class OAuthClient:
         executor or reply_to on finish_room_turn; reject those before any effect.
         """
         require_client_id(client_id)
-        intent = parse_room_turn_output(output)
-        if 'routine_report' in intent:
-            raise BotSeshError('oauth_routine_report_not_supported')
-        if intent.get('file_refs'):
-            raise BotSeshError('file_bytes_not_supplied')
-        if 'failure' not in intent and processed is not True:
-            raise BotSeshError('processed_receipt_required')
         room_id = binding['room_id']
-        exact = {'output': intent, 'receipt_id': receipt_id, 'client_id': client_id, 'processed': processed}
         room = self.store.room(room_id)
         saved = room.get('oauth_turns', {}).get(client_id)
+        # Only a UUID absent from BOTH transport journals is provably unsent.
+        # A local refusal must not settle an earlier uncertain/accepted send.
+        unsent = all(client_id not in room.get(section, {}) for section in ('oauth_posts', 'oauth_turns'))
+        try:
+            intent = parse_room_turn_output(output)
+        except BotSeshError as error:
+            raise BotSeshError('invalid_runtime_answer', rejected=unsent) from error
+        if 'routine_report' in intent:
+            raise BotSeshError('oauth_routine_report_not_supported', rejected=unsent)
+        if intent.get('file_refs'):
+            raise BotSeshError('file_bytes_not_supplied', rejected=unsent)
+        if 'failure' not in intent and processed is not True:
+            raise BotSeshError('processed_receipt_required', rejected=unsent)
+        exact = {'output': intent, 'receipt_id': receipt_id, 'client_id': client_id, 'processed': processed}
         if saved and saved['exact'] != exact:
             raise BotSeshError('pending_send_mismatch')
         if saved and saved.get('failed'):
@@ -586,6 +592,8 @@ class OAuthClient:
         if saved and saved.get('complete'):
             self.call(binding, 'verify')
             return saved['result']
+        if not saved and not receipt_id:
+            raise BotSeshError('processed_receipt_required', rejected=unsent)
         if not saved and receipt_id not in room.get('oauth_receipts', {}):
             raise BotSeshError('receipt_expired')
         if not saved:
@@ -761,12 +769,17 @@ class OAuthClient:
             receipt_id, client_id = args.get('receipt_id'), args.get('client_id')
             require_client_id(client_id)
             text = args.get('text')
-            intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}})
+            room = self.store.room(room_id)
+            unsent = all(client_id not in room.get(section, {}) for section in ('oauth_posts', 'oauth_turns'))
+            try:
+                intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}})
+            except BotSeshError as error:
+                raise BotSeshError('invalid_runtime_answer', rejected=unsent) from error
             if 'draft_ready' in args or 'routine_report' in args:
                 # Canonical MCP finish owns resumable structured effects; never
                 # spawn the invitation SDK or silently drop a requested target.
                 if args.get('reply_to') is not None:
-                    raise BotSeshError('oauth_structured_reply_target_not_supported')
+                    raise BotSeshError('oauth_structured_reply_target_not_supported', rejected=unsent)
                 result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'))
                 return {'client_id': client_id, 'number': result['reply_number'], 'read_effect': result['read_effect']}
             # Deliberate authored content has no implicit-last-batch read effect.
@@ -799,10 +812,12 @@ class OAuthClient:
                 return completed
             if not receipt_id:
                 # Local preflight, before _journal or any send RPC: this exact
-                # processed payload cannot have posted. Settle the native
-                # explicit-attempt audit (including old unresolved entries),
-                # not an uncertain transport send. Keep its bytes/UUID intact.
-                raise BotSeshError('processed_receipt_required', rejected=True)
+                # processed payload cannot have posted under this contract.
+                # If the UUID already has a transport row, retain uncertainty.
+                # Otherwise settle the native explicit-attempt audit (including
+                # old unresolved entries), not an uncertain transport send.
+                # Keep its bytes/UUID intact.
+                raise BotSeshError('processed_receipt_required', rejected=unsent)
             exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to') if k in args}
             current = self.store.room(room_id)
             saved = current.get('oauth_posts', {}).get(client_id)
