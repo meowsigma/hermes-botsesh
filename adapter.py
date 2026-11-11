@@ -824,7 +824,6 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     # no longer needs to retain a second copy of the input payload.
                     saved.pop('frozen', None)
                     saved.pop('text', None)
-                room.setdefault('health', {}).update(last_reply=time.time())
                 room['processed_cursor'] = max(room.get('processed_cursor', -1), target)
                 if room.get('pending_final', {}).get('target') == target:
                     room.pop('pending_final', None)

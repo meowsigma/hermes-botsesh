@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import uuid
 from urllib.parse import urlsplit
 from .storage import Store
@@ -128,6 +129,13 @@ class Client:
                 result = self.call(op, room=binding['url'], **({'dev_origin': binding['origin']} if binding.get('origin', '').startswith('http:') else {}), **args)
             def progress(data):
                 room = data['rooms'][room_id]
+                from .room_turn import is_number
+                if op in ('post', 'finish', 'retry') and is_number(result.get('number'), 1):
+                    # All transports confirm exact authored bytes/seat before
+                    # returning a message number. Explicit tools, gateway chunks
+                    # and recovered sends share this boundary; quiet/failure
+                    # settlement and unconfirmed attempts are not sent replies.
+                    room.setdefault('health', {})['last_reply'] = time.time()
                 if op in ('post', 'finish') and args.get('processed') is True and result.get('read_effect') == 'processed_frozen_receipt' and 'number' in result:
                     # Tool and gateway sends share a receipt, not necessarily a UUID.
                     # Remember only a confirmed reply to this exact addressed turn.

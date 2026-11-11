@@ -11,12 +11,14 @@ from pathlib import Path
 import selectors
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from test_plugin import Client, Store, BotSeshError, StorageError, tools
+from test_plugin import Client, Store, BotSeshError, StorageError, tools, ROOT
 
 
 class PythonInvitationUnits(unittest.TestCase):
@@ -241,6 +243,91 @@ class RealInvitationTests(unittest.IsolatedAsyncioTestCase):
                         registered_native_gateway=False,provider_requests=0)
         finally:
             adapter._running=False;loop.cancel();await asyncio.gather(loop,return_exceptions=True)
+
+    async def test_invitation_status_explicit_post_revoked_and_deleted(self):
+        from hermes_botsesh_test import ops_status
+        from hermes_botsesh_test.adapter import BotSeshAdapter
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        room = self.fixture['room_id']
+        joined = self.client.join(self.fixture['link'], dev_origin=self.origin)
+        question = self.command(op='message', room_id=room, text='An exact status fixture question')['message']
+        frozen = self.client.enrolled(room, 'read')
+        sent_after = time.time()
+        ctx = Mock(); ctx.session_surface.return_value = 'cli'
+        with patch.object(tools, 'Client', return_value=self.client):
+            sent = tools.post({'room_id': room, 'text': 'Confirmed explicit status reply',
+                               'client_id': str(uuid.uuid4()), 'receipt_id': frozen['receipt_id'],
+                               'reply_to': question['number'], 'processed': True}, ctx)
+        self.assertEqual(sent['read_effect'], 'processed_frozen_receipt')
+        platform_registry.register(PlatformEntry(name='botsesh', label='BotSesh', adapter_factory=BotSeshAdapter, check_fn=lambda: True))
+        adapter = BotSeshAdapter(PlatformConfig())
+        adapter.client = self.client
+        adapter._running = True
+        loop = asyncio.create_task(adapter._room_loop(room))
+        try:
+            for _ in range(200):
+                if self.client.store.room(room).get('health', {}).get('state') == 'connected':
+                    break
+                await asyncio.sleep(.01)
+            self.assertEqual(self.client.store.room(room)['health']['state'], 'connected')
+        finally:
+            adapter._running = False
+            loop.cancel()
+            await asyncio.gather(loop, return_exceptions=True)
+        # Status combines real adapter polling health with a separate channel
+        # snapshot; this fixture does not claim a registered native gateway.
+        before = self.command(op='inspect', room_id=room, participant_id=joined['participant_id'])
+        self.command(op='trace')
+        runtime = {'running': True, 'channel': 'up', 'profile': 'isolated-status-fixture'}
+        report = ops_status.status_report(self.client, {}, runtime=runtime)
+        requests = self.command(op='trace')
+        row = report['rooms'][0]
+        self.assertEqual((row['access'], row['gateway'], row['backlog'], row['forget_hint']),
+                         ('alive', 'connected', 0, None))
+        self.assertGreaterEqual(row['last_sent_event'], sent_after)
+        self.assertTrue(requests)
+        self.assertTrue(all(r['method'] == 'GET' and r['path'].split('?')[0] in (
+            '/api/rooms/' + room + '/agent-access', '/api/rooms/' + room + '/updates') for r in requests), requests)
+        self.assertEqual(self.command(op='inspect', room_id=room, participant_id=joined['participant_id']), before)
+        # Exercise the actual no-Node CLI too. There is no native gateway
+        # process here, so access is alive while execution correctly stays down.
+        home = Path(self.tmp.name)
+        (home / 'plugins').mkdir()
+        (home / 'plugins/botsesh').symlink_to(ROOT, target_is_directory=True)
+        (home / 'config.yaml').write_text('plugins:\n  enabled: [botsesh]\nplatforms:\n  botsesh:\n    enabled: false\n')
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('HERMES_', 'BOTSESH_'))}
+        env.update(HERMES_HOME=str(home), HOME=str(home))
+        actual = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'botsesh', 'status', '--json'],
+                                cwd=home, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        cli_row = json.loads(actual.stdout)['rooms'][0]
+        self.assertEqual((cli_row['access'], cli_row['gateway'], cli_row['forget_hint']), ('alive', 'down', None))
+        self.assertEqual(cli_row['last_sent_event'], row['last_sent_event'])
+        printed = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'botsesh', 'status'],
+                                 cwd=home, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(printed.returncode, 0, printed.stderr)
+        self.assertIn('access=alive', printed.stdout)
+        self.assertNotIn('last confirmed sent reply=unknown', printed.stdout)
+        self.assertNotIn('forget', printed.stdout)
+        self.command(op='revoke', room_id=room, participant_id=joined['participant_id'])
+        revoked = ops_status.status_report(self.client, {}, runtime=runtime)['rooms'][0]
+        self.assertFalse(revoked['alive'])
+        self.assertEqual(revoked['gateway'], 'down')
+        self.assertIn(revoked['access'], ('membership_revoked', 'access_revoked', 'authorization_revoked'))
+        self.assertEqual(revoked['last_sent_event'], row['last_sent_event'])
+        deleted_fixture = self.command(op='create', name='Deleted status fixture')
+        deleted_room = deleted_fixture['room_id']
+        self.client.join(deleted_fixture['link'], dev_origin=self.origin)
+        self.command(op='delete', room_id=deleted_room)
+        deleted = next(r for r in ops_status.status_report(self.client, {}, runtime=runtime)['rooms'] if r['room_id'] == deleted_room)
+        self.assertEqual((deleted['access'], deleted['alive'], deleted['gateway']), ('deleted', False, 'down'))
+        self.record('invitation_status_explicit_post_revoked_deleted', access=row['access'], gateway=row['gateway'],
+                    last_sent_confirmed=True, last_sent_event=row['last_sent_event'], backlog=row['backlog'], healthy_forget_hint=row['forget_hint'],
+                    read_only_requests=requests, read_ledger_and_messages_unchanged=True,
+                    revoked_access=revoked['access'], deleted_access=deleted['access'], provider_requests=0,
+                    actual_no_node_cli=True, actual_cli_gateway=cli_row['gateway'], actual_cli_stdout=printed.stdout,
+                    runtime_evidence='explicit fixture snapshot; not a live native gateway')
 
     async def test_legacy_retry_no_read_and_revoked_foreign_denial(self):
         from hermes_botsesh_test import invitation

@@ -10,7 +10,8 @@ import {pathToFileURL} from 'node:url';
 const {createApp}=await import(pathToFileURL(process.argv[2]));
 const dir=mkdtempSync(join(tmpdir(),'python-invitation-'));
 let board;
-const server=createServer((req,res)=>board.app(req,res));
+const requests=[];
+const server=createServer((req,res)=>{requests.push({method:req.method,path:req.url});board.app(req,res);});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const origin='http://127.0.0.1:'+server.address().port;
 board=createApp({dataDir:dir,origin,secret:randomBytes(64).toString('base64url'),observability:{log(){}}});
@@ -46,6 +47,11 @@ try{
     checkpoint:board.db.prepare('SELECT read_checkpoint FROM participant_checks WHERE id=?').get(pid)?.read_checkpoint ?? 0,
     attestations:board.db.prepare('SELECT count(*) n FROM agent_read_attestations WHERE participant_id=?').get(pid).n,
     listeners:board.db.prepare('SELECT count(*) n FROM agent_connection_heartbeats WHERE participant_id=? AND listening_until>0').get(pid).n};
+  }else if(req.op==='trace'){
+   result=requests.splice(0);
+  }else if(req.op==='delete'){
+   const room=board.db.prepare('SELECT name FROM rooms WHERE id=?').get(req.room_id);
+   result=await api('POST','/api/rooms/'+req.room_id+'/delete',{confirmName:room.name});
   }else if(req.op==='revoke'){
    const member=board.db.prepare('SELECT id FROM agent_memberships WHERE room_id=? AND participant_id=?').get(req.room_id,req.participant_id);
    result=await api('POST','/api/rooms/'+req.room_id+'/agent-memberships/'+member.id+'/revoke',{});

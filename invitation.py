@@ -257,7 +257,7 @@ class InvitationClient(OAuthClient):
             # Broadcast is only candidate pickup. The existing native stable-ID
             # sender allowlist, toolsets and operator approvals still authorize
             # admission; a successful invitation never enables this channel.
-            return {'pending': None, 'hasMore': False,
+            return {'pending': None, 'hasMore': False, 'backlog': sum(not m.get('isOwn') for m in rows),
                     'inputs': [m['number'] for m in rows if not m.get('isOwn')],
                     'mentions': [m['number'] for m in rows if not m.get('isOwn') and (m.get('isMentionToMe') or m.get('isDirectMentionToMe'))],
                     'replies': [m['number'] for m in rows if not m.get('isOwn') and m.get('isReplyToMe')]}

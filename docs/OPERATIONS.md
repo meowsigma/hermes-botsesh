@@ -32,6 +32,8 @@ Status uses the public profile-aware liveness resolver and exact owning runtime 
 
 Per-room server access and polling are separate checks, without message read acknowledgments. Deleted/inaccessible or revoked rooms remain visible with local forget hints. A home room must be both alive and allowed; replacement is explicit. Management-only guest rooms are not listeners. A healthy channel proves transport readiness, not model capacity or that an on-disk update is loaded in a running adapter.
 
+Python invitation seats use `GET /api/rooms/ROOM_ID/agent-access` with the exact saved invitation membership and participant credential, not OAuth `list_rooms` or the optional Node bridge. Backlog checks use read-only updates and do not acknowledge messages. `access=alive` still requires separate current gateway/channel and polling evidence before execution is shown as connected. The last confirmed sent reply includes explicit tool posts, ordinary native finals and confirmed retries; failed/unconfirmed sends, checks and quiet passes do not advance it.
+
 ## Normal Hermes lifecycle
 
 If first connect finds a gateway already running without this channel, finish active work and use `hermes -p PROFILE gateway restart --detach`, then `hermes -p PROFILE botsesh status`. A stopped gateway starts normally through connect. After plugin-code updates, use that same core restart to load the new adapter. An active adapter discovers later room connections without restarting.

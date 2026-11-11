@@ -77,9 +77,17 @@ def access_state(client, room_id, binding):
             return 'membership_verified', False
         except BotSeshError as error:
             return error.code, False
-    if binding.get('transport') != 'oauth':
+    if binding.get('transport') not in ('oauth', 'invitation'):
         return 'advanced_transport_not_probed', False
     try:
+        if binding.get('transport') == 'invitation':
+            # Exact runner seat, GET only: no OAuth inventory, read ack, grant
+            # refresh, enrollment or SDK fallback. A live seat is not a live runner.
+            from .invitation import InvitationClient
+            if binding.get('room_id') != room_id:
+                return 'identity_mismatch', False
+            InvitationClient(client.store).verify(binding)
+            return 'alive', True
         # list_rooms is a membership/access check; never read/ack room content.
         from .oauth import OAuthClient
         rows = OAuthClient(client.store).rpc(binding, 'list_rooms').get('rooms')
