@@ -136,7 +136,9 @@ class NativeTurnMixin:
             self._current.pop(room_id)
         # Only terminal native settlement retires frozen policy context.
         def retire(data):
-            row = data['rooms'][room_id]['processing_receipts'][str(current['target'])]
+            # Older inline/Advanced delivery journals may predate receipts.
+            # Retirement must not create an attestation or crash their replay.
+            row = data['rooms'].get(room_id, {}).get('processing_receipts', {}).get(str(current['target']), {})
             row.pop('frozen', None)
             row.pop('text', None)
         self.client.store.update(retire)

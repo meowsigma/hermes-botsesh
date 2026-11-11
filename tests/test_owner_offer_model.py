@@ -1,4 +1,5 @@
 """Exact two-turn native admission replay, transport doubles, zero inference."""
+# Owner 2026-11-10 living chat: pending inputs are a batch, not one trailing quote.
 import copy
 import json
 import time
@@ -55,7 +56,8 @@ class OwnerOfferTests(SolidTests):
         await self.adapter._check_room('a')
         event = self.adapter._admit_event.call_args.args[0]
         self.assertIn(LINE, event.text)
-        self.assertTrue(event.text.endswith('"Make a room for my plant swap and send me the link"'))
+        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1])
+        self.assertEqual([(m['number'], m['text']) for m in inputs], [(3, 'Make a room for my plant swap and send me the link')])
         result = self.call('botsesh_create_room', {'name': 'Plant Swap'})
         self.assertTrue(result['ok'])
         self.assertEqual(result['result']['room_id'], ROOM)
@@ -68,7 +70,8 @@ class OwnerOfferTests(SolidTests):
         self.assertIn(LINE, event.text)
         self.assertIn('Most recent room created from this owner DM:', event.text)
         self.assertIn(ROOM, event.text)
-        self.assertTrue(event.text.endswith('"Make me the owner"'))
+        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1])
+        self.assertEqual([(m['number'], m['text']) for m in inputs], [(5, 'Make me the owner')])
         listed = self.call('botsesh_rooms', {}, '5')['result']['rooms']
         created = next(r for r in listed if r['room_id'] == ROOM)
         self.assertIs(created['managed_by_this_agent'], True)

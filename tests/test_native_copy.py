@@ -1,4 +1,5 @@
 """Native UI copy only. No model, daemon, network or approval substitution."""
+# Owner 2026-11-10 living chat: runtime notices remain status-only, never room posts.
 from unittest.mock import patch
 from test_solid import SolidTests as _SolidTests
 from gateway.platforms.event import ProcessingOutcome
@@ -23,15 +24,13 @@ class NativeCopyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(current['model_processed'])
         self.assertNotIn('provider_hint', current)
         await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
-        self.assertEqual(len(self.posts), 1)
-        payload = next(iter(self.posts.values()))
-        self.assertEqual(payload['reply_to'], 3)
-        self.assertNotIn('gateway.', payload['text'])
-        self.assertNotIn('processed', payload)
+        self.assertEqual(self.posts, {})
         failed = [a for _, op, a in self.calls if op == 'delivery' and a.get('state') == 'failed']
-        self.assertEqual(failed[-1]['notice_client_id'], payload['client_id'])
+        self.assertEqual(failed, [{'target':3, 'state':'failed', 'failure_code':'cancelled'}])
+        self.assertNotIn('handled', self.client.store.room('a'))
         await self.make_adapter()._flush_failures('a')
-        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(self.posts, {})
+        self.assertEqual(len([a for _, op, a in self.calls if op == 'delivery' and a.get('state') == 'failed']), 1)
 
     async def test_localized_shutdown_is_suppressed_but_ordinary_authored_text_is_exact(self):
         await self.adapter._check_room('a')

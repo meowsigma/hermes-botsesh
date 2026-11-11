@@ -2,6 +2,7 @@
 
 Only the MCP wire is doubled. No production, provider or model calls.
 """
+# Owner 2026-11-10 living chat: preserve explicit sends; failures are status-only.
 import hashlib
 import tempfile
 import unittest
@@ -52,7 +53,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                             'number': n, 'text': 'Question ' + str(n),
                             'senderParticipantId': 'owner',
                             'authorParticipant': {'id': 'owner', 'verified': True}}]}
-            if name in ('send_message', 'hermes_notice'):
+            if name in ('send_message', 'hermes_notice', 'hermes_authored'):
                 if args.get('failure_code'):
                     self.assertIn(args['failure_code'], ('provider_budget', 'provider_error',
                         'interrupted', 'cancelled', 'empty_response', 'admission_denied',
@@ -70,6 +71,9 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                     raise BotSeshError('connection_failed_retry_same_intent')
                 return {'message': value}
             if name == 'hermes_delivery':
+                if args.get('state') == 'failed' and self.lose_notice:
+                    self.lose_notice = False
+                    raise BotSeshError('connection_failed_retry_same_intent')
                 return {'read_effect': 'none'}
             self.fail('Unexpected MCP operation: ' + name)
         self.patch_rpc = patch.object(OAuthClient, 'rpc', rpc)
@@ -134,8 +138,9 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                 row = self.client.store.room('a')['processing_receipts']['3']
                 self.assertEqual(row['state'], 'failed')
                 self.assertEqual(row['tool_policy_error']['code'], bad.code if isinstance(bad, BotSeshError) else 'native_tool_policy_scope_mismatch')
-                self.assertEqual(len(self.messages), 1)
-                self.assertEqual(next(iter(self.messages.values()))['text'], "Hermes couldn't do it.")
+                self.assertEqual(self.messages, {})
+                failures = [args for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == 'failed']
+                self.assertEqual(failures, [{'room_id': 'a', 'number': 3, 'state': 'failed', 'failure_code': 'runtime_error'}])
                 self.assertNotIn('processed_cursor', self.client.store.room('a'))
                 self.assertFalse(any(name in ('send_message', 'ack', 'finish_room_turn') for _, name, _ in self.requests))
 
@@ -178,8 +183,8 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row['failure_code'], 'runtime_error')
             self.assertFalse(row['failure_pending'])
             self.assertNotIn('processed_cursor', self.client.store.room('a'))
-            self.assertEqual(len(self.messages), 1)
-            self.assertNotIn('Do not turn rejection', next(iter(self.messages.values()))['text'])
+            self.assertEqual(self.messages, {})
+            self.assertTrue(any(name == 'hermes_delivery' and args.get('state') == 'failed' for _, name, args in self.requests))
             await adapter._check_room('a')
             self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
 
@@ -199,7 +204,10 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.success, result.error)
             await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
             self.assertEqual(len(denied), 1)
-            self.assertEqual(len(self.messages), 1)
+            self.assertEqual(self.messages, {})
+            failures = [args for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == 'failed']
+            self.assertTrue(failures)
+            self.assertTrue(all(a['failure_code'] == 'runtime_error' for a in failures))
             room = self.client.store.room('a')
             self.assertNotIn('pending_final', room)
             self.assertNotIn('processed_cursor', room)
@@ -317,13 +325,15 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('pending_final', state)
         self.assertNotIn(3, state.get('handled', []))
         self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
-        self.assertEqual(len(self.messages), 1)
-        self.assertEqual("Hermes couldn't do it.", next(iter(self.messages.values()))['text'])
+        self.assertEqual(self.messages, {})
+        failures = [args for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == 'failed']
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]['failure_code'], 'runtime_error')
         self.assertEqual(len([1 for _, name, _ in self.requests if name == 'send_message']), 0)
         for _ in range(2):
             result = await adapter.send('a', RECOVERED_MARKER + payload['text'])
             self.assertTrue(result.success, result.error)
-        self.assertEqual(len(self.messages), 1)
+        self.assertEqual(self.messages, {})
         self.assertNotIn(3, self.client.store.room('a').get('handled', []))
 
     async def test_revoked_completed_tool_reply_cannot_be_reconciled_from_cache(self):
@@ -347,13 +357,14 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
         state = self.client.store.room('a')
         self.assertTrue(state['failure_outbox'])
         self.assertIn('pending_final', state)
-        original_id = next(iter(self.messages))[1]
+        failed_status = [args for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == 'failed'][-1]
         await adapter._check_room('a')
         self.assertNotIn('pending_final', self.client.store.room('a'))
         self.assertEqual(adapter._admit_event.call_args.args[0].message_id, '5')
-        self.assertEqual(len(self.messages), 1)
-        notices = [args for _, name, args in self.requests if name == 'hermes_notice']
-        self.assertEqual([args['client_id'] for args in notices], [original_id, original_id])
+        self.assertEqual(self.messages, {})
+        failures = [args for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == 'failed']
+        self.assertEqual(failures, [failed_status, failed_status])
+        self.assertFalse(any(name in ('send_message', 'hermes_notice', 'hermes_authored', 'ack') for _, name, _ in self.requests))
 
     async def test_restart_after_tool_commit_before_any_final_is_answered_not_interrupted(self):
         adapter, event = await self.begin()

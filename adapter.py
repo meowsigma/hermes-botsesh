@@ -322,6 +322,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         return
                     continue
                 if await self._posted_reply(room_id, saved['target'], saved.get('receipt_id')):
+                    # Legacy inline execution has no native admission to await.
+                    # Its exact committed reply + live grant settle recovery.
+                    await self._delivery(room_id, saved['target'], 'completed', batch_id=saved['receipt_id'])
+                    self._mark_handled(room_id, saved['target'])
                     continue
                 # Started tools may have external effects. Never silently replay an
                 # uncertain execution; preserve it and deliver an honest failure.
@@ -480,7 +484,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         for target in targets:
             if target in self._current.get(room_id, {}).get('batch_targets', [self._current.get(room_id, {}).get('target')]) or str(target) in saved or (room_id, target) in self._skipped_targets:
                 continue
-            # Intake is receipt-only. No catchup, inference or mutable frozen context.
+            # Native DM controls must still resolve while inference is busy.
+            # Fetch only to inspect this separate input; never replace the active
+            # frozen context/policy or attest any later room content.
+            if self._control_context(room_id):
+                frozen = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
+                message = next((m for m in frozen['batch']['messages']
+                                if m.get('number') == target and not m.get('isOwn')), None)
+                if message and await self._control_ingest(room_id, message):
+                    continue
             receipt(self.client.store, room_id, target)
             await self._delivery(room_id, target, 'received')
 

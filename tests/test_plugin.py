@@ -1,4 +1,5 @@
 """Focused offline tests. These are doubles, never native-agent evidence."""
+# Owner 2026-11-10 living chat: runtime notices never go to rooms; read truth stays exact.
 import asyncio
 import importlib.util
 import json
@@ -133,7 +134,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             client.enrolled.assert_not_called()  # Native progress is local only.
             # A native refusal/error can also be a notify-marked response: still no attestation.
             await adapter.send('a', 'native admission error', metadata={'notify': True})
-            self.assertNotIn('receipt_id', client.enrolled.call_args.kwargs)
+            client.enrolled.assert_not_called()  # Advanced runtime failures are local status only.
             self.assertEqual(client.store.room('a')['processing_receipts']['3']['state'], 'failed')
             from hermes_botsesh_test.adapter import processed_turn, ended_turn
             prompt = json.dumps({'receipt_id': 'receipt-a', 'addressed_message_number': 4, 'context': 'frozen context'})

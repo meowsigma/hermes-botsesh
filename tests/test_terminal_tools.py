@@ -1,4 +1,5 @@
 """Real native tool loop with scripted model responses, no provider calls."""
+# Owner 2026-11-10 living chat: posting does not end a turn; do not duplicate its final.
 import contextlib
 import json
 from types import SimpleNamespace
@@ -119,8 +120,12 @@ class TerminalLoopTests(_Base):
         self.addCleanup(_ADAPTERS.discard, adapter)
         result, calls = self.native_turn('botsesh_post', {'room_id': 'a', 'text': 'Exact answer.',
             'processed': True, 'receipt_id': adapter._current['a']['receipt_id'], 'reply_to': 3}, 'a')
-        self.assertEqual(calls, 1)
-        self.assertEqual(result['api_calls'], 1)
-        await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        self.assertEqual(calls, 2)
+        self.assertEqual(result['api_calls'], 2)
+        self.assertTrue(result['completed'])
+        self.assertFalse(result.get('interrupted', False))
+        self.assertIn('frozen', self.client.store.room('a')['processing_receipts']['3'])
+        self.model_ended(adapter)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.assertEqual(len(self.messages), 1)
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')

@@ -1,4 +1,5 @@
 """Exact retained missing-attestation repro, native notice boundary and join scope."""
+# Owner 2026-11-10: zero/one/many posts, no processed:true refusal, no runtime posts.
 import json
 import uuid
 import unittest
@@ -20,16 +21,23 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
                 'receipt_id': adapter._current['a']['receipt_id']}
         with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             result = json.loads(tools.guarded(lambda a: tools.post(a, Mock()))(args))
-        self.assertEqual(result['error'], 'processed_receipt_required')
-        self.assertIn('Nothing was posted', result['message'])
-        self.assertEqual(self.messages, {})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['result']['read_effect'], 'none')
+        self.assertEqual([m['text'] for m in self.messages.values()], ['Tool answer'])
         self.assertNotIn('handled', self.client.store.room('a'))
+        self.assertNotIn('processed_cursor', self.client.store.room('a'))
+        row = self.client.store.room('a')['processing_receipts']['3']
+        self.assertIn('frozen', row)
+        calls = list(row['explicit_post_calls'].values())
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('processed', calls[0]['payload'])
         self.model_ended(adapter)
         self.assertTrue((await adapter.send('a', 'Actual final answer', metadata={'notify': True})).success)
-        self.assertEqual([m['text'] for m in self.messages.values()], ['Actual final answer'])
+        self.assertEqual([m['text'] for m in self.messages.values()], ['Tool answer'])
         from gateway.platforms.event import ProcessingOutcome
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'completed_unread')
+        self.assertNotIn('processed_cursor', self.client.store.room('a'))
 
     async def test_confirmed_post_suppresses_distinct_final_and_keeps_later_target(self):
         adapter, event = await self.begin()

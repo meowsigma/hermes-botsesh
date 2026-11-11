@@ -1,4 +1,5 @@
 """Fault-injection doubles through the actual adapter. No model/network calls."""
+# Owner 2026-11-10 living chat: runtime errors use delivery status, not room narration.
 import asyncio
 import json
 import tempfile
@@ -68,10 +69,12 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         receipt(self.client.store,'a',3,state='started',instance='old-process',client_id=str(uuid.uuid4()),receipt_id='old')
         self.targets['a']=[]
         await self.adapter._check_room('a');self.adapter._admit_event.assert_not_called()
-        self.assertEqual(len(self.posts),1)
-        posted=next(iter(self.posts.values()));self.assertEqual("Hermes couldn't do it.",posted['text']);self.assertEqual(posted['failure_code'],'interrupted');self.assertNotIn('processed',posted)
+        self.assertEqual(self.posts,{})
+        failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
+        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'interrupted'}])
         restarted=self.make_adapter();restarted._admit_event=AsyncMock()
-        await restarted._check_room('a');self.assertEqual(len(self.posts),1)
+        await restarted._check_room('a');self.assertEqual(self.posts,{})
+        self.assertEqual(len([1 for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']),1)
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'failed')
     async def test_failure_notice_lost_response_retries_same_id_after_restart(self):
         receipt(self.client.store,'a',3,state='started',frozen={'batch':{'messages':[{'text':'private room context'}]}},text='private model input')
@@ -79,7 +82,7 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         original=self.client.enrolled.side_effect
         def lose(room,op,**args):
             result=original(room,op,**args)
-            if op=='post':raise BotSeshError('connection_failed_retry_same_intent')
+            if op=='delivery':raise BotSeshError('connection_failed_retry_same_intent')
             return result
         self.client.enrolled.side_effect=lose
         with self.assertRaises(BotSeshError):await self.adapter._flush_failures('a')
@@ -87,12 +90,9 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('frozen',self.client.store.room('a')['processing_receipts']['3'],'uncertain delivery remains retryable')
         self.client.enrolled.side_effect=original
         await self.make_adapter()._flush_failures('a')
-        self.assertEqual(len(self.posts),1);self.assertFalse(self.client.store.room('a')['failure_outbox'])
-        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't do it.")
-        posted = next(iter(self.posts.values()))
-        self.assertEqual(posted['failure_code'], 'provider_budget')
+        self.assertEqual(self.posts,{});self.assertFalse(self.client.store.room('a')['failure_outbox'])
         failures = [args for _, op, args in self.calls if op == 'delivery' and args.get('state') == 'failed']
-        self.assertEqual(failures[-1]['notice_client_id'], posted['client_id'])
+        self.assertEqual(failures, [{'target':3,'state':'failed','failure_code':'provider_budget'}]*2)
         row=self.client.store.room('a')['processing_receipts']['3']
         self.assertEqual(row['state'],'failed');self.assertFalse(row['failure_pending'])
         self.assertNotIn('frozen',row);self.assertNotIn('text',row)
@@ -103,9 +103,11 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         self.client.store.update(lambda d: d['rooms']['a'].update(failure_outbox={'3': {'payload': payload, 'code': 'provider_budget'}}, processing_receipts={'3': {'state': 'failed'}}))
         self.adapter._queue_failure('a', 3, 'provider_error')
         await self.adapter._flush_failures('a')
-        self.assertEqual(self.posts[payload['client_id']], payload)
+        self.assertEqual(self.posts, {}, 'even a legacy runtime notice must not enter the room')
         failure = next(args for _, op, args in self.calls if op == 'delivery' and args.get('state') == 'failed')
         self.assertNotIn('notice_client_id', failure)
+        self.assertEqual(failure['failure_code'], 'provider_budget', 'retry retains the original queued failure code')
+        self.assertFalse(self.client.store.room('a')['failure_outbox'])
 
     async def test_sender_prefixed_turn_posts_exact_attesting_reply(self):
         await self.adapter._check_room('a')
@@ -140,28 +142,31 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         ended_turn(platform='botsesh',session_id='s',turn_id='t',completed=False,failed=True,interrupted=False)
         sent=await self.adapter.send('a','HTTP 402: credits exhausted (private vendor detail)',metadata={'notify':True})
         self.assertTrue(sent.success)
-        post=next(iter(self.posts.values()));self.assertNotIn('private vendor detail',post['text']);self.assertNotIn('processed',post)
+        self.assertEqual(self.posts,{})
+        failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
+        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'provider_budget'}])
+        self.assertNotIn('private vendor detail', self.client.store.path.read_text())
         await self.adapter.on_processing_complete(Mock(source=Mock(chat_id='a'),message_id='3'),ProcessingOutcome.SUCCESS)
         self.assertNotIn('handled',self.client.store.room('a'))
     async def test_iteration_budget_is_not_reported_as_provider_credit_failure(self):
         self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':'exact input'}
         await self.adapter.send_or_update_status('a','error','⚠️ Iteration budget exhausted (4/4) — asking model to summarise')
         await self.adapter.send('a','Turn stopped.',metadata={'notify':True})
-        self.assertEqual(len(self.posts),1)
-        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't do it.")
-        self.assertEqual(next(iter(self.posts.values()))['failure_code'],'runtime_error')
+        self.assertEqual(self.posts,{})
+        failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
+        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'runtime_error'}])
 
     async def test_native_diagnostic_status_does_not_post_a_duplicate_error(self):
         self.adapter._current['a']={'target':3,'receipt_id':'r','client_id':str(uuid.uuid4()),'delivered':False,'text':'exact input'}
         await self.adapter.send_or_update_status('a','error','HTTP 402: budget exceeded')
         self.assertFalse(self.posts)
         await self.adapter.send('a','Model failed.',metadata={'notify':True})
-        self.assertEqual(len(self.posts),1)
+        self.assertEqual(self.posts,{})
         await self.adapter.on_processing_complete(Mock(source=Mock(chat_id='a'),message_id='3'),ProcessingOutcome.FAILURE)
         await self.adapter._notify_turn_error(Mock(source=Mock(chat_id='a'),message_id='3'),RuntimeError('tool detail'))
-        self.assertEqual(len(self.posts),1)
-        self.assertEqual(next(iter(self.posts.values()))['text'],"Hermes couldn't do it.")
-        self.assertEqual(next(iter(self.posts.values()))['failure_code'],'provider_budget')
+        self.assertEqual(self.posts,{})
+        failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
+        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'provider_budget'}])
     async def test_exact_unicode_chunk_replay_and_only_last_chunk_attests(self):
         text='α🙂\n'*2200
         payload={'text':text,'client_id':str(uuid.uuid4()),'receipt_id':'frozen','processed':True,'reply_to':3}

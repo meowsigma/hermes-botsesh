@@ -6,6 +6,7 @@ owning task workspace. Only Client transport is faked; native command parsing,
 authorization, dispatch, handlers, SessionStore and control resolvers are real.
 No gateway daemon, adapter listener, network, or model is started.
 """
+# Owner 2026-11-10 living chat: runtime failures are status-only, never room posts.
 import asyncio
 from copy import deepcopy
 import os
@@ -18,7 +19,7 @@ from unittest.mock import AsyncMock, Mock, patch
 # Reuse the established package loader, never invent a parallel import package.
 from test_plugin import package, Client, Store
 
-WORKSPACE = Path(__file__).resolve().parents[2]
+WORKSPACE = Path(__file__).resolve().parents[1]
 # Set before importing gateway.run (it captures its launch home on import).
 _BOOT_HOME = tempfile.TemporaryDirectory(prefix='native-command-boot-', dir=WORKSPACE)
 os.environ['HERMES_HOME'] = _BOOT_HOME.name
@@ -363,9 +364,12 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.drain()
         self.assertEqual(self.resolve.call_count, 0)
         self.assertNotIn('110', self.client.store.room('native-dm').get('control_inputs', {}))
-        self.assertIn("Hermes couldn't answer", self.reply(110))
-        self.assertNotIn('processed', self.transport.posts[-1])
-        self.assertNotIn('receipt_id', self.transport.posts[-1])
+        self.assertEqual(self.reply(110), '')
+        self.assertEqual(self.transport.posts, [])
+        self.assertEqual(self.transport.deliveries, [{'target':110, 'state':'failed', 'failure_code':'admission_denied'}])
+        row = self.client.store.room('native-dm')['processing_receipts']['110']
+        self.assertEqual(row['state'], 'failed')
+        self.assertNotIn('handled', self.client.store.room('native-dm'))
 
     async def test_idle_manifest_refresh_does_not_grow_durable_operation_journal(self):
         await self.adapter._refresh_dm_controls('native-dm')

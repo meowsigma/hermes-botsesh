@@ -1,4 +1,5 @@
 """Pure Python parity; only offline wire/server doubles, never native proof."""
+# Owner 2026-11-10: authored no-read sends are allowed; frozen receipts survive until terminal.
 import asyncio
 import hashlib
 import json
@@ -108,7 +109,7 @@ class OAuthPython(unittest.TestCase):
                 return {'rooms': [{'room_id': 'one', 'participant_id': 'bot'}]}
             if name == 'hermes_inbox':
                 return {'targets': [{'number': 7}], 'has_more': False, 'backlog': 1}
-            if name in ('send_message', 'hermes_notice'):
+            if name in ('send_message', 'hermes_notice', 'hermes_authored'):
                 message = self.posts.setdefault(args['client_id'], {'number': 0, 'authorParticipant': {'id': 'bot'},
                     'text_sha256': hashlib.sha256(args['text'].encode()).hexdigest()})
                 if self.lose:
@@ -134,7 +135,9 @@ class OAuthPython(unittest.TestCase):
         self.assertEqual(self.client.enrolled('one', 'retry', client_id=self.exact['client_id']), first)
         self.assertEqual(len(self.posts), 1)
         self.assertEqual([n for n, _ in self.calls], ['send_message', 'list_rooms'])
-        self.assertNotIn(self.batch, self.store.room('one')['oauth_receipts'])
+        # A send does not retire a reusable frozen receipt; native terminal
+        # settlement, not posting, owns the execution boundary.
+        self.assertIn(self.batch, self.store.room('one')['oauth_receipts'])
         with self.assertRaises(BotSeshError):
             self.client.enrolled('one', 'post', **{**self.exact, 'text': 'changed'})
 
@@ -296,7 +299,7 @@ class OAuthPython(unittest.TestCase):
     def test_no_read_notice_never_falls_back_to_latest_batch(self):
         result = self.client.enrolled('one', 'post', text='Notice', client_id=str(uuid.uuid4()))
         self.assertEqual(result['read_effect'], 'none')
-        self.assertEqual(self.calls[0][0], 'hermes_notice')
+        self.assertEqual(self.calls[0][0], 'hermes_authored')
         self.assertNotIn('batch_id', self.calls[0][1])
         self.assertIn(self.batch, self.store.room('one')['oauth_receipts'])
 

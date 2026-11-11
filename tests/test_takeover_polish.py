@@ -1,4 +1,5 @@
 """Offline regressions: real adapter/tool journals, no inference/network."""
+# Owner 2026-11-10 living chat: each deliberate post gets its own fresh invocation UUID.
 import unittest
 import uuid
 from unittest.mock import AsyncMock, Mock, patch
@@ -22,11 +23,18 @@ class TextTests(unittest.TestCase):
     def test_post_tool_sanitizes_before_identity_without_mutating_args(self):
         args = {'room_id': 'a', 'text': RAW, 'receipt_id': 'exact', 'processed': True, 'reply_to': 3}
         client = Mock()
-        with patch.object(tools, 'Client', return_value=client), patch.object(tools, 'scoped_room', return_value='a'):
+        with patch.object(tools, 'Client', return_value=client), patch.object(tools, 'scoped_room', return_value='a'), patch.object(tools, 'calling_scope', return_value=('cli', '')):
+            tools.post(args, Mock())
             tools.post(args, Mock())
         self.assertEqual(args['text'], RAW)
-        client.logical_id.assert_called_once_with('post', {**args, 'text': CLEAN})
-        client.enrolled.assert_called_once_with('a', 'post', text=CLEAN, client_id=client.logical_id.return_value, receipt_id='exact', processed=True, reply_to=3)
+        client.logical_id.assert_not_called()
+        ids = [c.kwargs['client_id'] for c in client.enrolled.call_args_list]
+        self.assertEqual(len(set(ids)), 2, 'identical authored posts must not deduplicate')
+        for cid in ids:
+            self.assertEqual(uuid.UUID(cid).version, 4)
+        for call in client.enrolled.call_args_list:
+            self.assertEqual(call.args, ('a', 'post'))
+            self.assertEqual(call.kwargs, dict(text=CLEAN, client_id=call.kwargs['client_id'], receipt_id='exact', processed=True, reply_to=3))
 
 class FinalTests(SolidTests):
     async def test_final_is_clean_before_gateway_and_local_journals(self):

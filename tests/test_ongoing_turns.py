@@ -1,4 +1,5 @@
 """Focused changed-hunk checks. Doubles are not native model-return evidence."""
+# Owner 2026-11-10: batch busy intake without changing frozen context; status-only failures.
 import asyncio
 import json
 from pathlib import Path
@@ -16,6 +17,10 @@ from gateway.platform_registry import PlatformEntry, platform_registry
 
 class OngoingTurns(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # Other discovered TestCases can retain adapters in mock cycles until
+        # GC. Isolate the live-runtime inventory, not its fail-closed matcher.
+        import weakref
+        self.enterContext(patch.object(mod, '_ADAPTERS', weakref.WeakSet()))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         env = patch.dict('os.environ', {'HERMES_HOME': str(Path(self.tmp.name) / 'home')})
@@ -69,8 +74,17 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         self.client.store.update(lambda d: d['rooms']['room'].pop('processing_receipts', None))
         self.a._is_sender_authorized = lambda *a: False
         await self.a._receive_while_busy('room')
-        self.assertEqual(self.posts[-1]['failure_code'], 'admission_denied')
-        self.assertNotIn('processed', self.posts[-1])
+        self.a._delivery.assert_awaited_once_with('room', 3, 'received')
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.client.store.room('room')['processing_receipts']['3']['state'], 'received')
+        # Receipt-only busy intake grants no execution or read permission.
+        # Exact native authorization is still required when later admitted.
+        self.a._current.clear()
+        self.a._admit_event = AsyncMock()
+        await self.a._check_room('room')
+        self.a._admit_event.assert_not_awaited()
+        self.a._delivery.assert_awaited_with('room', 3, 'failed', failure_code='admission_denied')
+        self.assertNotIn('handled', self.client.store.room('room'))
 
     async def test_admission_ack_keeps_target_then_terminal_no_output_fails_once(self):
         current = self.current()
@@ -85,9 +99,8 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         await self.a._reconcile_native('room')
         await self.a._reconcile_native('room')
         self.assertNotIn('room', self.a._current)
-        self.assertEqual(len(self.posts), 1)
-        self.assertEqual(self.posts[0]['text'], "Scout couldn't do it.")
-        self.assertEqual(self.posts[0]['failure_code'], 'empty_response')
+        self.assertEqual(self.posts, [])
+        self.a._delivery.assert_awaited_once_with('room', 3, 'failed', failure_code='empty_response')
         self.assertNotIn('handled', self.client.store.room('room'))
 
     async def test_normal_guest_intake_freezes_identity_policy_and_receipt_before_admission(self):
@@ -176,14 +189,15 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(row['state'], 'failed')
                 self.assertFalse(row['failure_pending'])
                 self.assertEqual(row['tool_policy_error']['code'], bad.code if isinstance(bad, BotSeshError) else 'native_tool_policy_scope_mismatch')
-                self.assertEqual(self.posts[0]['text'], "Scout couldn't do it.")
-                self.assertEqual(self.posts[0]['failure_code'], 'runtime_error')
-                self.assertEqual(self.posts[0]['reply_to'], 3)
-                self.assertNotIn('processed', self.posts[0])
-                self.assertNotIn('receipt_id', self.posts[0])
+                self.assertEqual(self.posts, [])
+                failures = [c for c in self.a._delivery.await_args_list if c.args == ('room', 3, 'failed')]
+                self.assertTrue(failures)
+                self.assertTrue(all(c.kwargs == {'failure_code': 'runtime_error'} for c in failures))
+                failure_count = len(failures)
                 for _ in range(2):
                     await self.a._check_room('room')
-                self.assertEqual(len(self.posts), 1)
+                self.assertEqual(self.posts, [])
+                self.assertEqual(len([c for c in self.a._delivery.await_args_list if c.args == ('room', 3, 'failed')]), failure_count)
                 self.assertEqual(self.a._current['room']['target'], 5)
                 self.assertNotIn('handled', self.client.store.room('room'))
 
@@ -210,8 +224,8 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
                 self.current()
                 self.a._native_state = AsyncMock(return_value=({'status': 'terminal', 'outcome': outcome}, {'failed': True}))
                 await self.a._reconcile_native('room')
-                self.assertEqual(self.posts[-1]['failure_code'], code)
-                self.assertNotIn('receipt_id', self.posts[-1])
+                self.assertEqual(self.posts, [])
+                self.a._delivery.assert_awaited_with('room', 3, 'failed', failure_code=code)
                 self.assertNotIn('handled', self.client.store.room('room'))
 
     async def test_unknown_execution_is_preserved_without_replay_or_read(self):
@@ -247,7 +261,8 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         mod.processed_turn(user_message=current['text'], platform='botsesh', session_id='s', turn_id='t')
         mod.ended_turn(platform='botsesh', session_id='s', turn_id='t', completed=True, failed=False, interrupted=False)
         await self.a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.assertEqual(self.posts[-1]['failure_code'], 'empty_response')
+        self.assertEqual(self.posts, [])
+        self.a._delivery.assert_awaited_once_with('room', 3, 'failed', failure_code='empty_response')
 
     async def test_native_veto_blocks_actual_dispatch_and_rechecks_revocation(self):
         current = self.current()
