@@ -1,4 +1,4 @@
-"""Transport router: Python OAuth/guest management; Advanced Node invitations.
+"""Transport router: Python OAuth/invitations/guest management; optional SDK.
 
 No OAuth path calls command()/call() or sends its grant to the JS bridge.
 """
@@ -121,6 +121,9 @@ class Client:
             elif binding.get('transport') == 'guest_manager':
                 from .guest_manager import GuestManagerClient
                 result = GuestManagerClient(self.store).call(binding, op, **args)
+            elif binding.get('transport') == 'invitation':
+                from .invitation import InvitationClient
+                result = InvitationClient(self.store).call(binding, op, **args)
             else:
                 result = self.call(op, room=binding['url'], **({'dev_origin': binding['origin']} if binding.get('origin', '').startswith('http:') else {}), **args)
             def progress(data):
@@ -178,20 +181,12 @@ class Client:
         previous = self.store.read()['rooms'].get(room_id)
         if previous:
             # Existing/detached/revoked seats never silently become a replacement.
+            if previous.get('url') != url or previous.get('origin', origin) != origin:
+                raise BotSeshError('identity_mismatch')
             self.enrolled(room_id, 'verify')
             return {'state': 'joined', 'room_id': room_id, 'participant_id': previous['participant_id'], 'url': previous['url']}
-        result = self.call('join', link=link, **({'dev_origin': dev_origin} if dev_origin else {}))
-        if result.get('roomId') != room_id or result.get('origin') != origin or not result.get('participantId'):
-            raise BotSeshError('identity_mismatch')
-        def adopt(data):
-            prior = data['rooms'].get(room_id)
-            if prior:
-                if prior.get('participant_id') != result['participantId'] or not prior.get('active'):
-                    raise BotSeshError('identity_mismatch')
-                return
-            data['rooms'][room_id] = {'url': url, 'origin': origin, 'room_id': room_id, 'name': result.get('displayName', 'BotSesh'), 'participant_id': result['participantId'], 'active': True, 'state': 'joined'}
-        self.store.update(adopt)
-        return {'state': 'joined', 'room_id': room_id, 'participant_id': result['participantId'], 'url': url}
+        from .invitation import InvitationClient
+        return InvitationClient(self.store).join(origin, room_id, invitation_id, token)
 
     def create(self, name='BotSesh room', purpose=None, client_id=None, *, lifecycle_scopes=None):
         from .guest_manager import GuestManagerClient

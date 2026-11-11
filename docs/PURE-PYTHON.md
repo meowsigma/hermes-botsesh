@@ -1,4 +1,4 @@
-# Pure-Python OAuth transport
+# Pure-Python OAuth and fresh invitation transports
 
 ## Scope and source map
 
@@ -13,7 +13,7 @@ Python; the bridge was not on its default listener path. This change closes the
 shared parser, structured completion, framing and parity gaps rather than
 claiming every existing Python operation was newly ported.
 
-| Entry / JS touchpoint | OAuth implementation | Advanced invitation implementation |
+| Entry / JS touchpoint | OAuth implementation | Existing Advanced SDK binding |
 |---|---|---|
 | `__init__.py`, installer, CLI registration | Side-effect-free Python registration; no Node probe | Same registration; Node checked only on explicit SDK use |
 | `cli.py` connect/disconnect | Hermes native PKCE + profile `plugin_oauth`; Python room discovery and verified revoke | Local `/botsesh join` only |
@@ -37,6 +37,48 @@ returned in public results. No automatic guest listener, read/post/invite or DM
 grant transfer is implemented. Legacy SDK creation intents are refused rather
 than silently duplicated under a new connection. Advanced SDK bindings retain
 their transport; account creation still requires separate pre-existing consent.
+
+## Fresh pasted invitations (0.6.0 candidate)
+
+`Client.join` uses `invitation.py` for both `/agent-room/.../invite/...` and the
+legacy fragment form. It persists the random claim nonce and recovery proof
+before the existing redeem POST, saves access before verify/output, and binds
+every later operation to the exact origin/room/member/participant. Credentials
+stay in the profile's `credentials/python-invitation` private Store. `forget`
+scrubs that store and the ordinary content/send journals.
+
+Complete reads and processed replies reuse the common Python finite MCP paging
+and durable-send executor with the scoped API bearer and public tool names.
+Canonical REST messages supply sender-admission metadata omitted by public MCP;
+their IDs, versions, authors and exact bytes must match the frozen result. A
+changed/incomplete/oversized packet cannot become an acknowledgment. No-read
+unthreaded posts use REST with `readThrough:0`; no-read threading is refused.
+Quiet passes use the saved exact message/Brief manifest, verified REST `/ack`,
+then `/wake/quiet-turn`. A chat bearer is not upgraded to OAuth to get a broader
+finish capability. Unsupported draft/routine structured completion is refused
+before posting; the existing Advanced SDK remains unchanged for those workflows.
+
+The Python passive wait uses both event cursors. All nonown messages are candidate
+inputs, including unmentioned peer messages, but the existing enabled gateway,
+stable-participant authorization, toolsets and approvals still gate inference and
+tools. Joining never configures/enables a gateway, grants host/owner-DM powers or
+claims native OAuth tool-policy/background consent. Existing SDK files and
+uncertain claims are preserved rather than silently redeemed under a new nonce.
+
+Focused local regression (the server, not the plugin client, uses Node):
+
+```sh
+python3 tests/run_python_invitation.py --hermes-root /path/to/hermes-agent \
+  --image EXACT_ALREADY_BUILT_SERVER_IMAGE --evidence-file invitation-results.jsonl
+```
+
+The runner gives the Python client a fresh empty PATH and isolated home; only
+the explicit Docker fixture runs server Node. It covers native join-tool paste,
+first reply, an automatic scripted adapter reply to an unmentioned peer, legacy
+join, frozen read boundaries, finite paging, lost-response replay, quiet pass,
+foreign/revoked denial and exact local forgetting. The admission/model callback
+is scripted: this is not registered-native-gateway, paid-inference or published
+artifact evidence. The release lane owns that fresh installed-Hermes proof.
 
 ## Native protocol and durable identity
 

@@ -25,6 +25,12 @@ _GATEWAY_RECOVERY_MARKERS = (
 
 _HOOK_LOCK = threading.RLock()
 
+
+def _input_numbers(check):
+    # Invitation Python pickup has the same living-chat broadcast semantics as
+    # OAuth's authoritative inbox. These are candidate inputs, not permissions.
+    return set(check.get('mentions', []) + check.get('replies', []) + check.get('inputs', []))
+
 def processed_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """A candidate output is not yet proof that the turn completed successfully."""
     if platform != 'botsesh':
@@ -175,19 +181,20 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             await asyncio.sleep(2)
 
     async def _stream(self, room_id, changed):
-        if self.client.store.room(room_id).get('transport') == 'oauth':
+        if self.client.store.room(room_id).get('transport') in ('oauth', 'invitation'):
             attempt = 0
             while self._running:
                 try:
                     cursor = self.client.store.room(room_id).get('event_cursor', {})
                     # Native gateway lifecycle, independent of read/model turns.
                     # Old-server failure leaves inbox polling active, not green.
-                    try:
-                        await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='listening')
-                    except BotSeshError as error:
-                        if error.terminal:
-                            raise
-                        logger.warning('BotSesh listener heartbeat unconfirmed (%s); durable inbox remains active.', error.code)
+                    if self.client.store.room(room_id).get('transport') == 'oauth':
+                        try:
+                            await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='listening')
+                        except BotSeshError as error:
+                            if error.terminal:
+                                raise
+                            logger.warning('BotSesh listener heartbeat unconfirmed (%s); durable inbox remains active.', error.code)
                     result = await asyncio.to_thread(self.client.enrolled, room_id, 'wait', **cursor)
                     health(self.client.store, room_id, last_event=time.time(), stream='connected')
                     if (result['next_after'] > cursor.get('after', -1)
@@ -335,7 +342,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if saved.get('takeover_offer'):
                 await asyncio.to_thread(settle_takeover, self.client, room_id, saved['target'])
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
-        health(self.client.store, room_id, backlog=check.get('backlog', len(set(check.get('mentions', [])+check.get('replies', [])))))
+        health(self.client.store, room_id, backlog=check.get('backlog', len(_input_numbers(check))))
         if check.get('pending'):
             return  # Visible local status; no new model final or later read acknowledgment.
         binding = self.client.store.room(room_id)
@@ -359,7 +366,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 check['mentions'].append(target['number'])
             else:
                 health(self.client.store, room_id, error='takeover_admission_uncertain_no_replay')
-        targets = sorted(set(check.get('mentions', []) + check.get('replies', [])))
+        targets = sorted(_input_numbers(check))
         for target in targets:
             saved = self.client.store.room(room_id).get('processing_receipts', {}).get(str(target))
             if saved and saved['state'] in ('replied', 'failed', 'passed', 'completed_unread'):
@@ -478,7 +485,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         # Durable pickup is independent of starting inference. Queued questions
         # must not look offline (or disappear behind an earlier read checkpoint).
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
-        targets = sorted(set(check.get('mentions', []) + check.get('replies', [])))
+        targets = sorted(_input_numbers(check))
         health(self.client.store, room_id, backlog=check.get('backlog', len(targets)))
         saved = self.client.store.room(room_id).get('processing_receipts', {})
         for target in targets:
@@ -568,7 +575,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         result = row.get('posted_reply') if row.get('receipt_id') == receipt_id else None
         if result:
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
-        elif room.get('transport') == 'oauth':
+        elif room.get('transport') in ('oauth', 'invitation'):
             posts = [post for post in [*room.get('oauth_posts', {}).values(), *room.get('oauth_turns', {}).values()]
                      if not post.get('failed') and post['exact'].get('receipt_id') == receipt_id
                      and post['exact'].get('processed') is True

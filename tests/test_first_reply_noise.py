@@ -146,13 +146,19 @@ class JoinTests(unittest.TestCase):
             enrolled.assert_called_once_with('room','read')
 
     def test_exact_invitation_parser_existing_identity_and_origin_denial(self):
-        result = {'roomId':'room','origin':'https://botsesh.com','participantId':'seat'}
-        with patch.object(self.client, 'call', return_value=result) as call:
+        from hermes_botsesh_test.invitation import InvitationClient
+        result = {'room': {'id': 'room'}, 'participantId': 'seat',
+                  'membership': {'id': 'membership', 'participantId': 'seat', 'expiresAt': 9999999999999},
+                  'access': {'token': 'bsa_' + 'a' * 43, 'expiresAt': 9999999999999}}
+        # The transport changed deliberately: keep this parser/identity oracle
+        # offline by doubling the Python boundary, never a dead JS call site.
+        with patch('hermes_botsesh_test.invitation._http', return_value=result) as call, patch.object(InvitationClient, 'verify', return_value={}):
             self.assertEqual(self.client.join(self.link)['participant_id'], 'seat')
-            call.assert_called_once_with('join', link=self.link)
-        with patch.object(self.client, 'call', return_value={}) as call:
+            self.assertEqual(call.call_args.args, ('https://botsesh.com', 'room', 'POST', '/agent-invites/redeem'))
+            self.assertEqual(call.call_args.kwargs['payload']['invitationId'], self.id)
+        with patch.object(self.client, 'enrolled', return_value={}) as call:
             self.assertEqual(self.client.join(self.link)['participant_id'],'seat')
-            call.assert_called_once_with('verify', room='https://botsesh.com/b/room')
+            call.assert_called_once_with('room', 'verify')
         for bad in (self.link.replace('https://botsesh.com','https://evil.example'),self.link+'?q=secret',self.link.replace(self.id,'00000000-0000-1000-8000-000000000000'),self.link+'/extra'):
             with self.assertRaises(BotSeshError): self.client.join(bad)
         self.client.store.update(lambda d:d['rooms']['room'].update(active=False))

@@ -258,6 +258,14 @@ def forget(client, room_ids):
                 data['creations'][key] = {'forgotten': True, 'room_id': intent['room_id'],
                     'origin': intent['origin'], 'request': {'client_id': intent['request']['client_id']}}
     guest.update(scrub_guest)
+    # Invitation access/recovery and uncertain redeem bodies have their own
+    # private custody. Forget must erase those too, not merely hide the seat.
+    invitation_root = client.store.credentials / 'python-invitation'
+    if invitation_root.exists():
+        def scrub_invitation(data):
+            for rid in removed:
+                data['rooms'].pop(rid, None)
+        Store(invitation_root).update(scrub_invitation)
     remaining = {rid: r for rid, r in rooms.items() if rid not in removed}
     unused = {r['oauth_id'] for rid, r in rooms.items() if rid in removed and r.get('oauth_id')} - {r['oauth_id'] for r in remaining.values() if r.get('oauth_id')}
     if unused:
@@ -332,6 +340,9 @@ def handle(args, client):
                     elif binding.get('transport') == 'guest_manager':
                         from .guest_manager import GuestManagerClient
                         GuestManagerClient(client.store).verify(binding)
+                    elif binding.get('transport') == 'invitation':
+                        from .invitation import InvitationClient
+                        InvitationClient(client.store).verify(binding)
                     else:
                         retained.append({'room_id': rid, 'reason': 'advanced_invitation_not_probed'})
                 except BotSeshError as error:
