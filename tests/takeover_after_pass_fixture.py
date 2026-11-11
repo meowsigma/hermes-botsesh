@@ -86,6 +86,9 @@ async def run():
                     assert denied['ok'] is False
                 finally:
                     clear_session_vars(wrong)
+                # Hermes clear_session_vars is deliberately non-nestable: it
+                # clears all scope, rather than restoring the outer tokens.
+                tokens = set_session_vars(platform='botsesh', chat_id=room, message_id=str(target))
                 # A missing/foreign receipt cannot authorize a claim. Keep the
                 # ambient pass and its retained exact receipt untouched.
                 try:
