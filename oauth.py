@@ -798,7 +798,11 @@ class OAuthClient:
                 self.store.update(lambda d: d['rooms'][room_id]['oauth_posts'][client_id].update(complete=True, result=completed))
                 return completed
             if not receipt_id:
-                raise BotSeshError('processed_receipt_required')
+                # Local preflight, before _journal or any send RPC: this exact
+                # processed payload cannot have posted. Settle the native
+                # explicit-attempt audit (including old unresolved entries),
+                # not an uncertain transport send. Keep its bytes/UUID intact.
+                raise BotSeshError('processed_receipt_required', rejected=True)
             exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to') if k in args}
             current = self.store.room(room_id)
             saved = current.get('oauth_posts', {}).get(client_id)
