@@ -37,9 +37,15 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
                        and outcome.get('read_effect') == 'none']
         else:
             args = args or {}
+            # The executor's observer may retain raw model args while dispatch
+            # validates a coerced copy (for example processed="True"). Require
+            # the handler's canonical attestation, bound to this same receipt
+            # and confirmed result, rather than revalidating raw processed.
             settled = [row for row in rows if args.get('room_id') == room
-                       and args.get('processed') is True and args.get('receipt_id')
+                       and args.get('receipt_id')
                        and row.get('receipt_id') == args['receipt_id']
+                       and row.get('explicit_pass', {}).get('payload', {}).get('processed') is True
+                       and row.get('explicit_pass', {}).get('payload', {}).get('receipt_id') == args['receipt_id']
                        and row.get('explicit_pass', {}).get('result') == outcome
                        and outcome.get('read_effect') == 'processed_frozen_receipt']
         if len(settled) != 1:

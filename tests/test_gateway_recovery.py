@@ -1,6 +1,7 @@
 """Offline bridge/SDK + real Hermes ledger dispatcher; no live/model calls."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from hermes_botsesh_test.client import node_binary, child_env
 
 
 class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Advanced bridge fixture requires Node')
     async def test_lost_ack_reconnect_and_boot_replay_exact_saved_operation(self):
         from hermes_botsesh_test.adapter import BotSeshAdapter
         from gateway.config import PlatformConfig
@@ -75,6 +77,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(client.store.read()['rooms']['offline']['active'])
             print('HACK5 recovery: real core dispatcher + SDK replay retained one exact reply/ack through reconnect, restart and flood markers; changed text and revoked access denied')
 
+    @unittest.skipUnless(shutil.which('node'), 'Advanced bridge fixture requires Node')
     async def test_full_journal_posts_new_final_and_refuses_evicted_replay(self):
         from hermes_botsesh_test.adapter import BotSeshAdapter
         from gateway.config import PlatformConfig
