@@ -252,9 +252,16 @@ def post(args, ctx):
         previous = [(key, call) for key, row in rows.items()
                     for key_id, call in row.get('explicit_post_calls', {}).items() if key_id == client_id]
         if previous:
-            if len(previous) != 1 or previous[0][1].get('authored_payload', previous[0][1]['payload']) != authored:
+            if len(previous) != 1:
                 raise BotSeshError('pending_send_mismatch')
             target_key, call = previous[0]
+            original = call['payload']
+            if 'authored_options' in call:
+                # Share text/UUID with the wire payload instead of retaining
+                # another answer-text copy just for missing bookkeeping.
+                original = {'text': original['text'], 'client_id': client_id, **call['authored_options']}
+            if original != authored:
+                raise BotSeshError('pending_send_mismatch')
             payload, notice = call['payload'], call.get('notice')
             return
         if options.get('processed') is True and not options.get('receipt_id'):
@@ -277,7 +284,7 @@ def post(args, ctx):
             target_key, row = active[0]
             call = {'payload': payload}
             if payload != authored:
-                call.update(authored_payload=authored, notice=notice)
+                call.update(authored_options=options, notice=notice)
             row.setdefault('explicit_post_calls', {})[client_id] = call
     client.store.update(journal)  # Freeze resolution before even an uncertain send.
     try:

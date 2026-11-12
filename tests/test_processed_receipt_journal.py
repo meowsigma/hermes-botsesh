@@ -41,7 +41,8 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         ordinary = self.post(payload)
         self.assertEqual(ordinary['read_effect'], 'none')
         self.assertIn('did not advance read state', ordinary['notice'])
-        self.assertEqual(self.calls()[payload['client_id']]['authored_payload'], payload)
+        self.assertEqual(self.calls()[payload['client_id']]['authored_options'],
+                         {k: v for k, v in payload.items() if k not in ('text', 'client_id')})
         self.assertFalse(self.calls()[payload['client_id']]['payload']['processed'])
         self.assertEqual(len(self.sends()), 1)
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
@@ -216,7 +217,8 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['read_effect'], 'none')
         self.assertIn('structured declarations', result['notice'])
         saved = self.calls()[payload['client_id']]
-        self.assertEqual(saved['authored_payload'], payload)
+        self.assertEqual(saved['authored_options'],
+                         {k: v for k, v in payload.items() if k not in ('text', 'client_id')})
         self.assertNotIn('draft_ready', saved['payload'])
         self.assertFalse(saved['payload']['processed'])
         self.assertEqual(len(self.messages), 1)
