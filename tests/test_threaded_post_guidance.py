@@ -127,27 +127,62 @@ class ThreadedPostGuidance(unittest.TestCase):
                 self.assertEqual(self.wire[-1][1]['text'], request['text'])
                 self.wire.clear()
 
-    def test_either_missing_field_and_explicit_false_teach_without_auto_attesting(self):
+    def test_explicit_processed_binds_omitted_receipt_but_other_incomplete_shapes_teach(self):
         request = FIXTURE['calls'][0]
+        original_room = copy.deepcopy(self.client.store.room(ROOM))
         for additions in ({'processed': True}, {'receipt_id': RECEIPT},
                           {'receipt_id': RECEIPT, 'processed': False}):
             with self.subTest(additions=additions):
+                self.client.store.update(lambda d: d['rooms'].update({ROOM: copy.deepcopy(original_room)}))
+                self.wire.clear()
                 result = self.call({**request, **additions})
-                self.assertFalse(result['ok'], result)
-                self.assertEqual(correction(result)['receipt_id'], RECEIPT)
-                self.assert_unread()
+                if additions == {'processed': True}:
+                    self.assertTrue(result['ok'], result)
+                    self.assertEqual(result['result']['read_effect'], 'processed_frozen_receipt')
+                    self.assertEqual(self.wire[-1][1]['reply_to'], request['reply_to'])
+                    self.assertEqual(self.wire[-1][1]['batch_id'], RECEIPT)
+                    self.assertEqual(self.wire[-1][1]['text'], request['text'])
+                    room = self.client.store.room(ROOM)
+                    call, = room['processing_receipts']['0']['explicit_post_calls'].values()
+                    self.assertEqual(call['payload']['receipt_id'], RECEIPT)
+                    self.assertEqual(call['authored_options'], {'reply_to': 0, 'processed': True})
+                else:
+                    self.assertFalse(result['ok'], result)
+                    self.assertEqual(correction(result)['receipt_id'], RECEIPT)
+                    self.assert_unread()
+
+    def test_supplied_stale_receipt_is_preserved_in_missing_processed_guidance(self):
+        supplied = 'supplied-stale-receipt'
+        result = self.call({**FIXTURE['calls'][0], 'receipt_id': supplied})
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
+        self.assertEqual(correction(result), {
+            **FIXTURE['calls'][0], 'receipt_id': supplied, 'processed': True})
+        self.assertIn('Keep the supplied receipt_id', result['message'])
+        self.assertNotIn(RECEIPT, result['message'])
+        self.assert_unread()
+        refused = self.call(correction(result))
+        self.assertEqual(refused['error'], 'receipt_expired')
+        self.assert_unread()
 
     def test_ambiguous_receipts_list_at_most_three_message_candidates_without_binding(self):
         for i in range(1, 5):
             self.add_receipt('candidate-' + str(i), i)
-        result = self.call(FIXTURE['calls'][0])
-        self.assertFalse(result['ok'], result)
-        listing = result['message'].split('briefing you read: ', 1)[1]
-        candidates = json.JSONDecoder().raw_decode(listing)[0]
-        self.assertEqual(len(candidates), 3)
-        self.assertTrue(all(c['message'] == 0 and 'input_message' in c for c in candidates))
-        self.assertIn('<choose a listed receipt_id>', correction(result)['receipt_id'])
-        self.assert_unread()
+        self.client.store.update(lambda d: d['rooms'][ROOM]['processing_receipts'].update(
+            duplicate=copy.deepcopy(d['rooms'][ROOM]['processing_receipts']['0'])))
+        original_room = copy.deepcopy(self.client.store.room(ROOM))
+        for additions in ({}, {'processed': True}):
+            with self.subTest(additions=additions):
+                self.client.store.update(lambda d: d['rooms'].update({ROOM: copy.deepcopy(original_room)}))
+                result = self.call({**FIXTURE['calls'][0], **additions})
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
+                listing = result['message'].split('briefing you read: ', 1)[1]
+                candidates = json.JSONDecoder().raw_decode(listing)[0]
+                self.assertEqual(len(candidates), 3)
+                self.assertTrue(all(c['message'] == 0 and 'input_message' in c for c in candidates))
+                self.assertIn('<choose a listed receipt_id>', correction(result)['receipt_id'])
+                self.assert_unread()
 
     def test_candidate_filter_excludes_foreign_expired_incomplete_terminal_and_other_message(self):
         for i in range(1, 6):

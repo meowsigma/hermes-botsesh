@@ -339,6 +339,10 @@ def post(args, ctx):
                 original = {'text': payload['text'], 'client_id': client_id, **saved['authored_options']}
             mismatch = original != authored
             notice = 'Replayed the original saved operation; no newer turn input was acknowledged.'
+        elif (options.get('processed') is True and not options.get('receipt_id')
+              and native and (receipt_id := current_post_receipt(room, target))):
+            payload = {**authored, 'receipt_id': receipt_id}
+            notice = 'Used this native turn’s complete frozen receipt; no later messages were included.'
         elif options.get('reply_to') is not None and (not options.get('receipt_id') or options.get('processed') is not True):
             correction = threaded_post_hint(room, room_id, authored)
         elif options.get('processed') is True and not options.get('receipt_id'):
