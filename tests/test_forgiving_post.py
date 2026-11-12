@@ -147,19 +147,18 @@ class ForgivingPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied['error'], 'authorization_revoked')
         self.assertEqual(len(self.messages), 1)
 
-    async def test_legacy_missing_receipt_fallback_preserves_text_without_sparse_thread_read(self):
+    async def test_legacy_missing_receipt_thread_is_rejected_not_silently_unthreaded(self):
+        # t_d31c619a parent decision supersedes 96ec090's disclosed unthreading.
         import json
         await self.begin()
         self.client.store.update(lambda d: d['rooms']['a'].update(transport='invitation'))
         payload = {'text': 'Exact bytes. café 🐚\n', 'processed': True, 'reply_to': 3}
-        with patch.object(self.client, 'enrolled', return_value={'number': 101, 'read_effect': 'none'}) as wire:
+        with patch.object(self.client, 'enrolled') as wire:
             result = json.loads(self.post(payload, target='999'))
-        self.assertTrue(result['ok'], result)
-        self.assertIn('unthreaded', result['result']['notice'])
-        self.assertEqual(wire.call_args.kwargs['text'], payload['text'])
-        self.assertFalse(wire.call_args.kwargs['processed'])
-        self.assertNotIn('receipt_id', wire.call_args.kwargs)
-        self.assertNotIn('reply_to', wire.call_args.kwargs)
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
+        self.assertIn('receipt-a-3', result['message'])
+        wire.assert_not_called()
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
 
     async def test_explicit_foreign_receipt_is_not_replaced(self):

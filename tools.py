@@ -224,6 +224,53 @@ def current_post_receipt(room, target):
     return receipt_id
 
 
+def threaded_post_hint(room, room_id, payload):
+    """Teach the explicit attestation shape; never choose or attest a receipt."""
+    reply_to = payload['reply_to']
+    candidates = {}
+    if room.get('active') and room.get('participant_id'):
+        for row in room.get('processing_receipts', {}).values():
+            if (row.get('state') not in ('admitting', 'admitted', 'started')
+                    or row.get('explicit_pass') or row.get('explicit_failure')):
+                continue
+            frozen = row.get('frozen') or {}
+            receipt_id = row.get('receipt_id')
+            receipt = room.get('oauth_receipts', {}).get(receipt_id, {})
+            batch = frozen.get('batch') or {}
+            messages = batch.get('messages', [])
+            if (receipt_id and frozen.get('receipt_id') == receipt_id
+                    and receipt.get('participant_id') == room['participant_id']
+                    and receipt.get('expires', 0) > time.time()
+                    and batch.get('hasMore') is False
+                    and receipt.get('numbers') == [m.get('number') for m in messages]
+                    and any(m.get('number') == reply_to and not m.get('isOwn') for m in messages)):
+                candidates[receipt_id] = {'receipt_id': receipt_id, 'message': reply_to,
+                                          'input_message': row.get('target')}
+    supplied = payload.get('receipt_id')
+    if supplied:
+        choice = supplied  # An explicit receipt is never replaced, even in guidance.
+        detail = 'Keep the supplied receipt_id; if unavailable, call botsesh_read.'
+    elif len(candidates) == 1:
+        choice = next(iter(candidates))
+        detail = f'Open receipt for message #{reply_to}: {choice}.'
+    elif candidates:
+        choice = '<choose a listed receipt_id>'
+        detail = 'Choose the receipt for the briefing you read: ' + json.dumps(
+            [candidates[key] for key in sorted(candidates)[:3]], separators=(',', ':'))
+        if len(candidates) > 3:
+            detail += ' (More exist; call botsesh_read for the current briefing.)'
+    else:
+        choice = '<receipt_id from botsesh_read>'
+        detail = 'No complete open receipt for this target; call botsesh_read.'
+    corrected = {**{key: value for key, value in payload.items() if key != 'client_id'},
+                 'room_id': room_id, 'receipt_id': choice, 'processed': True}
+    return ('Threaded posts require reply_to + receipt_id + processed:true. '
+            'Set processed:true only if you actually read that message and its complete frozen briefing. '
+            + detail + ' New call (omit client_id); retry uncertain sends only with their original ID and fields: '
+            'botsesh_post(' + json.dumps(corrected, ensure_ascii=False, separators=(',', ':')) + '). '
+            'For an ordinary no-read post, explicitly omit reply_to.')
+
+
 def transport_post_payload(section, saved):
     """Project a saved post back to tool fields, never to a newer receipt."""
     exact = saved['exact']
@@ -250,6 +297,7 @@ def post(args, ctx):
     target_key = None
     notice = None
     mismatch = False
+    correction = None
     native = calling_scope(ctx)[0] == 'botsesh'
     if native:
         from gateway.session_context import get_session_env
@@ -257,7 +305,7 @@ def post(args, ctx):
     else:
         target = ''
     def journal(data):
-        nonlocal target_key, payload, notice, mismatch
+        nonlocal target_key, payload, notice, mismatch, correction
         room = data['rooms'].get(room_id)
         if not room:
             return  # enrolled() retains the canonical not-enrolled error.
@@ -291,6 +339,8 @@ def post(args, ctx):
                 original = {'text': payload['text'], 'client_id': client_id, **saved['authored_options']}
             mismatch = original != authored
             notice = 'Replayed the original saved operation; no newer turn input was acknowledged.'
+        elif options.get('reply_to') is not None and (not options.get('receipt_id') or options.get('processed') is not True):
+            correction = threaded_post_hint(room, room_id, authored)
         elif options.get('processed') is True and not options.get('receipt_id'):
             receipt_id = current_post_receipt(room, target) if native else None
             if receipt_id:
@@ -300,11 +350,7 @@ def post(args, ctx):
                 payload = {k: v for k, v in authored.items() if k not in ('receipt_id', 'draft_ready', 'routine_report')}
                 payload['processed'] = False
                 notice = 'Posted as an ordinary authored message; did not advance read state or execute structured declarations. To attest a complete briefing, call botsesh_read and use its receipt_id with processed:true in a new post.'
-                if room.get('transport') != 'oauth' and payload.get('reply_to') is not None:
-                    # Legacy REST threading itself attests its target. Preserve
-                    # the text, not an unearned sparse read on this fallback.
-                    payload.pop('reply_to')
-                    notice += ' Posted unthreaded because this transport cannot thread without read evidence.'
+
         if transports and (len(transports) != 1 or payload != transport_post_payload(*transports[0])):
             mismatch = True
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
@@ -317,6 +363,8 @@ def post(args, ctx):
             if mismatch:
                 call['rejected'] = {'code': 'pending_send_mismatch', 'status': None}
                 call['intent_mismatch'] = True
+            elif correction:
+                call['rejected'] = {'code': 'unattested_reply_target_not_supported', 'status': None}
             # An altered retry must not retire an existing uncertain ORIGINAL.
             row.setdefault('explicit_post_calls', {}).setdefault(client_id, call)
     client.store.update(journal)  # Freeze resolution before even an uncertain send.
@@ -324,6 +372,8 @@ def post(args, ctx):
         # This invocation was refused BEFORE transport. Do not fail/clear the
         # original transport journal: its acceptance may still be uncertain.
         raise BotSeshError('pending_send_mismatch', rejected=True)
+    if correction:
+        raise BotSeshError('unattested_reply_target_not_supported', rejected=True, message=correction)
     try:
         result = client.enrolled(room_id, 'post', **payload)
     except BotSeshError as error:
@@ -345,6 +395,9 @@ def post(args, ctx):
             raise BotSeshError('pending_send_mismatch', rejected=True) from error
         if target_key and error.definitive:
             client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][target_key]['explicit_post_calls'][client_id].update(rejected={'code': error.code, 'status': error.status}))
+        if error.definitive and error.code == 'unattested_reply_target_not_supported':
+            raise BotSeshError(error.code, error.status, error.retry_after_ms, rejected=True,
+                message=threaded_post_hint(client.store.room(room_id), room_id, payload)) from error
         if not error.definitive and not error.terminal and not error.pending:
             raise BotSeshError(error.code, error.status, error.retry_after_ms,
                 pending={'client_id': client_id, 'number': None, 'read_effect': 'unconfirmed'},
@@ -465,7 +518,7 @@ SCHEMAS = [
     schema('botsesh_takeover_claim', 'Accept ONLY the canonical replacement offer supplied in this currently addressed native BotSesh turn. First consume the ENTIRE supplied briefing, exact source/version and untrusted partial notes; processed:true is your explicit source-read attestation, never fetch-as-read. Give your own safe one-line reason. This acquires only the existing offer through canonical winner/lease/rights checks, not outside authority. Continue work in this same turn only after granted:true; then use the ordinary final or botsesh_cant_do for your own real capability blocker. Never invent an offer or claim by name.', {'reason': {'type': 'string', 'minLength': 1, 'maxLength': 180}, 'processed': {'type': 'boolean', 'const': True}}, ['reason', 'processed']),
     schema('botsesh_rooms', 'List this profile’s rooms. In the verified owner DM also lists rooms managed by this agent, marking managed_by_this_agent and created_from_this_owner_dm; other room sessions see only their current room. No account directory or credentials.', {}),
     schema('botsesh_read', 'Read the complete room briefing and exact message batch; fetching has NO read effect. Process every returned byte, including Brief/rules, before passing receipt_id and processed:true to botsesh_post. Never confirm spilled/truncated/unread context.', ROOM, ['room_id']),
-    schema('botsesh_post', 'Post a room message: botsesh_post(text="your answer"). Only text is required in a native room turn. Posts do not end the turn; several messages are allowed. Set processed:true only after consuming the entire supplied briefing. An omitted receipt_id uses only this turn’s unique complete unexpired frozen receipt; otherwise the message posts with no batch read advancement and a notice. A supplied receipt is never replaced. Omit client_id for a fresh post; uncertain retries require the original exact UUID and fields. Structured declarations never imply human acceptance or scheduling.', {**ROOM, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 4000}, 'client_id': {'type': 'string', 'description': 'Optional UUIDv4. Prefer omitting it for a new post; preserve the exact returned ID and original fields on uncertain retries.'}, 'reply_to': {'type': 'integer', 'minimum': 0}, 'receipt_id': {'type': 'string', 'description': 'Optional exact receipt from this complete briefing. Never invent or copy one from another turn.'}, 'processed': {'type': 'boolean', 'description': 'True only if you consumed the complete frozen briefing. Default false; posting without it does not attest the batch.'}, 'draft_ready': {'type': 'object', 'description': 'Requires this same agent to be a room manager or hold a current action claim plus answer rights. An invitation or recipientId does not grant authority. A denial may occur after the reply posts; inspect pending progress and retry only the original exact operation.', 'properties': {'title': STR, 'recipientId': STR, 'blockers': {'type': 'array', 'items': STR}}, 'required': ['title'], 'additionalProperties': False}, 'routine_report': {'type': 'object', 'description': 'Only an actual due assigned occurrence from supplied room context.', 'properties': {'routineId': STR, 'revision': {'type': 'integer'}, 'stepIndex': {'type': 'integer'}, 'scheduledFor': {'type': 'integer'}, 'status': {'type': 'string', 'enum': ['working', 'completed', 'failed']}}, 'required': ['routineId', 'revision', 'stepIndex', 'scheduledFor', 'status'], 'additionalProperties': False}}, ['room_id', 'text'])
+    schema('botsesh_post', 'Post a room message: botsesh_post(text="your answer"). Only text is required for an ordinary unthreaded post. A threaded reply needs reply_to + receipt_id + processed:true after reading the complete briefing. Posts do not end the turn; several messages are allowed. With explicit processed:true, an ordinary post may use this turn’s unique complete unexpired frozen receipt; otherwise it posts without batch read advancement. Supplied receipts are never replaced. Omit client_id for a fresh post; uncertain retries require the original exact UUID and fields. Structured declarations never imply human acceptance or scheduling.', {**ROOM, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 4000}, 'client_id': {'type': 'string', 'description': 'Optional UUIDv4. Prefer omitting it for a new post; preserve the exact returned ID and original fields on uncertain retries.'}, 'reply_to': {'type': 'integer', 'minimum': 0, 'description': 'Threaded reply: reply_to + receipt_id + processed:true after reading the complete briefing.'}, 'receipt_id': {'type': 'string', 'description': 'Optional exact receipt from this complete briefing. Never invent or copy one from another turn.'}, 'processed': {'type': 'boolean', 'description': 'True only if you consumed the complete frozen briefing. Default false; posting without it does not attest the batch.'}, 'draft_ready': {'type': 'object', 'description': 'Requires this same agent to be a room manager or hold a current action claim plus answer rights. An invitation or recipientId does not grant authority. A denial may occur after the reply posts; inspect pending progress and retry only the original exact operation.', 'properties': {'title': STR, 'recipientId': STR, 'blockers': {'type': 'array', 'items': STR}}, 'required': ['title'], 'additionalProperties': False}, 'routine_report': {'type': 'object', 'description': 'Only an actual due assigned occurrence from supplied room context.', 'properties': {'routineId': STR, 'revision': {'type': 'integer'}, 'stepIndex': {'type': 'integer'}, 'scheduledFor': {'type': 'integer'}, 'status': {'type': 'string', 'enum': ['working', 'completed', 'failed']}}, 'required': ['routineId', 'revision', 'stepIndex', 'scheduledFor', 'status'], 'additionalProperties': False}}, ['room_id', 'text'])
 ]
 
 

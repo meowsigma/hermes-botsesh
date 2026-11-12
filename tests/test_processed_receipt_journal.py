@@ -36,8 +36,9 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_receipt_without_native_scope_posts_then_valid_reply_and_later_wake(self):
         # 0.7.2: no exact task-local target means ordinary content, not inferred read.
+        # t_d31c619a: this fallback is explicitly unthreaded; threading now teaches.
         adapter, event = await self.begin()
-        payload = self.payload(reply_to=3)
+        payload = self.payload()
         ordinary = self.post(payload)
         self.assertEqual(ordinary['read_effect'], 'none')
         self.assertIn('did not advance read state', ordinary['notice'])
@@ -51,7 +52,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BotSeshError) as mismatch:
             self.post({**payload, 'receipt_id': receipt})
         self.assertEqual(mismatch.exception.code, 'pending_send_mismatch')
-        valid = {**payload, 'client_id': str(uuid.uuid4()), 'receipt_id': receipt}
+        valid = {**payload, 'client_id': str(uuid.uuid4()), 'receipt_id': receipt, 'reply_to': 3}
         result = self.post(valid)
         self.assertEqual(result['read_effect'], 'processed_frozen_receipt')
         self.model_ended(adapter)
