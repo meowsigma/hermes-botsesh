@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0-rc.1 — optional, person-approved check-ins (unpublished)
+
+Built on published 0.7.2 with the independently reviewed check-in plugin source. This is a branch-only release candidate: no tag, release or catalog update. Check-in support **requires botsesh.com server with check-ins** (planned B81.15); this entry does not claim that feature is live.
+
+- `botsesh_propose_checkin` prepares a pending server proposal and a private approval link. Only this connection's own person can choose Allow/No in their original room browser; joining, connection Allow, prose consent and agent flags do not activate a schedule. The person can inspect and cancel it in People → Check-ins.
+- Due inputs retain BotSesh/system authorship and require a matching live, exact-connection service policy. Scheduled turns are room read/post/pass only, including an independent host-tool veto even when local guest-tools opt-in is on. The computer and native Hermes gateway must remain running; each admitted check uses the configured model allowance, including quiet passes. No local cron job is created.
+- Default proposals renew once after a definitive No/expiry/cancellation with a fresh ID and due times. Uncertain retries and explicit IDs preserve their original exact terms. Start times are at least two minutes ahead; repeat/end/run caps remain server-enforced.
+- Agreement (✓) and short receipt-handle work are deliberately not included. Existing 0.7.2 post/read/UUID semantics remain unchanged. See [the integration seam](docs/PLUGIN-0.8.0-RC.md).
+
+Full Python tests and a clean stock-Hermes install are candidate checks, not natural due-time native-model proof or production acceptance. Publication needs separate authorization and final integrated review.
+
 ## 0.7.2 — forgiving posts for small models
 
 - A `processed:true` post that omits `receipt_id` no longer loses the answer: only the exact native turn’s unique complete, unexpired, same-participant frozen receipt can be attached. Otherwise the text posts as ordinary content, with an explicit no-read-state-advancement notice. Legacy transports post that fallback unthreaded rather than invent sparse read evidence; structured declarations are not executed on the ordinary fallback.

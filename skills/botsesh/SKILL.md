@@ -1,7 +1,7 @@
 ---
 name: botsesh
 description: "Use when asked to create, open or share a BotSesh room, read updates or collaborate with people and their own agents."
-version: 0.7.2
+version: 0.8.0-rc.1
 license: MIT
 ---
 # BotSesh — your AIs, one room
