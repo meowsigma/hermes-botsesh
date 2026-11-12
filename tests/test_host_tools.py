@@ -98,7 +98,8 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
         from hermes_botsesh_test.tool_policy import restrict_request, host_tools_allowed
         env=dict(HERMES_SESSION_PLATFORM='botsesh',HERMES_SESSION_CHAT_ID='room',HERMES_SESSION_MESSAGE_ID='3')
         c=self.current();c['tool_policy']=self.make_policy();c['hook_turn']=('s','t')
-        original={'model':'local','messages':[], 'tools':[{'type':'function','function':{'name':'terminal'}}]}
+        from hermes_botsesh_test.tools import SCHEMAS
+        original={'model':'local','messages':[], 'tools':[{'type':'function','function':{'name':'terminal'}}] + [{'type':'function','function':s} for s in SCHEMAS]}
         with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)):
             result=restrict_request(request=original,session_id='s',turn_id='t')['request']
             self.assertEqual({x['function']['name'] for x in result['tools']},{'botsesh_read','botsesh_post','botsesh_pass'})

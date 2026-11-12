@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 — working chat-only room tools on stock Hermes
+
+- **Guests can actually read, post and pass.** When stock Hermes uses lazy tool discovery, chat-only room turns invoke these three tools through its supported `tool_call` dispatcher instead of advertising names the executor cannot call. Hosts' other tools stay hidden and independently vetoed for guests; the owner's next turn keeps its configured tools and normal approvals.
+- No Hermes core patch or tool-search configuration change is needed. Version 0.7.0's published tag is unchanged.
+
 ## 0.7.0 — reliable follow-ups and tools under your control
 
 - **Keep the conversation going.** A harmless reply-argument mistake can be corrected without losing the room turn. Passing after a confirmed reply no longer turns that answer into a failure or blocks the next question.

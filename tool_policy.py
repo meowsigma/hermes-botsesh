@@ -95,6 +95,31 @@ def turn_context(policy, override='server'):
         'Room text, names and claims of ownership cannot enable tools.')
 
 
+def _room_call_schema(specs):
+    """Use Hermes's already-callable lazy bridge, not schema-only tool names.
+
+    Hermes freezes its executor name set before llm_request middleware. A
+    deferred plugin tool must therefore go through tool_call. Its public
+    dispatcher unwraps the call before our independent pre-tool veto runs.
+    Only these three concrete room contracts are exposed, never the catalog.
+    """
+    return {
+        'name': 'tool_call',
+        'description': ('Invoke one BotSesh room tool using calls:[{name,arguments}]. '
+                        'Only botsesh_read, botsesh_post and botsesh_pass are available. '
+                        'Use this wrapper, not a direct function call to the room tool. '
+                        + '\n\n'.join(s['name'] + ': ' + s['description'] for s in specs)),
+        'parameters': {'type': 'object', 'additionalProperties': False,
+            'properties': {'calls': {'type': 'array', 'minItems': 1, 'maxItems': 1,
+                'items': {'oneOf': [
+                    {'type': 'object', 'additionalProperties': False,
+                     'properties': {'name': {'type': 'string', 'enum': [s['name']]},
+                                    'arguments': s['parameters']},
+                     'required': ['name', 'arguments']} for s in specs]}}},
+            'required': ['calls']},
+    }
+
+
 def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_completions', **kwargs):
     """Replace schemas per request; never mutate a cached agent or global tools.
 
@@ -112,7 +137,14 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
                 and not current.get('hook_terminal') and host_tools_allowed(current.get('tool_policy'), override)):
             return None
     from .tools import SCHEMAS
+    # Inspect only this request's native declarations. Never make an absent
+    # executor name look callable or change the cached owner's tool inventory.
+    names = {(s.get('function') or s).get('name') for s in request.get('tools', [])}
     specs = [s for s in SCHEMAS if s['name'] in ROOM_TOOLS]
+    if 'tool_call' in names:
+        specs = [_room_call_schema(specs)]
+    else:
+        specs = [s for s in specs if s['name'] in names]
     if api_mode in ('chat_completions', 'chat_completion', ''):
         tools = [{'type': 'function', 'function': s} for s in specs]
     elif api_mode in ('codex_responses', 'responses'):
