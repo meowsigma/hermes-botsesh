@@ -38,13 +38,14 @@ async function request(path,{method='GET',body,form}={}){
  return response;
 }
 await request('/api/account/register',{method:'POST',body:{username:'local-'+randomUUID().slice(0,24),password:randomBytes(32).toString('base64url')}});
-const roomIds=[];
+const roomIds=[],passwords=new Map(),guestCookies=new Map();
 for(const name of ['Connect target','Other selected room']){
- const response=await request('/api/rooms',{method:'POST',body:{name,displayName:'Fixture owner',password:randomBytes(32).toString('base64url')}});
- roomIds.push((await response.json()).room.id);
+ const password=randomBytes(32).toString('base64url');
+ const response=await request('/api/rooms',{method:'POST',body:{name,displayName:'Fixture owner',password}});
+ const roomId=(await response.json()).room.id;roomIds.push(roomId);passwords.set(roomId,password);
 }
 console.log(JSON.stringify({origin,room_ids:roomIds}));
-const timer=setTimeout(()=>process.exit(124),240000).unref();
+const timer=setTimeout(()=>process.exit(124),1200000).unref();
 try{
  for await(const line of createInterface({input:process.stdin})){
   const command=JSON.parse(line);let result;
@@ -67,11 +68,22 @@ try{
    if(completed.status!==302)throw Error('callback did not complete');
    result={approved:true};
   }else if(command.op==='message'){
-   result=await (await request('/api/rooms/'+command.room_id+'/messages',{method:'POST',body:{clientId:randomUUID(),text:command.text}})).json();
+   if(command.guest){
+    if(!guestCookies.has(command.room_id)){
+     const r=await fetch(origin+'/api/rooms/'+command.room_id+'/join',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({displayName:'Fixture owner',password:passwords.get(command.room_id)})});
+     if(r.status!==200)throw Error('fixture guest join failed');guestCookies.set(command.room_id,r.headers.getSetCookie().map(v=>v.split(';')[0]).join('; '));
+    }
+    const r=await fetch(origin+'/api/rooms/'+command.room_id+'/messages',{method:'POST',headers:{...headers,'Content-Type':'application/json',Cookie:guestCookies.get(command.room_id)},body:JSON.stringify({clientId:randomUUID(),text:command.text})});
+    if(r.status!==201)throw Error('fixture guest message failed');result=await r.json();
+   }else result=await (await request('/api/rooms/'+command.room_id+'/messages',{method:'POST',body:{clientId:randomUUID(),text:command.text}})).json();
+  }else if(command.op==='tools'){
+   const path='/api/rooms/'+command.room_id+'/agents/'+command.participant_id+'/connection/tools';
+   if(command.mode)await request(path,{method:'POST',body:{mode:command.mode}});
+   result=await (await request(path)).json();
   }else if(command.op==='inspect_turn'){
    const room=command.room_id,pid=command.participant_id;
    result={deliveries:board.db.prepare(`SELECT m.room_number number,d.received_at,d.started_at,d.answered_at,d.completed_at,d.failed_at,d.failure_code,d.answer_message_id FROM agent_message_deliveries d JOIN messages m ON m.id=d.message_id JOIN agent_memberships a ON a.id=d.membership_id WHERE d.room_id=? AND a.participant_id=? ORDER BY d.message_id`).all(room,pid),
-    messages:board.db.prepare('SELECT room_number number,reply_to,text FROM messages WHERE room_id=? ORDER BY id').all(room),
+    messages:board.db.prepare('SELECT id,room_number number,reply_to,text FROM messages WHERE room_id=? ORDER BY id').all(room),
     checkpoint:board.db.prepare('SELECT read_checkpoint FROM participant_checks WHERE id=?').get(pid).read_checkpoint,
     attestations:board.db.prepare('SELECT count(*) n FROM agent_read_attestations WHERE participant_id=?').get(pid).n,
     takeover:await (await request('/api/rooms/'+room+'/wake/takeover')).json()};

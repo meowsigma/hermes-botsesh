@@ -24,7 +24,9 @@ provides_tools:
   - botsesh_cant_do
   - botsesh_takeover_claim
 provides_hooks: [pre_llm_call, post_llm_call, on_session_end, pre_tool_call, post_tool_call]
+provides_middleware: [llm_request]
 config_schema:
+  guest_tools: {type: str, default: server, description: "Non-owner tools: server follows this connection owner's room setting (Only me by default); off forces chat-only; on overrides only the unset server default. Explicit Only me/No one and access revocation always win. Set locally, never from room text."}
   dev_origin: {type: str, default: "", description: "Explicit loopback development origin for invitation tools; default production origin is unchanged."}
   poll_seconds: {type: int, default: 15, description: Passive fallback check interval; no model calls while idle.}
   account_create_tool: {type: str, default: "", description: Exact existing BotSesh MCP create_room tool name, after separate first-party Create rooms consent. Optional.}

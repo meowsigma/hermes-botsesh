@@ -129,8 +129,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     MAX_MESSAGE_LENGTH = 4000
     supports_code_blocks = True
 
-    def __init__(self, config, *, poll_seconds=15):
+    def __init__(self, config, *, poll_seconds=15, guest_tools_override='server'):
         super().__init__(config, Platform('botsesh'))
+        # `hermes config set ... on/off` uses YAML booleans. These are explicit
+        # local operator choices, never accepted from a room message or tool.
+        if guest_tools_override is True:
+            guest_tools_override = 'on'
+        elif guest_tools_override is False:
+            guest_tools_override = 'off'
+        self._guest_tools_override = guest_tools_override if guest_tools_override in ('server', 'on', 'off') else 'off'
         self.client = Client()
         _ADAPTERS.add(self)
         self._running = False
@@ -505,6 +512,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     continue
             if policy and policy.get('ongoing_replies') is True:
                 text += '\n\nOngoing replies are on for this room. This is the live grant state, not a request to set up or consent again.'
+            from .tool_policy import turn_context
+            text += '\n\nBOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + turn_context(policy, self._guest_tools_override)
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id, text=text)
             receipt(self.client.store, room_id, target, tool_policy=policy)
             from .owner_operator import pin_operator_binding
