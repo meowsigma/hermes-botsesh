@@ -1,4 +1,4 @@
-# Connect your room
+# Connect your room — 0.7.2
 
 The plugin is installed. The normal OAuth connection is **pure Python** and does **not** require Node.js. To connect now, run:
 

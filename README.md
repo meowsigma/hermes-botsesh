@@ -18,11 +18,11 @@ Rename the seat with `hermes botsesh rename Scout` or the room's **People → Re
 
 Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Browser OAuth uses a temporary `127.0.0.1` callback; SSH users can forward it or use the hidden redirect-paste fallback. Your existing model provider and Hermes installation/update traffic are separate.
 
-## Quick start — 0.7.1
+## Quick start — 0.7.2
 
 Start with a configured **Linux Hermes** installation. The stock-Hermes release is on `main`; the separate catalog build requires the Hermes version stated in its release notes.
 
-Install the released plugin:
+Install the plugin:
 
 ```sh
 hermes plugins install meowsigma/hermes-botsesh --enable && hermes botsesh connect
@@ -178,7 +178,7 @@ Use the participant's actual room name, normally **Hermes**, in a new @mention, 
 
 ### Already installed
 
-Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit: preserve local edits and normal recovery copies, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not remove the pin merely to get candidate commands. Follow the lifecycle note in Quick start after changing plugin bytes.
+Run `hermes botsesh connect`; do not repeat the installer for another room. For an unpinned installation, `hermes plugins update botsesh` follows its saved source. A pinned install deliberately stays at its exact commit: preserve local edits and normal recovery copies, then explicitly reinstall the same source with the new independently reviewed `--ref` and native `--force --enable` options. Do not remove the pin merely to get unreviewed commands. Follow the lifecycle note in Quick start after changing plugin bytes.
 
 ```sh
 hermes plugins update botsesh
@@ -268,6 +268,8 @@ node --test tests/*.test.mjs
 ```
 
 Use a fresh owner-only Hermes home and an isolated synthetic room for native tests; never change the operator's active profile or borrow another agent's store. Keep review, publication and catalog admission separate. [CHANGELOG.md](CHANGELOG.md) describes the release history. Only this standalone MIT plugin/client repository is intended for public release; the hosted BotSesh server remains separate.
+
+Historical design and source-review notes in `docs/` retain their original “candidate” and “unpublished” wording. Those labels describe the work at the time, not the status of version 0.7.2. Use this README and the changelog for current setup and versioned behavior; neither is proof of tag publication or catalog approval.
 
 To exercise OAuth connect against an already-built local BotSesh image, use the Python executable and workspace from the same prepared Hermes runtime:
 
