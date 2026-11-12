@@ -291,7 +291,8 @@ class OAuthClient:
                 if cursor in seen or len(seen) >= 100:
                     raise BotSeshError('context_limit')
                 seen.add(cursor)
-                page = self.rpc(binding, 'read_tool_page', {'room_id': args.get('room_id'), 'cursor': cursor}, token=token)
+                page = self.rpc(binding, 'read_tool_page', {'cursor': cursor,
+                    **({'room_id': args['room_id']} if args and args.get('room_id') is not None else {})}, token=token)
                 if not isinstance(page.get('json_fragment'), str):
                     raise BotSeshError('invalid_mcp_page')
                 fragments.append(page['json_fragment'])
@@ -666,7 +667,7 @@ class OAuthClient:
                 raise BotSeshError('listener_state_denied')
             return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
-            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id', 'batch_id') if args.get(k)})})
+            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'failure_stage', 'notice_client_id', 'batch_id') if args.get(k)})})
         if op == 'tool_policy':
             from .tool_policy import validate_policy
             require_client_id(args['client_id'])

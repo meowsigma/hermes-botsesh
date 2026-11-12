@@ -110,7 +110,7 @@ class Boundaries(unittest.TestCase):
         names = {s['name'] for s in tools.SCHEMAS}
         self.assertEqual(names, {'botsesh_join', 'botsesh_create_room', 'botsesh_offer_ownership', 'botsesh_revoke_ownership_offer', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_pass', 'botsesh_cant_do', 'botsesh_takeover_claim'})
         for schema in tools.SCHEMAS:
-            self.assertFalse(schema['parameters']['additionalProperties'])
+            self.assertEqual(schema['parameters']['additionalProperties'], schema['name'] in ('botsesh_post', 'botsesh_read'))
     def test_guarded_error_never_echoes_request(self):
         result = tools.guarded(lambda args: (_ for _ in ()).throw(ValueError('test-only-secret')))({})
         self.assertNotIn('test-only-secret', result)

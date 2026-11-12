@@ -104,7 +104,11 @@ class NativeTurnMixin:
             current['delivered'] = True
         room = self.client.store.room(room_id)
         row = room.get('processing_receipts', {}).get(str(current['target']), {})
-        if row.get('explicit_pass') or (current.get('model_processed') and current.get('intentional_silence')
+        rejected_posts = row.get('explicit_post_calls') and all(call.get('rejected') for call in row['explicit_post_calls'].values())
+        if rejected_posts and not current.get('delivered') and not row.get('read_attested'):
+            self._queue_failure(room_id, current['target'], 'runtime_error')
+            await self._flush_failures(room_id)
+        elif row.get('explicit_pass') or (current.get('model_processed') and current.get('intentional_silence')
                                        and not row.get('explicit_post_calls')):
             from .room_pass import pass_frozen
             await asyncio.to_thread(pass_frozen, self.client, room_id, current['receipt_id'], True, target=current['target'])

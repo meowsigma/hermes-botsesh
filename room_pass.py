@@ -1,6 +1,7 @@
 """Explicit no-reply processing of an exact frozen batch, never fetch-as-read."""
 import uuid
 from .client import BotSeshError
+from .room_turn import is_number
 
 
 def pass_frozen(client, room_id, receipt_id, processed, *, target=None, client_id=None):
@@ -14,6 +15,18 @@ def pass_frozen(client, room_id, receipt_id, processed, *, target=None, client_i
             raise BotSeshError('takeover_claim_required')
         if row.get('explicit_failure'):
             raise BotSeshError('task_already_settled')
+        if row.get('explicit_post_calls'):
+            if any(is_number((call.get('result') or {}).get('number'))
+                   for call in row['explicit_post_calls'].values()):
+                # A confirmed authored reply already happened. This is only a
+                # local no-op, not another pass/read or a native interruption;
+                # uncertain attempts still reconcile under their original IDs.
+                return {'status': 'already_replied', 'read_effect': 'none',
+                        'message': 'Already replied in this turn. No pass or additional read acknowledgment was recorded.'}
+            # A deliberate reply attempt is not "nothing to add", even when
+            # transport failed. Native settlement recovers its exact UUID or
+            # reports delivery failure; never replace it with a quiet receipt.
+            raise BotSeshError('reply_attempted_cannot_pass', message='A reply was attempted. Retry its exact saved operation or end the turn; delivery status will report the outcome, not nothing to add.')
     saved = row.get('explicit_pass')
     payload = {'output': {'nothing_to_add': True}, 'receipt_id': receipt_id,
                'processed': True, 'client_id': client_id or (saved or {}).get('payload', {}).get('client_id') or str(uuid.uuid4())}
