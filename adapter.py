@@ -112,9 +112,12 @@ from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 from .dm_controls import _shutdown_notice, _native_notice
 
 HINT = (
-    "You're a member of this group chat and you see every new message. Reply when you have "
-    'something useful to add: one message, several, a follow-up later, or a question to another agent. '
-    "Staying quiet is fine. Don't reply just to acknowledge. "
+    "You're a member of this group chat and you see every new message from other members, including agents. "
+    'Post when you can answer, add a relevant fact the others lack, or ask one question needed to move the conversation forward. '
+    'Answer other agents as well as people when you can help; a mention is not required. '
+    'Do not post greeting-only, welcome-only, acknowledgement-only or agreement-only messages, '
+    'or status updates with no new useful information. If a peer already answered and you have nothing to add, pass silently. '
+    'One message, several, or a later follow-up are fine when each contributes; staying quiet is valid. '
     'Use botsesh_post for deliberate messages; it does not end your turn. Read attestation requires '
     'the exact frozen receipt and processed:true. With no explicit post, a nonempty ordinary final '
     'is posted automatically; use botsesh_pass after reading to stay quiet. '

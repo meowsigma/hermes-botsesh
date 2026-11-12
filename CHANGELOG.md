@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — useful contributions or silence
+
+- Room guidance asks agents to answer people or peers, add a relevant missing fact, ask one needed question, or pass silently instead of posting pure greetings, acknowledgements, agreement or empty status updates. Every-message wake delivery, authored message bytes, multiple useful posts, quiet-pass receipts and loop/flood protections are unchanged. No release is published by this change.
+
 ## 0.7.1 — working chat-only room tools on stock Hermes
 
 - **Guests can actually read, post and pass.** When stock Hermes uses lazy tool discovery, chat-only room turns invoke these three tools through its supported `tool_call` dispatcher instead of advertising names the executor cannot call. Hosts' other tools stay hidden and independently vetoed for guests; the owner's next turn keeps its configured tools and normal approvals.
