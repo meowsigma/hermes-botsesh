@@ -224,6 +224,18 @@ def current_post_receipt(room, target):
     return receipt_id
 
 
+def transport_post_payload(section, saved):
+    """Project a saved post back to tool fields, never to a newer receipt."""
+    exact = saved['exact']
+    if section == 'oauth_posts':
+        return {k: v for k, v in exact.items() if k != 'seen_number'}
+    output = exact.get('output', {})
+    if 'reply' not in output or set(output) - {'reply', 'draft_ready', 'routine_report'}:
+        return None  # A pass/failure/other operation is not a post replay.
+    return {**{k: v for k, v in exact.items() if k != 'output'},
+            'text': output['reply'], **{k: v for k, v in output.items() if k != 'reply'}}
+
+
 def post(args, ctx):
     args = room_arguments('botsesh_post', args)
     args = {**args, 'text': visible_text(args['text'])}
@@ -237,6 +249,7 @@ def post(args, ctx):
     payload = authored
     target_key = None
     notice = None
+    mismatch = False
     native = calling_scope(ctx)[0] == 'botsesh'
     if native:
         from gateway.session_context import get_session_env
@@ -244,13 +257,16 @@ def post(args, ctx):
     else:
         target = ''
     def journal(data):
-        nonlocal target_key, payload, notice
+        nonlocal target_key, payload, notice, mismatch
         room = data['rooms'].get(room_id)
         if not room:
             return  # enrolled() retains the canonical not-enrolled error.
         rows = room.get('processing_receipts', {})
         previous = [(key, call) for key, row in rows.items()
-                    for key_id, call in row.get('explicit_post_calls', {}).items() if key_id == client_id]
+                    for key_id, call in row.get('explicit_post_calls', {}).items()
+                    if key_id == client_id and not call.get('intent_mismatch')]
+        transports = [(section, saved) for section in ('oauth_posts', 'oauth_turns')
+                      if (saved := room.get(section, {}).get(client_id)) is not None]
         if previous:
             target_key, call = previous[0]
             original = call['payload']
@@ -258,13 +274,23 @@ def post(args, ctx):
                 # Share text/UUID with the wire payload instead of retaining
                 # another answer-text copy just for missing bookkeeping.
                 original = {'text': original['text'], 'client_id': client_id, **call['authored_options']}
-            if original != authored or any(
-                    old['payload'] != call['payload'] or old.get('authored_options') != call.get('authored_options')
-                    for _, old in previous):
-                raise BotSeshError('pending_send_mismatch')
+            mismatch = original != authored or any(
+                old['payload'] != call['payload'] or old.get('authored_options') != call.get('authored_options')
+                for _, old in previous)
             payload, notice = call['payload'], call.get('notice')
             if native and target and target_key != target:
                 notice = 'Replayed the original saved operation; no newer turn input was acknowledged.'
+        elif transports:
+            section, saved = transports[0]
+            payload = transport_post_payload(section, saved)
+            # Outside an active native row (or archived by takeover), the
+            # transport still owns the original intent. Old unannotated rows
+            # allow only literal-wire replay, never guessed authored fields.
+            original = payload
+            if payload is not None and 'authored_options' in saved:
+                original = {'text': payload['text'], 'client_id': client_id, **saved['authored_options']}
+            mismatch = original != authored
+            notice = 'Replayed the original saved operation; no newer turn input was acknowledged.'
         elif options.get('processed') is True and not options.get('receipt_id'):
             receipt_id = current_post_receipt(room, target) if native else None
             if receipt_id:
@@ -279,18 +305,44 @@ def post(args, ctx):
                     # the text, not an unearned sparse read on this fallback.
                     payload.pop('reply_to')
                     notice += ' Posted unthreaded because this transport cannot thread without read evidence.'
+        if transports and (len(transports) != 1 or payload != transport_post_payload(*transports[0])):
+            mismatch = True
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
                   and row.get('state') in ('admitting', 'admitted', 'started')]
         if len(active) == 1:
             target_key, row = active[0]
-            call = {'payload': payload}
-            if payload != authored:
+            call = {'payload': authored if mismatch else payload}
+            if not mismatch and payload != authored:
                 call.update(authored_options=options, notice=notice)
+            if mismatch:
+                call['rejected'] = {'code': 'pending_send_mismatch', 'status': None}
+                call['intent_mismatch'] = True
+            # An altered retry must not retire an existing uncertain ORIGINAL.
             row.setdefault('explicit_post_calls', {}).setdefault(client_id, call)
     client.store.update(journal)  # Freeze resolution before even an uncertain send.
+    if mismatch:
+        # This invocation was refused BEFORE transport. Do not fail/clear the
+        # original transport journal: its acceptance may still be uncertain.
+        raise BotSeshError('pending_send_mismatch', rejected=True)
     try:
         result = client.enrolled(room_id, 'post', **payload)
     except BotSeshError as error:
+        def reject_lost_race(data):
+            nonlocal mismatch
+            room = data['rooms'].get(room_id, {})
+            saved = [(section, row) for section in ('oauth_posts', 'oauth_turns')
+                     if (row := room.get(section, {}).get(client_id)) is not None]
+            # Another caller can win between our audit and transport's locked
+            # journal. Only the losing fields are definitively unsent; preserve
+            # the winner and any uncertainty it still owns.
+            mismatch = bool(saved) and (len(saved) != 1 or transport_post_payload(*saved[0]) != payload)
+            if mismatch and target_key:
+                call = room['processing_receipts'][target_key]['explicit_post_calls'][client_id]
+                if call['payload'] == payload:
+                    call.update(intent_mismatch=True, rejected={'code': 'pending_send_mismatch', 'status': None})
+        client.store.update(reject_lost_race)
+        if mismatch:
+            raise BotSeshError('pending_send_mismatch', rejected=True) from error
         if target_key and error.definitive:
             client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][target_key]['explicit_post_calls'][client_id].update(rejected={'code': error.code, 'status': error.status}))
         if not error.definitive and not error.terminal and not error.pending:
@@ -298,6 +350,16 @@ def post(args, ctx):
                 pending={'client_id': client_id, 'number': None, 'read_effect': 'unconfirmed'},
                 message=error.message) from error
         raise
+    finally:
+        def remember_authored(data):
+            room = data['rooms'].get(room_id, {})
+            for section in ('oauth_posts', 'oauth_turns'):
+                saved = room.get(section, {}).get(client_id)
+                if saved and transport_post_payload(section, saved) == payload:
+                    # No second text copy. A crash before this annotation leaves
+                    # only literal-wire replay available (fail closed otherwise).
+                    saved.setdefault('authored_options', options)
+        client.store.update(remember_authored)
     if notice:
         result = {**result, 'notice': notice}
     if target_key:

@@ -4,6 +4,7 @@
 
 - A `processed:true` post that omits `receipt_id` no longer loses the answer: only the exact native turn’s unique complete, unexpired, same-participant frozen receipt can be attached. Otherwise the text posts as ordinary content, with an explicit no-read-state-advancement notice. Legacy transports post that fallback unthreaded rather than invent sparse read evidence; structured declarations are not executed on the ordinary fallback.
 - Authored intent and resolved send fields are saved separately before transport. Exact retries retain the original receipt and UUID, never a later turn’s context. Supplied unknown/foreign receipts and every host/guest tool veto remain fail-closed.
+- Exact post UUIDs replay their saved transport intent even across native contexts or an archived turn. Changed-field retries are rejected locally and settle their native audit without retiring an uncertain original send, reading a newer batch, or blocking the next input.
 - The post schema leads with a text-only call, explains optional bookkeeping and gives actionable remaining errors.
 
 ## 0.7.1 — working chat-only room tools on stock Hermes
