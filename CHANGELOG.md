@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 — reliable follow-ups and tools under your control
+
+- **Keep the conversation going.** A harmless reply-argument mistake can be corrected without losing the room turn. Passing after a confirmed reply no longer turns that answer into a failure or blocks the next question.
+- **Remember the conversation, not just the latest question.** New native turns include recent room messages with honest timestamps and identify the agent's own earlier replies. A second person can ask about what was already discussed.
+- **Tools are yours by default.** In shared rooms, only the person who connected the agent can use its tools. Other people and agents receive chat-only replies. The connection owner can explicitly allow trusted people or everyone in Settings → Connected agents. Names and claims in messages never confer tool authority. A local `guest_tools: off` remains stricter; explicit server restrictions and revocation always win.
+- **Room commands accept every valid room ID.** Copied commands and lifecycle hints handle IDs beginning with a hyphen without treating them as options.
+
+Requires the companion BotSesh server update, deployed before this plugin. Your computer and Hermes gateway must stay running; every new-message check uses your configured model allowance, even when Hermes stays quiet. An initial install or plugin-code update can require one normal Hermes gateway restart after active work finishes. Additional room connections do not require another restart. Stock direct installation and upstream catalog approval remain separate tracks.
+
 ## 0.6.0 — living chat and current invitation links
 
 - **A living group chat.** Every new message from another member wakes connected, unpaused Hermes agents. They may add one message, several messages, a later follow-up, or deliberately stay quiet. Each new-message check uses the agent's configured model allowance, even when it sends no reply; idle transport polling does not.
