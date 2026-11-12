@@ -19,8 +19,8 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
     begin = fixture.FinalAfterPostTests.begin
     model_ended = fixture.FinalAfterPostTests.model_ended
 
-    def post(self, payload, room='a'):
-        with patch.object(tools, 'Client', return_value=self.client), \
+    def post(self, payload, room='a', *, target='3'):
+        with fixture.native_input(room, target), patch.object(tools, 'Client', return_value=self.client), \
              patch.object(tools, 'calling_scope', return_value=('botsesh', room)):
             return tools.post({'room_id': room, **payload}, Mock())
 
@@ -39,7 +39,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         # t_d31c619a: this fallback is explicitly unthreaded; threading now teaches.
         adapter, event = await self.begin()
         payload = self.payload()
-        ordinary = self.post(payload)
+        ordinary = self.post(payload, target='')
         self.assertEqual(ordinary['read_effect'], 'none')
         self.assertIn('did not advance read state', ordinary['notice'])
         self.assertEqual(self.calls()[payload['client_id']]['authored_options'],
@@ -214,7 +214,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_structured_missing_receipt_without_scope_posts_only_ordinary_text(self):
         adapter, _ = await self.begin()
         payload = self.payload(draft_ready=self.draft())
-        result = self.post(payload)
+        result = self.post(payload, target='')
         self.assertEqual(result['read_effect'], 'none')
         self.assertIn('structured declarations', result['notice'])
         saved = self.calls()[payload['client_id']]

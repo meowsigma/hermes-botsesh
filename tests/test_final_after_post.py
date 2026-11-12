@@ -4,6 +4,7 @@ Only the MCP wire is doubled. No production, provider or model calls.
 """
 # Owner 2026-11-10 living chat: preserve explicit sends; failures are status-only.
 import hashlib
+from contextlib import contextmanager
 import tempfile
 import unittest
 import uuid
@@ -16,6 +17,23 @@ from hermes_botsesh_test.oauth import OAuthClient
 from gateway.config import PlatformConfig
 from gateway.platform_registry import PlatformEntry, platform_registry
 from gateway.platforms.event import ProcessingOutcome
+from gateway.session_context import set_session_vars, clear_session_vars, get_session_env
+
+
+@contextmanager
+def native_input(room, target):
+    """Bind the exact native input; receipt presence is not a scope substitute."""
+    existing = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+    if existing:
+        assert existing == str(target)
+        assert get_session_env('HERMES_SESSION_CHAT_ID', '') == room
+        yield  # Do not nest Hermes's non-restoring clear_session_vars.
+        return
+    tokens = set_session_vars(platform='botsesh', chat_id=room, message_id=str(target))
+    try:
+        yield
+    finally:
+        clear_session_vars(tokens)
 
 
 class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
@@ -110,7 +128,7 @@ class FinalAfterPostTests(unittest.IsolatedAsyncioTestCase):
                 'client_id': str(uuid.uuid4())}
         if reply_to:
             args['reply_to'] = current['target']
-        with patch.object(tools, 'Client', return_value=self.client), \
+        with native_input(room, current['target']), patch.object(tools, 'Client', return_value=self.client), \
              patch.object(tools, 'calling_scope', return_value=('botsesh', room)):
             return tools.post(args, Mock())
 

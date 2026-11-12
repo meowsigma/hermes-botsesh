@@ -5,7 +5,7 @@ import uuid
 import unittest
 from unittest.mock import Mock, patch
 from test_plugin import Client, Store, BotSeshError, StorageError, tools
-from test_final_after_post import FinalAfterPostTests
+from test_final_after_post import FinalAfterPostTests, native_input
 from hermes_botsesh_test.oauth import OAuthClient
 
 
@@ -20,7 +20,7 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
         adapter, event = await self.begin()
         args = {'room_id': 'a', 'text': 'Tool answer', 'reply_to': 3,
                 'receipt_id': adapter._current['a']['receipt_id']}
-        with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
+        with native_input('a', 3), patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             result = json.loads(tools.guarded(lambda a: tools.post(a, Mock()))(args))
         self.assertFalse(result['ok'], result)
         self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
@@ -35,7 +35,7 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('read_attested', row)
         corrected = json.JSONDecoder().raw_decode(result['message'].split('botsesh_post(', 1)[1])[0]
         self.assertEqual(corrected, {**args, 'processed': True})
-        with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
+        with native_input('a', 3), patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             posted = tools.post(corrected, Mock())
         self.assertEqual(posted['read_effect'], 'processed_frozen_receipt')
         self.model_ended(adapter)

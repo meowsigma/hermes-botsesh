@@ -285,6 +285,7 @@ def post(args, ctx):
     notice = None
     mismatch = False
     correction = None
+    receipt_unavailable = False
     native = calling_scope(ctx)[0] == 'botsesh'
     if native:
         from gateway.session_context import get_session_env
@@ -292,7 +293,7 @@ def post(args, ctx):
     else:
         target = ''
     def journal(data):
-        nonlocal target_key, payload, notice, mismatch, correction
+        nonlocal target_key, payload, notice, mismatch, correction, receipt_unavailable
         room = data['rooms'].get(room_id)
         if not room:
             return  # enrolled() retains the canonical not-enrolled error.
@@ -349,6 +350,10 @@ def post(args, ctx):
 
         if transports and (len(transports) != 1 or payload != transport_post_payload(*transports[0])):
             mismatch = True
+        # Saved transport intent may be replayed, never rebound. A NEW send
+        # cannot borrow another input's full UUID any more than its short alias.
+        receipt_unavailable = bool(not transports and payload and payload.get('receipt_id')
+            and not receipt_handles.available(room, target if native else None, payload['receipt_id']))
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
                   and row.get('state') in ('admitting', 'admitted', 'started')]
         if len(active) == 1:
@@ -371,6 +376,10 @@ def post(args, ctx):
     if correction:
         raise BotSeshError('unattested_reply_target_not_supported', rejected=True, message=correction)
     try:
+        if receipt_unavailable:
+            # Retain the authored invocation and existing unknown-receipt audit
+            # semantics, but refuse before transport can acknowledge any batch.
+            raise BotSeshError('receipt_expired')
         result = client.enrolled(room_id, 'post', **payload)
     except BotSeshError as error:
         if error.code == 'receipt_expired':
@@ -460,8 +469,9 @@ def pass_turn(args, ctx):
     client = Client()
     supplied = args.get('receipt_id')
     resolved = supplied
+    receipt_unavailable = False
     def bind(data):
-        nonlocal resolved
+        nonlocal resolved, receipt_unavailable
         room = data['rooms'].get(room_id, {})
         resolved = receipt_handles.resolve(room, target, supplied)
         row = room.get('processing_receipts', {}).get(str(target), {})
@@ -469,10 +479,15 @@ def pass_turn(args, ctx):
         # An exact quiet-pass retry retains its old alias after terminal state;
         # this does not make a closed receipt available to any new operation.
         old = row.get('model_receipt_handles', {}).get(supplied)
-        if old and saved.get('receipt_id') == old:
+        if old and saved.get('receipt_id') == old and row.get('receipt_id') == old:
             resolved = old
+        exact_pass_retry = bool(saved and saved.get('receipt_id') == resolved == row.get('receipt_id'))
+        receipt_unavailable = bool(supplied and not exact_pass_retry
+            and not receipt_handles.available(room, target, resolved))
     client.store.update(bind)
     try:
+        if receipt_unavailable:
+            raise BotSeshError('receipt_scope')
         return pass_frozen(client, room_id, resolved, args.get('processed'),
                            target=target, client_id=args.get('client_id'))
     except BotSeshError as error:

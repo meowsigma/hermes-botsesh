@@ -66,7 +66,7 @@ class ThreadedPostGuidance(unittest.TestCase):
                            'batch': {'messages': [{'number': number, 'isOwn': False}], 'hasMore': False}}}
         self.client.store.update(add)
 
-    def call(self, args, *, target='0'):
+    def call(self, args, *, target='0', local=False):
         import hermes_cli.plugins as plugins
         from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
         from agent.tool_executor import _ToolCallRef, _resolve_sequential_dispatch
@@ -82,7 +82,7 @@ class ThreadedPostGuidance(unittest.TestCase):
             stack.enter_context(patch.object(plugins, 'get_plugin_manager', return_value=manager))
             stack.enter_context(patch.object(plugins, 'discover_plugins'))
             stack.enter_context(patch.object(tools, 'Client', return_value=self.client))
-            stack.enter_context(patch.object(tools, 'calling_scope', return_value=('botsesh', ROOM)))
+            stack.enter_context(patch.object(tools, 'calling_scope', return_value=('local', '') if local else ('botsesh', ROOM)))
             stack.enter_context(patch.object(ctx, 'register_command'))
             stack.enter_context(patch.object(ctx, 'register_skill'))
             tools.register_tools(ctx)
@@ -173,13 +173,14 @@ class ThreadedPostGuidance(unittest.TestCase):
                 room['processing_receipts'][str(i)]['frozen']['batch']['messages'].append({'number': i, 'isOwn': False})
                 room['oauth_receipts']['candidate-' + str(i)]['numbers'] = [0, i]
             self.client.store.update(cover_input)
-        self.client.store.update(lambda d: d['rooms'][ROOM]['processing_receipts'].update(
-            duplicate=copy.deepcopy(d['rooms'][ROOM]['processing_receipts']['0'])))
+        # 11j r2: several candidates can exist only in one LOCAL read scope.
+        # Native turns may no longer suggest receipts for other queued inputs.
+        self.client.store.update(lambda d: d['rooms'][ROOM].update(processing_receipts={}))
         original_room = copy.deepcopy(self.client.store.room(ROOM))
         for additions in ({}, {'processed': True}):
             with self.subTest(additions=additions):
                 self.client.store.update(lambda d: d['rooms'].update({ROOM: copy.deepcopy(original_room)}))
-                result = self.call({**FIXTURE['calls'][0], **additions})
+                result = self.call({**FIXTURE['calls'][0], **additions}, local=True)
                 self.assertFalse(result['ok'], result)
                 self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
                 listing = result['message'].split('briefing you read: ', 1)[1]

@@ -35,7 +35,7 @@ class LivingChatTests(unittest.IsolatedAsyncioTestCase):
 
     def post(self, **options):
         args = {'room_id': 'a', 'text': 'Same deliberate words.', **options}
-        with patch.object(tools, 'Client', return_value=self.client), \
+        with fixture.native_input('a', 3), patch.object(tools, 'Client', return_value=self.client), \
              patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             return tools.post(args, Mock())
 

@@ -8,6 +8,7 @@ from unittest.mock import patch, Mock, AsyncMock
 from test_plugin import ROOT, Client, Store, tools
 from hermes_botsesh_test.client import node_binary, child_env
 
+
 class PartialRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_partial_tool_send_holds_newer_and_recovers_exactly(self):
         from hermes_botsesh_test.adapter import BotSeshAdapter
@@ -23,10 +24,12 @@ class PartialRecovery(unittest.IsolatedAsyncioTestCase):
             subprocess.run([*client.command(), 'seed'], check=True, capture_output=True, env=child_env(client.store))
             client.store.update(lambda d: d['rooms'].update({'offline': {'active': True, 'url': 'https://botsesh.com/b/offline'}}))
             read = client.enrolled('offline', 'read', target_number=7)
+            # This receipt came from a LOCAL Advanced read, not an admitted
+            # native input. The later adapter recovery is simulated below.
             original_id = '5c1cfd9c-fdbe-4ef4-9f61-30a6561f41d9'
             text = 'Exact final.\nUnicode: café 🐚\n  retained spacing\n'
             args = {'room_id': 'offline', 'text': text, 'client_id': original_id, 'receipt_id': read['receipt_id'], 'processed': True, 'reply_to': 7, 'draft_ready': {'title': 'Synthetic draft', 'recipientId': '7f5081ed-bb74-4304-9fb7-12bd396831f7', 'blockers': []}}
-            with patch.object(tools, 'Client', return_value=client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'offline')):
+            with patch.object(tools, 'Client', return_value=client), patch.object(tools, 'calling_scope', return_value=('cli', '')):
                 failed = json.loads(tools.guarded(lambda a: tools.post(a, Mock()))(args))
             self.assertFalse(failed['ok'])
             self.assertEqual((failed['status'], failed['pending']['number'], failed['pending']['draft_ready']), (403, 8, 'denied'))

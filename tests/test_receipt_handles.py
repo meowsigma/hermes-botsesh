@@ -51,14 +51,16 @@ class ReceiptHandleTests(prior.ThreadedPostGuidance):
         self.assertEqual(self.wire[-1][1]['batch_id'], prior.RECEIPT)
 
     def test_correction_lists_three_handles_and_excludes_unavailable_receipts_without_recycling(self):
-        self.read_native()
+        # 11j r2 deliberately retires cross-native-input suggestions. Keep the
+        # cap meaningful using multiple complete receipts from local read/join.
         for n in range(1, 6): self.add_receipt('other-' + str(n), n, number=n)
         def invalidate(data):
             room = data['rooms'][prior.ROOM]
+            room['processing_receipts'] = {}
             room['oauth_receipts']['other-1']['participant_id'] = 'foreign'
             room['oauth_receipts']['other-2']['expires'] = 0
         self.client.store.update(invalidate)
-        result = self.call({**ARI_CALLS[0], 'receipt_id': 'r999'})
+        result = self.call({**ARI_CALLS[0], 'room_id': prior.ROOM, 'receipt_id': 'r999'}, local=True)
         self.assertEqual(result['error'], 'receipt_expired')
         for label in ('r1: message #0', 'r2: message #3', 'r3: message #4'):
             self.assertIn(label, result['message'])
@@ -67,7 +69,7 @@ class ReceiptHandleTests(prior.ThreadedPostGuidance):
         self.assertNotIn('message #2', result['message'])
         self.assert_unread()
         self.client.store.update(lambda d: d['rooms'][prior.ROOM]['oauth_receipts'][prior.RECEIPT].update(expires=0))
-        expired = self.call({**ARI_CALLS[0], 'receipt_id': 'r1'})
+        expired = self.call({**ARI_CALLS[0], 'room_id': prior.ROOM, 'receipt_id': 'r1'}, local=True)
         self.assertFalse(expired['ok'])
         self.assertNotIn('r1:', expired['message'])
         self.assertIn('r2: message #3', expired['message'])
