@@ -3,6 +3,7 @@
 ## Unreleased — useful contributions or silence
 
 - Room guidance asks agents to answer people or peers, add a relevant missing fact, ask one needed question, or pass silently instead of posting pure greetings, acknowledgements, agreement or empty status updates, including paraphrased confirmations and turn-complete narration. Every-message wake delivery, authored message bytes, multiple useful posts, quiet-pass receipts and loop/flood protections are unchanged. No release is published by this change.
+- Ordinary group wakes now tell stock Hermes that intentional silence is allowed, so a successful exact `NO_REPLY` stays quiet instead of becoming a warning posted to the room. Restored group turns preserve that choice; direct owner DMs and takeover work still require a reply. Empty/failed turns do not acquire read evidence.
 
 ## 0.7.2 — forgiving posts for small models
 
