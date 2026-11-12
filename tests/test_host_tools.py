@@ -28,7 +28,7 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
         current['tool_policy']=self.make_policy()
         self.client.enrolled=Mock(return_value=self.make_policy())
         with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)), patch('hermes_cli.lifecycle.invoke_hook',side_effect=lambda name,**kw:[tool_policy.enforce_tools(**kw)]):
-            for name in ('botsesh_read','botsesh_post','botsesh_pass'):
+            for name in ('botsesh_read','botsesh_post','botsesh_pass','botsesh_agree'):
                 self.assertIsNone(self.guard(name),name)
             for name in ('terminal','read_file','browser_exec','computer_use','execute_code','delegate_task','cronjob','memory','skill_manage','tool_search','mcp__evil__run','botsesh_create_room','botsesh_invite'):
                 self.assertEqual(self.guard(name),'block',name)
@@ -94,7 +94,7 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
             from hermes_botsesh_test.client import BotSeshError
             with self.assertRaises(BotSeshError):tool_policy.validate_policy(dict(self.make_policy(),**changed),self.binding,3,'batch','guest')
 
-    def test_f5_21_exact_three_schemas_and_explicit_local_override(self):
+    def test_f5_21_exact_room_schemas_and_explicit_local_override(self):
         from hermes_botsesh_test.tool_policy import restrict_request, host_tools_allowed
         env=dict(HERMES_SESSION_PLATFORM='botsesh',HERMES_SESSION_CHAT_ID='room',HERMES_SESSION_MESSAGE_ID='3')
         c=self.current();c['tool_policy']=self.make_policy();c['hook_turn']=('s','t')
@@ -102,11 +102,11 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
         original={'model':'local','messages':[], 'tools':[{'type':'function','function':{'name':'terminal'}}] + [{'type':'function','function':s} for s in SCHEMAS]}
         with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)):
             result=restrict_request(request=original,session_id='s',turn_id='t')['request']
-            self.assertEqual({x['function']['name'] for x in result['tools']},{'botsesh_read','botsesh_post','botsesh_pass'})
+            self.assertEqual({x['function']['name'] for x in result['tools']},{'botsesh_read','botsesh_post','botsesh_pass','botsesh_agree'})
             self.assertEqual(original['tools'][0]['function']['name'],'terminal')
             for mode in ('codex_responses','anthropic_messages'):
                 changed=restrict_request(request=original,session_id='s',turn_id='t',api_mode=mode)['request']
-                self.assertEqual({x['name'] for x in changed['tools']},{'botsesh_read','botsesh_post','botsesh_pass'})
+                self.assertEqual({x['name'] for x in changed['tools']},{'botsesh_read','botsesh_post','botsesh_pass','botsesh_agree'})
                 if mode=='anthropic_messages':self.assertTrue(all('input_schema' in x for x in changed['tools']))
             unknown=restrict_request(request={**original,'toolConfig':{'tools':['terminal']}},session_id='s',turn_id='t',api_mode='unknown')['request']
             self.assertEqual(unknown['tools'],[]);self.assertNotIn('toolConfig',unknown)

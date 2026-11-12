@@ -30,6 +30,7 @@ def _http(origin, room_id, method, suffix, *, payload=None, bearer=None):
         or (bearer and (method == 'GET' and (
             suffix == '/agent-access' or re.fullmatch(r'/updates(?:\?after=[0-9]+)?', suffix)
             or re.fullmatch(r'/messages/(?:by-number/[0-9]+|by-client/[0-9a-fA-F-]{36})', suffix))
+            or method == 'PUT' and re.fullmatch(r'/messages/by-number/[0-9]+/agreement', suffix)
             or method == 'POST' and (suffix in ('/messages', '/agents/me/wait_for_messages', '/ack', '/wake/quiet-turn')
                 or re.fullmatch(r'/wake/tasks/[0-9a-fA-F-]{36}/failure', suffix)))))
     if not allowed or bearer is not None and not re.fullmatch(TOKEN, bearer):
@@ -246,6 +247,9 @@ class InvitationClient(OAuthClient):
         return super().rpc(binding, 'reply' if name == 'send_message' else name, args, token=self._access(binding))
 
     def call(self, binding, op, **args):
+        if op == 'agree':
+            self.verify(binding)
+            return self.rest(binding, 'PUT', '/messages/by-number/' + str(args['number']) + '/agreement', {k: args[k] for k in ('active', 'version')})
         if op in ('verify', 'pending'):
             return {**self.verify(binding), 'pending': self.pending(binding['room_id'])}
         if op == 'check':

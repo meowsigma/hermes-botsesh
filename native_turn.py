@@ -84,7 +84,7 @@ class NativeTurnMixin:
         # from the redacted state.db result or manufacture a replacement UUID.
         if (current.get('model_processed') and value.get('final_response')
                 and not current.get('intentional_silence') and not saved.get('explicit_pass')
-                and not saved.get('explicit_post_calls')
+                and not saved.get('explicit_post_calls') and not saved.get('explicit_agreement')
                 and not current.get('delivered') and not current.get('failure_delivered')):
             if not await self._posted_reply(room_id, current['target'], current['receipt_id']):
                 return
@@ -130,7 +130,7 @@ class NativeTurnMixin:
             await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
             for target in current.get('batch_targets', [current['target']]):
                 self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
-        elif row.get('explicit_post_calls') and current.get('model_processed'):
+        elif (row.get('explicit_post_calls') or row.get('explicit_agreement')) and current.get('model_processed'):
             # An authored no-read post is not implicit read permission. Retain
             # local completion separately; no read checkpoint is advanced.
             await self._delivery(room_id, current['target'], 'completed_unread', batch_id=current['receipt_id'])

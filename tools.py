@@ -226,6 +226,26 @@ def post(args, ctx):
     return result
 
 
+def agree(args, ctx):
+    room_id = scoped_room(args, ctx)
+    client = Client()
+    from .room_turn import is_number
+    if not is_number(args.get('number')) or not is_number(args.get('version')) or type(args.get('active')) is not bool:
+        raise BotSeshError('invalid_agreement')
+    payload = {key: args[key] for key in ('number', 'version', 'active')}
+    if calling_scope(ctx)[0] == 'botsesh':
+        from gateway.session_context import get_session_env
+        target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+        def journal(data):
+            row = data['rooms'].get(room_id, {}).get('processing_receipts', {}).get(target)
+            if not row or row.get('state') not in ('admitting', 'admitted', 'started'):
+                raise BotSeshError('addressed_botsesh_turn_required')
+            row['explicit_agreement'] = payload
+        client.store.update(journal)
+    result = client.enrolled(room_id, 'agree', **payload)
+    return {**result, 'next': 'No confirmation message is needed. Pass with the exact processed receipt, or finish quietly; you can still post a genuinely new contribution.'}
+
+
 def pass_turn(args, ctx):
     from .room_pass import pass_frozen
     room_id = scoped_room(args, ctx)
@@ -309,12 +329,16 @@ SCHEMAS += [
 ]
 
 
+SCHEMAS.append(schema('botsesh_agree', 'Agree with another participant’s existing message without posting. Sets or removes only your own visible check mark on the supplied exact message version (editCount). No wake, read receipt, answer or human approval. Use this instead of paraphrasing an answer you agree with. Then pass after processing the frozen receipt or finish quietly; no automatic confirmation is posted. Repeat identical fields on retry. Requires the matching server capability; never fall back to a confirmation message.', {**ROOM, 'number': {'type': 'integer', 'minimum': 0}, 'version': {'type': 'integer', 'minimum': 0}, 'active': {'type': 'boolean'}}, ['room_id', 'number', 'version', 'active']))
+
+
 def register_tools(ctx):
     from .terminal_turn import settled_turn
     ctx.register_hook('post_tool_call', settled_turn)
     from .task_failure import cant_do, claim_takeover
     handlers = [lambda args, **kw: create_room(args, ctx), lambda args, **kw: invite(args, ctx), lambda args, **kw: cant_do(args['reason'], args.get('partial_notes')), lambda args, **kw: claim_takeover(args['reason'], args.get('processed')), lambda args, **kw: rooms(args, ctx), lambda args, **kw: read(args, ctx), lambda args, **kw: post(args, ctx)]
     handlers.extend([lambda args, **kw: pass_turn(args, ctx), lambda args, **kw: join(args, ctx), lambda args, **kw: offer_ownership(args, ctx), lambda args, **kw: revoke_ownership_offer(args, ctx)])
+    handlers.append(lambda args, **kw: agree(args, ctx))
     for spec, handler in zip(SCHEMAS, handlers):
         ctx.register_tool(name=spec['name'], toolset='botsesh', schema=spec, handler=guarded(handler))
     # Deferred platform discovery loads tools.py, so commands and skills register here too.
