@@ -78,7 +78,9 @@ class ForgivingPostTests(unittest.IsolatedAsyncioTestCase):
         original = copy.deepcopy(self.client.store.room('a')['oauth_posts'])
         second = json.loads(self.post(payload, target='5'))
         self.assertTrue(second['ok'], second)
-        self.assertEqual(second['result'], first['result'])
+        self.assertEqual({k: v for k, v in second['result'].items() if k != 'notice'},
+                         {k: v for k, v in first['result'].items() if k != 'notice'})
+        self.assertIn('no newer turn input', second['result']['notice'])
         self.assertEqual(len(self.messages), 1)
         self.assertEqual(self.client.store.room('a')['oauth_posts'], original)
         changed = json.loads(self.post({**payload, 'text': 'Changed'}, target='5'))
@@ -105,6 +107,32 @@ class ForgivingPostTests(unittest.IsolatedAsyncioTestCase):
         await adapter._check_room('a')
         self.assertEqual(adapter._current['a']['target'], 5)
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['5'])
+
+    async def test_replay_in_real_later_turn_is_audited_without_reading_or_duplicate_final(self):
+        import json
+        adapter, _ = await self.begin()
+        payload = {'text': 'Original answer.', 'processed': True, 'client_id': str(uuid.uuid4())}
+        first = json.loads(self.post(payload))
+        self.assertTrue(first['ok'], first)
+        old_receipt = self.client.store.room('a')['processing_receipts']['3']['receipt_id']
+        self.model_ended(adapter)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        await adapter._check_room('a')
+        self.assertEqual(adapter._current['a']['target'], 5)
+        for _ in range(2):
+            replay = json.loads(self.post(payload, target='5'))
+            self.assertTrue(replay['ok'], replay)
+        row = self.client.store.room('a')['processing_receipts']['5']
+        self.assertEqual(row['explicit_post_calls'][payload['client_id']]['payload']['receipt_id'], old_receipt)
+        self.assertNotIn('read_attested', row)
+        self.assertNotIn('posted_reply', row)
+        self.assertEqual(len(self.messages), 1)
+        self.model_ended(adapter)
+        final = await adapter.send('a', 'Do not duplicate this final.', metadata={'notify': True})
+        self.assertTrue(final.success, final.error)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'completed_unread')
+        self.assertEqual(len(self.messages), 1)
 
     async def test_plain_post_does_not_infer_processed_and_revocation_still_denies(self):
         import json

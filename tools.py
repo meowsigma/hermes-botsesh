@@ -252,19 +252,20 @@ def post(args, ctx):
         previous = [(key, call) for key, row in rows.items()
                     for key_id, call in row.get('explicit_post_calls', {}).items() if key_id == client_id]
         if previous:
-            if len(previous) != 1:
-                raise BotSeshError('pending_send_mismatch')
             target_key, call = previous[0]
             original = call['payload']
             if 'authored_options' in call:
                 # Share text/UUID with the wire payload instead of retaining
                 # another answer-text copy just for missing bookkeeping.
                 original = {'text': original['text'], 'client_id': client_id, **call['authored_options']}
-            if original != authored:
+            if original != authored or any(
+                    old['payload'] != call['payload'] or old.get('authored_options') != call.get('authored_options')
+                    for _, old in previous):
                 raise BotSeshError('pending_send_mismatch')
             payload, notice = call['payload'], call.get('notice')
-            return
-        if options.get('processed') is True and not options.get('receipt_id'):
+            if native and target and target_key != target:
+                notice = 'Replayed the original saved operation; no newer turn input was acknowledged.'
+        elif options.get('processed') is True and not options.get('receipt_id'):
             receipt_id = current_post_receipt(room, target) if native else None
             if receipt_id:
                 payload = {**authored, 'receipt_id': receipt_id}
@@ -285,7 +286,7 @@ def post(args, ctx):
             call = {'payload': payload}
             if payload != authored:
                 call.update(authored_options=options, notice=notice)
-            row.setdefault('explicit_post_calls', {})[client_id] = call
+            row.setdefault('explicit_post_calls', {}).setdefault(client_id, call)
     client.store.update(journal)  # Freeze resolution before even an uncertain send.
     try:
         result = client.enrolled(room_id, 'post', **payload)
