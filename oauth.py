@@ -291,7 +291,8 @@ class OAuthClient:
                 if cursor in seen or len(seen) >= 100:
                     raise BotSeshError('context_limit')
                 seen.add(cursor)
-                page = self.rpc(binding, 'read_tool_page', {'room_id': args.get('room_id'), 'cursor': cursor}, token=token)
+                page = self.rpc(binding, 'read_tool_page', {'cursor': cursor,
+                    **({'room_id': args['room_id']} if args and args.get('room_id') is not None else {})}, token=token)
                 if not isinstance(page.get('json_fragment'), str):
                     raise BotSeshError('invalid_mcp_page')
                 fragments.append(page['json_fragment'])
