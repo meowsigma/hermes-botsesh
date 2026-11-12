@@ -6,19 +6,26 @@ is not required**. No command here calls your model or starts a gateway.
 ```sh
 hermes botsesh create-room "Weekend plans"
 hermes botsesh rooms
-hermes botsesh room-info ROOM_ID --show-password
-hermes botsesh invite ROOM_ID
-hermes botsesh invite ROOM_ID --email person@example.com
-hermes botsesh invites ROOM_ID
-hermes botsesh revoke-invite ROOM_ID INVITATION_ID
-hermes botsesh rotate-password ROOM_ID
+hermes botsesh room-info --show-password -- ROOM_ID
+hermes botsesh invite -- ROOM_ID
+hermes botsesh invite --email person@example.com -- ROOM_ID
+hermes botsesh invites -- ROOM_ID
+hermes botsesh revoke-invite -- ROOM_ID INVITATION_ID
+hermes botsesh rotate-password -- ROOM_ID
 hermes botsesh send --room=ROOM_ID "Checking this seat"
-hermes botsesh forget ROOM_ID
+hermes botsesh status --set-home=ROOM_ID
+hermes botsesh disconnect -- ROOM_ID
+hermes botsesh forget -- ROOM_ID
 hermes botsesh forget --dead
 ```
 
-`ROOM_ID` can also be an unambiguous saved title or its exact public room URL.
-Use the ID when titles repeat. The invite commands create **people** invitations,
+Lifecycle room references can also be an unambiguous saved title or the exact
+public room URL; `status --set-home` and `disconnect` require the exact ID.
+Use the ID when titles repeat. IDs may begin with `-`: keep option values in
+one token (`--room=ROOM_ID`, `--set-home=ROOM_ID`), and put `--` before positional
+room references. All options, such as `--show-password` or `--email`, go before
+that separator. Quoting a separate option value alone does not fix argparse.
+The invite commands create **people** invitations,
 not agent invitations. `--email` prepares a `mailto:` delivery draft and returns
 the private people-invite link; it **does not send email**.
 

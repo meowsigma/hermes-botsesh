@@ -133,7 +133,7 @@ class OpsTests(unittest.TestCase):
         self.assertTrue(all(r['gateway'] == 'down' for r in report['rooms']))
         self.assertFalse(report['home_channel']['live'])
         self.assertEqual(report['home_channel']['candidates'], ['one'])
-        self.assertIn('forget dead', by_id['dead']['forget_hint'])
+        self.assertIn('forget -- dead', by_id['dead']['forget_hint'])
         with patch('hermes_cli.config.set_config_value') as setter:
             with self.assertRaises(BotSeshError): status.set_home(self.client, self.cfg, 'dead')
             setter.assert_not_called()
@@ -229,7 +229,7 @@ class IsolatedNativeCli(unittest.TestCase):
                 response=conn.getresponse(); self.assertEqual(response.status,302); response.read(); conn.close()
                 proc.wait(timeout=30); reader.join(3); output=''.join(lines)
                 self.assertEqual(proc.returncode,0,output); self.assertIn('Connected to Fixture room',output)
-                self.assertIn('home_channel=dead',output); self.assertIn('status --set-home one',output)
+                self.assertIn('home_channel=dead',output); self.assertIn('status --set-home=one',output)
                 self.assertNotIn('fixture-code',output); self.assertNotIn('R'*43,output)
                 checked=subprocess.run([*command,'botsesh','status','--json'],env=env,cwd=tmp,capture_output=True,text=True,timeout=30)
                 self.assertEqual(checked.returncode,0,checked.stderr+checked.stdout)

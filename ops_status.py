@@ -145,7 +145,7 @@ def status_report(client, config, *, runtime=None):
                      'last_check': h.get('last_check'), 'backlog': backlog,
                      'reply_pending': bool(binding.get('pending_final')),
                      'failure_notices_pending': len(binding.get('failure_outbox', {})),
-                     'forget_hint': None if alive else f'hermes botsesh forget {rid}'})
+                     'forget_hint': None if alive else f'hermes botsesh forget -- {rid}'})
     return {'gateway': runtime, 'profile': runtime.get('profile'), 'rooms': rows, 'home_channel': home_status(config, rows)}
 
 
@@ -168,7 +168,7 @@ def print_home(home):
     print(f'home_channel={home["room_id"] or "not set"} · {home["state"]} · live={home["live"]}')
     if not home['live']:
         for rid in home['candidates']:
-            print(f'  Set it to a live room: hermes botsesh status --set-home {rid}')
+            print(f'  Set it to a live room: hermes botsesh status --set-home={rid}')
 
 
 def print_status(report):
