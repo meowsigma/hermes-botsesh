@@ -82,7 +82,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
         row = self.client.store.room('a')['processing_receipts']['3']
         self.assertNotIn('read_attested', row)
-        self.assertEqual(row['state'], 'completed_unread')
+        self.assertEqual(row['state'], 'failed')  # F5-03: rejected reply is not quiet success.
         self.assertFalse(any(name == 'hermes_delivery' and args['state'] == 'completed'
                              for _, name, args in self.requests))
         self.assertEqual(self.client.store.room('b'), before)
@@ -202,7 +202,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
                              for _, name, _ in self.requests))
         self.assertNotIn('read_attested', row)
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
-        self.assertEqual(row['state'], 'completed_unread')
+        self.assertEqual(row['state'], 'failed')  # F5-03: rejected reply is not quiet success.
         self.assertFalse(any(name == 'hermes_delivery' and args['state'] == 'completed'
                              for _, name, args in self.requests))
         self.assertEqual(self.client.store.room('b'), before_b)

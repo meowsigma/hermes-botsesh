@@ -666,7 +666,7 @@ class OAuthClient:
                 raise BotSeshError('listener_state_denied')
             return self.rpc(binding, 'hermes_listener', {'room_id': room_id, 'state': args['state']})
         if op == 'delivery':
-            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'notice_client_id', 'batch_id') if args.get(k)})})
+            return self.rpc(binding, 'hermes_delivery', {'room_id': room_id, 'number': args['target'], 'state': args['state'], **({k: args[k] for k in ('failure_code', 'failure_stage', 'notice_client_id', 'batch_id') if args.get(k)})})
         if op == 'tool_policy':
             from .tool_policy import validate_policy
             require_client_id(args['client_id'])

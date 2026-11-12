@@ -608,7 +608,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 await self._delivery(room_id, int(target), 'completed', batch_id=row['receipt_id'])
                 self._mark_handled(room_id, int(target), state='replied')
             else:
-                await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'])
+                calls = row.get('explicit_post_calls', {})
+                reply_failed = bool(calls) and all(call.get('rejected') for call in calls.values())
+                await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'],
+                                     **({'failure_stage': 'reply_delivery'} if reply_failed else {}))
             def finish(data):
                 room = data['rooms'][room_id]
                 row = room['processing_receipts'][target]

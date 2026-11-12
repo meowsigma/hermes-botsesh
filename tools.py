@@ -1,6 +1,7 @@
 """Room tools plus local-only enrollment/management commands."""
 from __future__ import annotations
 import json
+import logging
 from pathlib import Path
 import shlex
 import uuid
@@ -9,6 +10,17 @@ from .storage import StorageError
 from .provider_text import visible_text
 
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
+logger = logging.getLogger(__name__)
+
+
+def room_arguments(name, args):
+    """Tolerate briefing fields without forwarding them into authored intent."""
+    properties = next(spec['parameters']['properties'] for spec in SCHEMAS if spec['name'] == name)
+    extra = sorted(set(args) - set(properties))
+    if extra:
+        # Keys only, escaped and bounded: values may contain room text/secrets.
+        logger.warning('%s ignored unknown argument keys: %s', name, repr(extra)[:500])
+    return {key: value for key, value in args.items() if key in properties}
 
 def calling_scope(ctx):
     platform = ctx.session_surface()
@@ -19,11 +31,15 @@ def calling_scope(ctx):
     from gateway.session_context import get_session_env
     return platform, get_session_env('HERMES_SESSION_CHAT_ID', '')
 
-def scoped_room(args, ctx):
+def scoped_room(args, ctx, *, infer=False):
     room = args.get('room_id', '')
     platform, chat = calling_scope(ctx)
+    if infer and 'room_id' not in args and platform == 'botsesh' and chat:
+        room = chat  # Native task-local channel, never the profile's room list.
     if platform == 'botsesh' and room != chat:
         raise BotSeshError('cross_room_denied')
+    if not room:
+        raise BotSeshError('room_id_required')
     return room
 
 def guarded(fn):
@@ -150,8 +166,9 @@ def join(args, ctx):
 
 
 def read(args, ctx):
+    args = room_arguments('botsesh_read', args)
     client = Client()
-    room_id = scoped_room(args, ctx)
+    room_id = scoped_room(args, ctx, infer=True)
     platform, _ = calling_scope(ctx)
     if platform == 'botsesh':
         from gateway.session_context import get_session_env
@@ -169,10 +186,11 @@ def read(args, ctx):
 
 
 def post(args, ctx):
+    args = room_arguments('botsesh_post', args)
     args = {**args, 'text': visible_text(args['text'])}
     options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report') if key in args}
     client = Client()
-    room_id = scoped_room(args, ctx)
+    room_id = scoped_room(args, ctx, infer=True)
     # Each deliberate invocation is new, even when its words are identical.
     # Exact-ID retries remain durable/idempotent at the transport journal.
     client_id = args.get('client_id') or str(uuid.uuid4())
@@ -265,7 +283,10 @@ def command(raw_args, *, platform='', source=None, **kwargs):
 
 
 def schema(name, description, properties, required=()):
-    return {'name': name, 'description': description, 'parameters': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': list(required)}}
+    tolerant = name in ('botsesh_post', 'botsesh_read')
+    if tolerant:
+        description += ' In a native single-room turn only, omitted room_id uses that current room. Unknown top-level keys are ignored, not interpreted as receipts or authority.'
+    return {'name': name, 'description': description, 'parameters': {'type': 'object', 'additionalProperties': tolerant, 'properties': properties, 'required': [key for key in required if not (tolerant and key == 'room_id')]}}
 
 STR = {'type': 'string'}
 ROOM = {'room_id': {'type': 'string', 'description': 'Exact locally enrolled room ID, not an invitation or token.'}}
