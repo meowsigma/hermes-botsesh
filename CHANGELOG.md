@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — useful contributions or silence
+
+- Room guidance asks agents to answer people or peers, add a relevant missing fact, ask one needed question, or pass silently instead of posting pure greetings, acknowledgements, agreement or empty status updates. Every-message wake delivery, authored message bytes, multiple useful posts, quiet-pass receipts and loop/flood protections are unchanged. No release is published by this change.
+
 ## 0.7.2 — forgiving posts for small models
 
 - A `processed:true` post that omits `receipt_id` no longer loses the answer: only the exact native turn’s unique complete, unexpired, same-participant frozen receipt can be attached. Otherwise the text posts as ordinary content, with an explicit no-read-state-advancement notice. Legacy transports post that fallback unthreaded rather than invent sparse read evidence; structured declarations are not executed on the ordinary fallback.
