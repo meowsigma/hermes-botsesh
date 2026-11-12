@@ -530,7 +530,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             receipt(self.client.store, room_id, target, event_id=event_id)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
             source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
-            event = MessageEvent(text=text, source=source, message_id=event_id, user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
+            # Ordinary group wakes may pass. Stock core otherwise converts
+            # NO_REPLY into a notice, which itself wakes every peer again.
+            event = MessageEvent(text=text, source=source, message_id=event_id, user_id=author, message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=chat_type == 'dm' or bool(saved and saved.get('takeover_offer')), auto_skill='botsesh:botsesh')
             if await self._admit_event(event):
                 current_receipt = self.client.store.room(room_id)['processing_receipts'][str(target)]
                 if current_receipt['state'] == 'admitting':
