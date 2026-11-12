@@ -31,7 +31,7 @@ def service_actor(message, policy, binding):
 
 def propose(args, ctx):
     import time
-    import uuid
+
     from .client import Client, BotSeshError
     from .tools import scoped_room
     client = Client()
@@ -39,7 +39,7 @@ def propose(args, ctx):
     binding = client.store.room(room)
     if binding.get('transport') != 'oauth':
         raise BotSeshError('native_checkin_connection_required', message='Use an existing native Hermes OAuth connection. No local cron or check-in was created.')
-    for key, low, high in (('interval_minutes', 15, 1440), ('start_in_minutes', 1, 60), ('duration_minutes', 2, 10080)):
+    for key, low, high in (('interval_minutes', 15, 1440), ('start_in_minutes', 2, 60), ('duration_minutes', 2, 10080)):
         v = args.get(key)
         if type(v) is not int or not low <= v <= high:
             raise BotSeshError('invalid_checkin_bounds')
@@ -47,7 +47,8 @@ def propose(args, ctx):
     if not isinstance(purpose, str) or not purpose.strip() or len(purpose) > 1000:
         raise BotSeshError('invalid_checkin_purpose')
     intent = {k: args[k] for k in ('purpose', 'interval_minutes', 'start_in_minutes', 'duration_minutes')}
-    ident = args.get('client_id') or client.logical_id('checkin-proposal', {'room_id': room, **intent})
+    logical_intent = {'room_id': room, **intent}
+    ident = args.get('client_id') or client.logical_id('checkin-proposal', logical_intent)
     from .room_turn import require_client_id
     require_client_id(ident)
     def save(data):
@@ -61,5 +62,13 @@ def propose(args, ctx):
                 'ends_at': first + intent['duration_minutes'] * 60000}}
         if rows[ident]['intent'] != intent:
             raise BotSeshError('checkin_proposal_id_conflict')
-    row = client.store.update(save)['rooms'][room]['checkin_proposals'][ident]
-    return client.enrolled(room, 'propose_check_in', **row['payload'])
+    for attempt in range(2):
+        row = client.store.update(save)['rooms'][room]['checkin_proposals'][ident]
+        result = client.enrolled(room, 'propose_check_in', **row['payload'])
+        if result.get('state') not in ('declined', 'expired', 'cancelled'):
+            return result
+        # Only a definitive server terminal state rotates a default ID. Network
+        # uncertainty and explicit IDs keep their original exact terms.
+        if args.get('client_id') or attempt:
+            raise BotSeshError('checkin_proposal_ended_new_id_required')
+        ident = client.logical_id('checkin-proposal', logical_intent, replace=ident)

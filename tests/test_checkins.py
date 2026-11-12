@@ -46,4 +46,37 @@ class CheckinInputs(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(first.kwargs['ends_at'],first.kwargs['first_at']);self.assertTrue(first.kwargs['purpose'])
         self.assertNotIn('approve',first.kwargs);self.assertNotIn('person_confirmed',first.kwargs)
 
+    def test_same_terms_after_no_expiry_or_cancel_rotate_once_with_fresh_times(self):
+        ctx=Mock();ctx.session_surface.return_value='cli'
+        args=dict(room_id='room',purpose='Read updates and reply in this room',interval_minutes=60,start_in_minutes=2,duration_minutes=120)
+        for terminal in ('declined','expired','cancelled'):
+            with self.subTest(terminal=terminal):
+                self.client.enrolled=Mock(side_effect=[dict(state='pending'),dict(state=terminal),dict(state='pending'),dict(state='pending')])
+                with patch('hermes_botsesh_test.client.Client',return_value=self.client), patch('time.time',return_value=1000):
+                    checkins.propose(args,ctx)
+                with patch('hermes_botsesh_test.client.Client',return_value=self.client), patch('time.time',return_value=2000):
+                    self.assertEqual(checkins.propose(args,ctx)['state'],'pending')
+                    checkins.propose(args,ctx)
+                calls=self.client.enrolled.call_args_list
+                self.assertEqual(calls[0],calls[1]);self.assertNotEqual(calls[1].kwargs['client_id'],calls[2].kwargs['client_id'])
+                self.assertEqual(calls[2],calls[3]);self.assertGreater(calls[2].kwargs['first_at'],calls[1].kwargs['first_at'])
+                # Fresh logical intent next subcase, with the same terms inside it.
+                args={**args,'purpose':args['purpose']+' again'}
+
+    def test_uncertain_retry_and_explicit_terminal_id_do_not_rotate_and_one_minute_is_refused(self):
+        from hermes_botsesh_test.client import BotSeshError
+        ctx=Mock();ctx.session_surface.return_value='cli'
+        args=dict(room_id='room',purpose='Read updates',interval_minutes=60,start_in_minutes=2,duration_minutes=120)
+        self.client.enrolled=Mock(side_effect=[BotSeshError('operation_timeout_retry_same_intent'),dict(state='pending')])
+        with patch('hermes_botsesh_test.client.Client',return_value=self.client):
+            with self.assertRaises(BotSeshError):checkins.propose(args,ctx)
+            checkins.propose(args,ctx)
+            self.assertEqual(*self.client.enrolled.call_args_list)
+            self.client.enrolled=Mock(return_value=dict(state='declined'))
+            with self.assertRaisesRegex(BotSeshError,'ended_new_id_required'):
+                checkins.propose({**args,'client_id':'12345678-1234-4123-8123-123456789abc'},ctx)
+            self.assertEqual(self.client.enrolled.call_count,1)
+            with self.assertRaisesRegex(BotSeshError,'invalid_checkin_bounds'):
+                checkins.propose({**args,'start_in_minutes':1},ctx)
+
 if __name__=='__main__': unittest.main()
