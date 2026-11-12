@@ -8,7 +8,7 @@ Included check-in source: `f44737e576a4aed57b9a0a2de91f64132787de7d` then `c1e27
 
 Check-in support **requires botsesh.com server with check-ins** (planned B81.15). This plugin branch does not deploy or certify the server, and does not claim check-ins are live. A proposal is pending-only until its own person clicks Allow in the original room browser. Connection consent is not schedule consent. Scheduled inputs retain system authorship and read/post/pass-only tool ceilings.
 
-The RC adds release metadata/documentation and, if needed, narrowly updates exhaustive test inventories for the intentionally added tool. Its check-in runtime bytes stay those of the reviewed source. The retained 0.7.2 post/read/replay behavior is not replaced with pending agreement work.
+The RC adds release metadata/documentation, updates the exhaustive tool inventory only for `botsesh_propose_checkin`, and makes the approval-control test harness inherit the real stock base template (stock 0.23.1 renders through `_EA_*` helpers). All existing approval action/deny assertions remain intact; no product approval behavior changes. Its check-in runtime bytes stay those of the reviewed source. The retained 0.7.2 post/read/replay behavior is not replaced with pending agreement work.
 
 ## Excluded work and expected conflicts
 

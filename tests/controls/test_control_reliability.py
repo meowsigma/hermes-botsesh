@@ -38,7 +38,19 @@ async def test_real_base_template_normalizes_approval_actions(permanent, session
     from gateway.platforms.base import BasePlatformAdapter
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
-    a = harness()
+    # Exercise the real base template on both older and current stock Hermes.
+    # Newer cores render through inherited _EA_* helpers, not just the old
+    # _format_exec_approval callback. Keep the exact action/deny assertions.
+    class NativeTemplateHarness(type(harness()), BasePlatformAdapter):
+        async def connect(self):
+            raise AssertionError('approval fixture must not connect')
+        async def disconnect(self):
+            raise AssertionError('approval fixture must not disconnect')
+        async def send(self, *args, **kwargs):
+            raise AssertionError('short command belongs entirely on the control card')
+        async def get_chat_info(self, *args, **kwargs):
+            raise AssertionError('approval fixture must not inspect a real chat')
+    a = NativeTemplateHarness()
     labels = {'once': 'Once', 'session': 'Session', 'always': 'Always', 'deny': 'Deny'}
     template = SimpleNamespace(_EA_ACTION_LABELS=labels, _EA_ACTION_STYLES={'once': 'primary', 'deny': 'danger'})
     a._format_exec_approval = lambda *args: 'Core display template'
