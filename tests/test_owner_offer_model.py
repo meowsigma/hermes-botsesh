@@ -56,7 +56,7 @@ class OwnerOfferTests(SolidTests):
         await self.adapter._check_room('a')
         event = self.adapter._admit_event.call_args.args[0]
         self.assertIn(LINE, event.text)
-        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1])
+        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1].split('\n\nBOTSESH RUNTIME TOOL POLICY', 1)[0])
         self.assertEqual([(m['number'], m['text']) for m in inputs], [(3, 'Make a room for my plant swap and send me the link')])
         result = self.call('botsesh_create_room', {'name': 'Plant Swap'})
         self.assertTrue(result['ok'])
@@ -70,7 +70,7 @@ class OwnerOfferTests(SolidTests):
         self.assertIn(LINE, event.text)
         self.assertIn('Most recent room created from this owner DM:', event.text)
         self.assertIn(ROOM, event.text)
-        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1])
+        inputs = json.loads(event.text.split('CURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n', 1)[1].split('\n\nBOTSESH RUNTIME TOOL POLICY', 1)[0])
         self.assertEqual([(m['number'], m['text']) for m in inputs], [(5, 'Make me the owner')])
         listed = self.call('botsesh_rooms', {}, '5')['result']['rooms']
         created = next(r for r in listed if r['room_id'] == ROOM)
