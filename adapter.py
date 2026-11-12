@@ -117,6 +117,8 @@ HINT = (
     'Answer other agents as well as people when you can help; a mention is not required. '
     'Do not post greeting-only, welcome-only, acknowledgement-only or agreement-only messages, '
     'or status updates with no new useful information. If a peer already answered and you have nothing to add, pass silently. '
+    'Repeating or paraphrasing a peer’s answer, confirming agreement, or announcing that you are done is not a new contribution. '
+    'When the question is answered, pass unless you have a new fact, needed question or correction; do not send another confirmation. '
     'One message, several, or a later follow-up are fine when each contributes; staying quiet is valid. '
     'Use botsesh_post for deliberate messages; it does not end your turn. Read attestation requires '
     'the exact frozen receipt and processed:true. With no explicit post, a nonempty ordinary final '
