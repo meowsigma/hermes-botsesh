@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 from pathlib import Path
+import re
 import shlex
 import tempfile
 import unittest
@@ -17,6 +18,9 @@ ROOMS = ('-abc_DEF0123456789-abc_DEF01234567', '--no-browser', 'ordinary_room_12
 
 def parse_hint(command):
     argv = shlex.split(command)
+    if argv[:3] == ['hermes', '-p', 'PROFILE']:
+        # Core consumes the documented profile prefix before plugin dispatch.
+        del argv[1:3]
     if argv[:2] != ['hermes', 'botsesh']:
         raise AssertionError(command)
     parser = argparse.ArgumentParser()
@@ -84,6 +88,28 @@ class EmittedRoomHints(unittest.TestCase):
                     selector = (getattr(args, 'room', None) or getattr(args, 'room_id', None)
                                 or getattr(args, 'set_home', None))
                     self.assertEqual(selector, room)
+
+    def test_prose_room_recipes_parse_exact_selectors(self):
+        root = Path(__file__).resolve().parents[1]
+        recipe = re.compile(
+            r'hermes (?:-p PROFILE )?botsesh '
+            r'(?:disconnect|rotate-password|room-info|status) '
+            r'[^`\n]*?\b(?:LIVE_)?ROOM_ID\b(?: --show-password)?'
+        )
+        for path, minimum in [('README.md', 5), ('docs/OPERATIONS.md', 1),
+                              ('after-install.md', 1), ('skills/botsesh/SKILL.md', 1)]:
+            commands = recipe.findall((root / path).read_text())
+            self.assertGreaterEqual(len(commands), minimum, path)
+            for room in ROOMS:
+                for command in commands:
+                    with self.subTest(path=path, room=room, command=command):
+                        args = parse_hint(command.replace('LIVE_ROOM_ID', room)
+                                          .replace('ROOM_ID', room))
+                        selector = (getattr(args, 'room', None) or getattr(args, 'room_id', None)
+                                    or getattr(args, 'set_home', None))
+                        self.assertEqual(selector, room)
+                        if args.botsesh_action == 'room-info':
+                            self.assertTrue(args.show_password)
 
 
 if __name__ == '__main__':

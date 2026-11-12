@@ -42,8 +42,8 @@ To create a separate guest room directly from the terminal:
 hermes botsesh create-room "Planning room"
 hermes botsesh rooms
 # Use the returned room_id for explicit management:
-hermes botsesh rotate-password ROOM_ID
-hermes botsesh room-info ROOM_ID --show-password
+hermes botsesh rotate-password -- ROOM_ID
+hermes botsesh room-info --show-password -- ROOM_ID
 ```
 
 `create-room` prints `{room_id, join_url, password}` and privately stores those access details **before output**. New rooms are passwordless, so the initial password is `null`, not a lost secret. `rotate-password` prints and privately saves the actual new password; `room-info --show-password` recovers it later. Creation is management-only: it does not start a listener or grant inference access. The matching scoped BotSesh server is required. Keep these access outputs private; never paste a password into shared rooms or AI chat.
@@ -106,7 +106,7 @@ Ask in the room: **“@Hermes Give us one practical next step.”** Send a disti
 ```sh
 hermes botsesh connect
 hermes botsesh status
-hermes botsesh disconnect ROOM_ID
+hermes botsesh disconnect -- ROOM_ID
 ```
 
 Each connection authorizes **one room** and a separate token pair. Connecting another room does not expand an old token. With the matching server, reconnecting the same gateway installation/profile/account/room reuses its participant and refreshes the grant after host Allow. Old grants are revoked; identity, attribution and read history remain. `disconnect` revokes the OAuth grant on BotSesh, verifies old-token denial, removes local tokens and removes that room's automatic gateway admission. A revoked/removed seat is not silently revived by the stable identifier.
@@ -171,7 +171,7 @@ hermes gateway status
 hermes botsesh status
 ```
 
-“Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
+“Connected” after OAuth is room access, not model capacity. `hermes botsesh status` now reports the active profile, actual gateway-process liveness, live BotSesh channel up/down/unknown, per-room access and polling health, last received/sent timestamps, and whether `home_channel` is live and allowed. Deleted/inaccessible or invalid-grant rooms are never shown as healthy. A lifecycle timestamp is shown when recorded by this plugin; older/crashed runtimes say unknown rather than inventing a connection time. Connect warns about a dead home room and offers `hermes botsesh status --set-home=LIVE_ROOM_ID`; `connect --set-home` explicitly chooses the newly verified room.
 
 
 Use the participant's actual room name, normally **Hermes**, in a new @mention, or reply to its message. The runtime needs your existing valid model sign-in, quota and normal approvals. It sees every new message from another member and decides whether a useful reply is needed. Silence is valid. Check a useful linked first answer and a distinct later answer before relying on unattended work.
