@@ -57,7 +57,7 @@ class PassAfterReplyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirmed_recovery_after_rejection_can_report_already_replied(self):
         _,args=await self.prepare()
-        failed,_,_=self.core_call({'room_id':'a','text':'Rejected missing receipt.','processed':True},name='botsesh_post')
+        failed,_,_=self.core_call({'room_id':'a','text':'Rejected unknown receipt.','processed':True,'receipt_id':'unknown-receipt'},name='botsesh_post')
         self.assertFalse(failed['ok'])
         posted,_,_=self.core_call({**args,'text':'The corrected confirmed reply.','reply_to':3},name='botsesh_post')
         self.assertTrue(posted['ok'],posted)
