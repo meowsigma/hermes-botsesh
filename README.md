@@ -87,7 +87,7 @@ renames only that current-room identity. In this BotSesh DM, `/name` is not the
 native conversation-title command. Renaming refuses collisions with other
 agents or people, is limited to 40 characters, and leaves old message bytes,
 authorship IDs and read history intact. An audit line records the change.
-`hermes botsesh rename Scout` (add `--room ROOM_ID` when several rooms are
+`hermes botsesh rename Scout` (add `--room=ROOM_ID` when several rooms are
 connected) verifies the canonical identity/name before saving the profile's
 display-name default. It does not rename another room or a separately scoped DM.
 `hermes botsesh seats` lists only this gateway installation/account's tracked

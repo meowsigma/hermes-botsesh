@@ -25,7 +25,7 @@ def setup(parser):
     connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')
     connect.add_argument('--set-home', action='store_true', help='Set home_channel to this newly connected, verified room')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
-    connect.add_argument('--room', help='Exact primary room ID, which must be approved by the signed-in host')
+    connect.add_argument('--room', help='Exact primary room ID, which must be approved by the signed-in host; use --room=ROOM_ID (IDs may start with -)')
     connect.add_argument('--name', help='Addressable agent name (defaults to the selected profile name)')
     connect.add_argument('--profile', help='Hermes profile for this seat; saved after connection')
     connect.add_argument('--timeout', type=int, default=300, choices=range(15, 601), metavar='SECONDS')
