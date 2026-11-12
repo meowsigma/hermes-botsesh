@@ -42,6 +42,32 @@ class AgreementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(n == 'hermes_delivery' and a['state'] == 'completed_unread' for _, n, a in self.requests))
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
 
+    async def test_rejected_agreement_preserves_nonempty_automatic_final(self):
+        adapter, _ = await self.prepare()
+        original = OAuthClient.rpc
+        def reject(api, binding, name, args=None, **kwargs):
+            if name == 'agree':
+                raise BotSeshError('message_version_conflict', status=409)
+            return original(api, binding, name, args, **kwargs)
+        with patch.object(OAuthClient, 'rpc', reject):
+            result, _, _ = self.core_call({'room_id': 'a', 'number': 3, 'version': 0, 'active': True}, name='botsesh_agree')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['error'], 'message_version_conflict')
+        self.assertNotIn('explicit_agreement', self.client.store.room('a')['processing_receipts']['3'])
+        self.model_ended(adapter)
+        await adapter.send('a', 'A useful final after the stale agreement.', metadata={'notify': True})
+        event = adapter._admit_event.call_args.args[0]
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertEqual([m['text'] for m in self.messages.values()], ['A useful final after the stale agreement.'])
+        self.assertFalse(any(n == 'hermes_delivery' and a['state'] == 'completed_unread' for _, n, a in self.requests))
+
+    async def test_mismatched_agreement_response_is_not_journaled(self):
+        await self.prepare()
+        with patch.object(OAuthClient, 'rpc', return_value={'active': False}):
+            result, _, _ = self.core_call({'room_id': 'a', 'number': 3, 'version': 0, 'active': True}, name='botsesh_agree')
+        self.assertEqual(result['error'], 'invalid_agreement_response')
+        self.assertNotIn('explicit_agreement', self.client.store.room('a')['processing_receipts']['3'])
+
     async def test_agreement_can_be_followed_by_explicit_processed_pass_or_new_useful_post(self):
         self.wire();adapter, args = await self.prepare()
         result, _, _ = self.core_call({'room_id': 'a', 'number': 3, 'version': 0, 'active': True}, name='botsesh_agree')

@@ -233,16 +233,23 @@ def agree(args, ctx):
     if not is_number(args.get('number')) or not is_number(args.get('version')) or type(args.get('active')) is not bool:
         raise BotSeshError('invalid_agreement')
     payload = {key: args[key] for key in ('number', 'version', 'active')}
+    target = None
     if calling_scope(ctx)[0] == 'botsesh':
         from gateway.session_context import get_session_env
         target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+        row = client.store.room(room_id).get('processing_receipts', {}).get(target)
+        if not row or row.get('state') not in ('admitting', 'admitted', 'started'):
+            raise BotSeshError('addressed_botsesh_turn_required')
+    result = client.enrolled(room_id, 'agree', **payload)
+    if result.get('active') is not payload['active']:
+        raise BotSeshError('invalid_agreement_response')
+    if target is not None:
         def journal(data):
             row = data['rooms'].get(room_id, {}).get('processing_receipts', {}).get(target)
             if not row or row.get('state') not in ('admitting', 'admitted', 'started'):
                 raise BotSeshError('addressed_botsesh_turn_required')
             row['explicit_agreement'] = payload
         client.store.update(journal)
-    result = client.enrolled(room_id, 'agree', **payload)
     return {**result, 'next': 'No confirmation message is needed. Pass with the exact processed receipt, or finish quietly; you can still post a genuinely new contribution.'}
 
 
