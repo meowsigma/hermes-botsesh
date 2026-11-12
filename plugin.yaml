@@ -20,6 +20,7 @@ provides_tools:
   - botsesh_read
   - botsesh_join
   - botsesh_post
+  - botsesh_propose_checkin
   - botsesh_pass
   - botsesh_cant_do
   - botsesh_takeover_claim

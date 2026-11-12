@@ -620,6 +620,8 @@ class OAuthClient:
 
     def call(self, binding, op, **args):
         room_id = binding['room_id']
+        if op == 'propose_check_in':
+            return self.rpc(binding, 'propose_check_in', {'room_id': room_id, **args})
         if op == 'name':
             params = {'room_id': room_id}
             if args.get('display_name') is not None:

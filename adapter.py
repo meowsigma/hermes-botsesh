@@ -461,9 +461,21 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 continue
             participant = message.get('authorParticipant') or {}
             author = message.get('senderParticipantId')
+            service_policy = None
+            service_client_id = saved.get('client_id') if saved else None
+            if message.get('checkin') and binding.get('transport') == 'oauth':
+                from .checkins import service_actor
+                service_client_id = service_client_id or str(uuid.uuid4())
+                service_policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
+                    receipt_id=result['receipt_id'], client_id=service_client_id)
+                author = service_actor(message, service_policy, binding)
+                if not author:
+                    self._queue_failure(room_id, target, 'admission_denied')
+                    await self._flush_failures(room_id)
+                    continue
             if await self._control_ingest(room_id, message):
                 continue
-            if not self._sender_identity_admitted(room_id, message):
+            if not self._sender_identity_admitted(room_id, message, service_policy):
                 self._queue_failure(room_id, target, 'admission_denied')
                 await self._flush_failures(room_id)
                 continue
@@ -491,7 +503,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 self._queue_failure(room_id, target, 'context_limit')
                 await self._flush_failures(room_id)
                 continue
-            client_id = saved.get('client_id') if saved else None
+            client_id = service_client_id or (saved.get('client_id') if saved else None)
             client_id = client_id or str(uuid.uuid4())
             policy = None
             if binding.get('transport') == 'oauth':
@@ -536,10 +548,13 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             self._queue_failure(room_id, target, 'admission_denied')
             await self._flush_failures(room_id)
 
-    def _sender_identity_admitted(self, room_id, message):
+    def _sender_identity_admitted(self, room_id, message, service_policy=None):
         participant = message.get('authorParticipant') or {}
         author = message.get('senderParticipantId')
         binding = self.client.store.room(room_id)
+        if message.get('checkin') and binding.get('transport') == 'oauth':
+            from .checkins import service_actor
+            return binding.get('active') is True and service_actor(message, service_policy, binding) is not None
         if not author or participant.get('id') != author or binding.get('active') is not True:
             return False
         if participant.get('active') is False:

@@ -176,9 +176,10 @@ def enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
                     or row.get('receipt_id') != current.get('receipt_id') or row.get('explicit_failure') or row.get('explicit_pass')):
                 return dict(DENIED)
             source = [m for m in (row.get('frozen') or {}).get('batch', {}).get('messages', []) if str(m.get('number')) == target]
-            if len(source) != 1 or not adapter._sender_identity_admitted(room_id, source[0]):
+            if len(source) != 1 or not adapter._sender_identity_admitted(room_id, source[0], current.get('tool_policy')):
                 return dict(DENIED)
-            sender = source[0]['senderParticipantId']
+            from .checkins import service_actor
+            sender = service_actor(source[0], current.get('tool_policy'), binding) or source[0]['senderParticipantId']
             chat_type = 'dm' if binding.get('room_type') == 'dm' else 'group'
             if adapter._is_sender_authorized(sender, chat_type, room_id) is not True:
                 return dict(DENIED)
@@ -187,6 +188,8 @@ def enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
             live = adapter.client.enrolled(room_id, 'tool_policy', target=current['target'],
                 receipt_id=current['receipt_id'], client_id=current['client_id'])
             validate_policy(live, binding, current['target'], current['receipt_id'], sender)
+            if source[0].get('checkin') and not service_actor(source[0], live, binding):
+                return dict(DENIED)
         else:
             # Advanced invitations have no authenticated owner projection. They
             # remain chat-only; never infer operator identity from room metadata.
