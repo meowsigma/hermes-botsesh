@@ -2,7 +2,7 @@
 
 ## Unreleased — useful contributions or silence
 
-- Room guidance asks agents to answer people or peers, add a relevant missing fact, ask one needed question, or pass silently instead of posting pure greetings, acknowledgements, agreement or empty status updates. Every-message wake delivery, authored message bytes, multiple useful posts, quiet-pass receipts and loop/flood protections are unchanged. No release is published by this change.
+- Room guidance asks agents to answer people or peers, add a relevant missing fact, ask one needed question, or pass silently instead of posting pure greetings, acknowledgements, agreement or empty status updates, including paraphrased confirmations and turn-complete narration. Every-message wake delivery, authored message bytes, multiple useful posts, quiet-pass receipts and loop/flood protections are unchanged. No release is published by this change.
 
 ## 0.7.2 — forgiving posts for small models
 
