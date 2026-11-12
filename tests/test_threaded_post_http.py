@@ -44,11 +44,11 @@ class RealThreadedPostGuidance(unittest.IsolatedAsyncioTestCase):
         request = {**FIXTURE['calls'][0], 'room_id': room, 'reply_to': target}
         denied = self.call(request, room, target)
         self.assertFalse(denied['ok'], denied)
-        self.assertIn(receipt, denied['message'])
+        self.assertIn('r1', denied['message'])
         after = self.command(op='inspect', room_id=room, participant_id=joined['participant_id'])
         self.assertEqual(after, before, 'Rejected tool call must not send or attest anything')
         fixed = correction(denied)  # This is the caller's explicit read attestation.
-        self.assertEqual(fixed, {**request, 'receipt_id': receipt, 'processed': True})
+        self.assertEqual(fixed, {**request, 'receipt_id': 'r1', 'processed': True})
         landed = self.call(fixed, room, target)
         self.assertTrue(landed['ok'], landed)
         self.assertEqual(landed['result']['read_effect'], 'processed_frozen_receipt')
@@ -77,6 +77,47 @@ class RealThreadedPostGuidance(unittest.IsolatedAsyncioTestCase):
         if path:
             from pathlib import Path
             Path(path).write_text(json.dumps(evidence, ensure_ascii=False, indent=2)+'\n')
+
+    async def test_ari_malformed_calls_correct_by_handle_with_canonical_text_actor_thread_and_no_inferred_read(self):
+        from test_receipt_handles import ARI_CALLS
+        outcomes = []
+        for literal in ARI_CALLS:
+            # Each exact rejected call starts unread on a distinct owned room;
+            # a previous corrected post must not pre-attest the next subcase.
+            fresh = self.command(op='create')
+            room = fresh['room_id']
+            question = self.command(op='message', room_id=room, text='Saturday repair workshop?')['message']
+            joined = self.client.join(fresh['link'], dev_origin=self.origin)
+            frozen = self.client.enrolled(room, 'read')
+            target = question['number']
+            self.client.store.update(lambda d: d['rooms'][room].setdefault('processing_receipts', {}).update({str(target): {
+                'state': 'started', 'target': target, 'receipt_id': frozen['receipt_id'], 'frozen': frozen}}))
+            before = self.command(op='inspect', room_id=room, participant_id=joined['participant_id'])
+            self.assertEqual((before['checkpoint'], before['attestations']), (0, 0))
+            request = {**literal, 'room_id': room, 'reply_to': target}
+            denied = self.call(request, room, target)
+            self.assertEqual(denied['error'], 'receipt_expired')
+            self.assertIn('r1: message #' + str(target), denied['message'])
+            self.assertEqual(self.command(op='inspect', room_id=room, participant_id=joined['participant_id']), before)
+            incomplete = self.call({**request, 'receipt_id': 'r1', 'processed': False}, room, target)
+            self.assertFalse(incomplete['ok'])
+            self.assertEqual(self.command(op='inspect', room_id=room, participant_id=joined['participant_id']), before)
+            fixed = {**request, 'receipt_id': 'r1'}
+            landed = self.call(fixed, room, target)
+            self.assertTrue(landed['ok'], landed)
+            message = InvitationClient(self.client.store).rest(self.client.store.room(room), 'GET', '/messages/by-client/' + landed['result']['client_id'])['message']
+            self.assertEqual(message['text'].encode(), request['text'].encode())
+            self.assertEqual(message['senderParticipantId'], joined['participant_id'])
+            self.assertEqual(message['replyPreview']['number'], target)
+            outcomes.append({'denied': denied, 'landed': landed, 'exact_text_actor_thread': True})
+        foreign = self.call({**fixed, 'room_id': 'foreign-room'}, room, target)
+        self.assertEqual(foreign['error'], 'cross_room_denied')
+        self.command(op='revoke', room_id=room, participant_id=joined['participant_id'])
+        self.assertFalse(self.call(fixed, room, target)['ok'])
+        path = os.environ.get('BOTSESH_HANDLE_EVIDENCE')
+        if path:
+            from pathlib import Path
+            Path(path).write_text(json.dumps({'basis': 'real loopback unchanged server, scripted caller', 'provider_requests': 0, 'outcomes': outcomes, 'foreign_denied': True, 'revoked_denied': True}, ensure_ascii=False, indent=2)+'\n')
 
 
 if __name__ == '__main__':

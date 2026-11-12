@@ -1,5 +1,6 @@
 """Hard sample/receipt budgets; every reservation counts, including failures."""
 import json
+import re
 import time
 from pathlib import Path
 
@@ -21,6 +22,13 @@ def frozen_receipt(data):
         except ValueError:
             continue
         if isinstance(packet, dict) and isinstance(packet.get('receipt_id'), str) and packet['receipt_id']:
+            if re.fullmatch(r'r[1-9][0-9]*', packet['receipt_id']):
+                room, target = packet.get('room_id'), packet.get('addressed_message_number')
+                if not isinstance(room, str) or not room or type(target) is not int or target < 0:
+                    raise SampleStopped('Short receipt needs exact native room/input scope')
+                # r1 is a per-input alias, not a globally unique receipt ID.
+                # This is a counting key only, never transport/read authority.
+                return json.dumps([room, target, packet['receipt_id']], separators=(',', ':'))
             return packet['receipt_id']
     raise SampleStopped('No exact frozen receipt in native request; no inference authorized')
 

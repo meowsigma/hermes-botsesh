@@ -113,12 +113,12 @@ class ThreadedPostGuidance(unittest.TestCase):
                 result = self.call(request)
                 self.assertFalse(result['ok'], result)
                 self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
-                self.assertIn(RECEIPT, result['message'])
+                self.assertIn('r1', result['message'])
                 self.assertIn('only if you actually read', result['message'])
                 self.assertNotIn('pending', result)
                 self.assert_unread()
                 fixed = correction(result)
-                self.assertEqual(fixed, {**request, 'receipt_id': RECEIPT, 'processed': True})
+                self.assertEqual(fixed, {**request, 'receipt_id': 'r1', 'processed': True})
                 landed = self.call(fixed)
                 self.assertTrue(landed['ok'], landed)
                 self.assertEqual(landed['result']['read_effect'], 'processed_frozen_receipt')
@@ -168,6 +168,11 @@ class ThreadedPostGuidance(unittest.TestCase):
     def test_ambiguous_receipts_list_at_most_three_message_candidates_without_binding(self):
         for i in range(1, 5):
             self.add_receipt('candidate-' + str(i), i)
+            def cover_input(data):
+                room = data['rooms'][ROOM]
+                room['processing_receipts'][str(i)]['frozen']['batch']['messages'].append({'number': i, 'isOwn': False})
+                room['oauth_receipts']['candidate-' + str(i)]['numbers'] = [0, i]
+            self.client.store.update(cover_input)
         self.client.store.update(lambda d: d['rooms'][ROOM]['processing_receipts'].update(
             duplicate=copy.deepcopy(d['rooms'][ROOM]['processing_receipts']['0'])))
         original_room = copy.deepcopy(self.client.store.room(ROOM))
@@ -197,7 +202,7 @@ class ThreadedPostGuidance(unittest.TestCase):
             room['oauth_receipts']['invalid-5']['numbers'] = [99]
         self.client.store.update(mutate)
         result = self.call(FIXTURE['calls'][0])
-        self.assertEqual(correction(result)['receipt_id'], RECEIPT)
+        self.assertEqual(correction(result)['receipt_id'], 'r1')
         for i in range(1, 6):
             self.assertNotIn('invalid-' + str(i), result['message'])
         self.assert_unread()
@@ -231,7 +236,7 @@ class ThreadedPostGuidance(unittest.TestCase):
         first = self.call(request)
         again = self.call(request)
         self.assertFalse(again['ok'], again)
-        self.assertIn(RECEIPT, again['message'])
+        self.assertIn('r1', again['message'])
         changed = self.call({**correction(first), 'client_id': request['client_id']})
         self.assertEqual(changed['error'], 'pending_send_mismatch')
         self.assert_unread()

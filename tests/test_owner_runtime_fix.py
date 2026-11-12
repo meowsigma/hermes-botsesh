@@ -53,7 +53,8 @@ class FinalReadFixTests(FinalAfterPostTests):
             with patch.object(OAuthClient, 'rpc', wire), patch.object(tools, 'Client', return_value=self.client), \
                  patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
                 result = tools.read({'room_id': 'a'}, Mock())
-                self.assertEqual(result['receipt_id'], adapter._current['a']['receipt_id'])
+                self.assertEqual(result['receipt_id'], 'r1')
+                self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['model_receipt_handles']['r1'], adapter._current['a']['receipt_id'])
                 posted = tools.post({'room_id': 'a', 'text': 'One greeting.', 'receipt_id': result['receipt_id'],
                                      'processed': True, 'reply_to': 3, 'client_id': str(uuid.uuid4())}, Mock())
         finally:

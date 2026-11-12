@@ -43,9 +43,9 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
             # and confirmed result, rather than revalidating raw processed.
             settled = [row for row in rows if args.get('room_id') == room
                        and args.get('receipt_id')
-                       and row.get('receipt_id') == args['receipt_id']
+                       and row.get('receipt_id') == row.get('model_receipt_handles', {}).get(args['receipt_id'], args['receipt_id'])
                        and row.get('explicit_pass', {}).get('payload', {}).get('processed') is True
-                       and row.get('explicit_pass', {}).get('payload', {}).get('receipt_id') == args['receipt_id']
+                       and row.get('explicit_pass', {}).get('payload', {}).get('receipt_id') == row.get('receipt_id')
                        and row.get('explicit_pass', {}).get('result') == outcome
                        and outcome.get('read_effect') == 'processed_frozen_receipt']
         if len(settled) != 1:

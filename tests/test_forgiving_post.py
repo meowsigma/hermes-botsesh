@@ -157,7 +157,9 @@ class ForgivingPostTests(unittest.IsolatedAsyncioTestCase):
             result = json.loads(self.post(payload, target='999'))
         self.assertFalse(result['ok'], result)
         self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
-        self.assertIn('receipt-a-3', result['message'])
+        # A foreign/missing current input cannot borrow a handle from input #3.
+        self.assertIn('No complete open receipt for this target; call botsesh_read', result['message'])
+        self.assertNotIn('receipt-a-3', result['message'])
         wire.assert_not_called()
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
 

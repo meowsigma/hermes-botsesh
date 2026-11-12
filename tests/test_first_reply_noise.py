@@ -147,10 +147,17 @@ class JoinTests(unittest.TestCase):
         with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'room')), patch.object(self.client, 'join') as join:
             with self.assertRaises(BotSeshError): tools.join({'invitation_url': self.link}, ctx)
             join.assert_not_called()
+        # The real join/read persists exact participant receipt metadata before
+        # its model-only handle projection (AGENTS 11j).
+        import time
+        self.client.store.update(lambda d: d['rooms'].update(room={
+            'active': True, 'participant_id': 'joined-seat', 'oauth_receipts': {
+                'frozen': {'participant_id': 'joined-seat', 'expires': time.time()+3600, 'numbers': []}}}))
         with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(self.client, 'join', return_value={'room_id':'room'}) as join, patch.object(self.client, 'enrolled', return_value={'receipt_id':'frozen','read_effect':'none','batch':{'messages':[]}}) as enrolled:
             result = tools.join({'invitation_url':self.link},ctx)
-            self.assertEqual(result['receipt_id'], 'frozen')
+            self.assertEqual(result['receipt_id'], 'r1')
             self.assertEqual(result['read_effect'], 'none')
+            self.assertIn('frozen', self.client.store.room('room')['oauth_receipts'])
             enrolled.assert_called_once_with('room','read')
 
     def test_exact_invitation_parser_existing_identity_and_origin_denial(self):

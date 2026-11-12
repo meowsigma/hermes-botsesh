@@ -40,7 +40,7 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
             'batch_id': str(uuid.uuid4())}, name='botsesh_post')
         self.assertFalse(result['ok'], result)
         self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
-        self.assertIn(args['receipt_id'], result['message'])
+        self.assertIn('r1', result['message'])
         self.assertEqual(self.messages, {})
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
         # The caller may deliberately choose ordinary no-read content instead.
@@ -67,7 +67,12 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
         adapter, args = await self.prepare()
         result, _, _ = self.core_call({'room_id': 'a', 'batch_id': str(uuid.uuid4())}, name='botsesh_read')
         self.assertTrue(result['ok'], result)
-        self.assertEqual(result['result'], self.client.store.room('a')['processing_receipts']['3']['frozen'])
+        import copy
+        expected = copy.deepcopy(self.client.store.room('a')['processing_receipts']['3']['frozen'])
+        expected['receipt_id'] = 'r1'
+        expected['briefing'][0]['batch_id'] = 'r1'
+        self.assertEqual(result['result'], expected)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['frozen']['receipt_id'], args['receipt_id'])
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
 
     async def test_extra_keys_dropped_and_logged_without_values(self):
