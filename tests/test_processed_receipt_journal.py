@@ -34,17 +34,16 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
     def sends(self):
         return [args for _, name, args in self.requests if name in ('send_message', 'hermes_authored')]
 
-    async def test_missing_receipt_is_settled_then_valid_reply_and_later_wake(self):
+    async def test_missing_receipt_without_native_scope_posts_then_valid_reply_and_later_wake(self):
+        # 0.7.2: no exact task-local target means ordinary content, not inferred read.
         adapter, event = await self.begin()
         payload = self.payload(reply_to=3)
-        with self.assertRaises(BotSeshError) as error:
-            self.post(payload)
-        self.assertEqual(error.exception.code, 'processed_receipt_required')
-        self.assertTrue(error.exception.definitive, 'local pre-send validation must not become an uncertain send')
-        self.assertIsNone(error.exception.pending)
-        self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], 'processed_receipt_required')
-        self.assertEqual(self.client.store.room('a').get('oauth_posts', {}), {})
-        self.assertEqual(self.sends(), [])
+        ordinary = self.post(payload)
+        self.assertEqual(ordinary['read_effect'], 'none')
+        self.assertIn('did not advance read state', ordinary['notice'])
+        self.assertEqual(self.calls()[payload['client_id']]['authored_payload'], payload)
+        self.assertFalse(self.calls()[payload['client_id']]['payload']['processed'])
+        self.assertEqual(len(self.sends()), 1)
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
         receipt = adapter._current['a']['receipt_id']
         # Validation never grants permission to change an already authored UUID.
@@ -56,7 +55,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['read_effect'], 'processed_frozen_receipt')
         self.model_ended(adapter)
         await adapter._finish_current('a', adapter._current['a'], 'empty_response')
-        self.assertEqual(len(self.messages), 1)
+        self.assertEqual(len(self.messages), 2)
         self.assertEqual(self.sends()[0]['text'].encode(), payload['text'].encode())
         self.assertNotIn('a', adapter._current)
         await adapter._check_room('a')
@@ -210,8 +209,24 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter._current['a']['target'], 5)
         self.assertEqual(adapter._admit_event.await_count, 2)
 
-    async def test_structured_missing_receipt_settles_new_and_persisted_attempt(self):
-        await self.structured_refusal(processed=True, receipt=False)
+    async def test_structured_missing_receipt_without_scope_posts_only_ordinary_text(self):
+        adapter, _ = await self.begin()
+        payload = self.payload(draft_ready=self.draft())
+        result = self.post(payload)
+        self.assertEqual(result['read_effect'], 'none')
+        self.assertIn('structured declarations', result['notice'])
+        saved = self.calls()[payload['client_id']]
+        self.assertEqual(saved['authored_payload'], payload)
+        self.assertNotIn('draft_ready', saved['payload'])
+        self.assertFalse(saved['payload']['processed'])
+        self.assertEqual(len(self.messages), 1)
+        self.assertFalse(any(name == 'finish_room_turn' for _, name, _ in self.requests))
+        self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+        self.model_ended(adapter)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'completed_unread')
+        await adapter._check_room('a')
+        self.assertEqual(adapter._current['a']['target'], 5)
 
     async def test_structured_missing_processed_settles_new_and_persisted_attempt(self):
         await self.structured_refusal(processed=False, receipt=True)

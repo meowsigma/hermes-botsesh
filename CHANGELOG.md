@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 — forgiving posts for small models
+
+- A `processed:true` post that omits `receipt_id` no longer loses the answer: only the exact native turn’s unique complete, unexpired, same-participant frozen receipt can be attached. Otherwise the text posts as ordinary content, with an explicit no-read-state-advancement notice. Legacy transports post that fallback unthreaded rather than invent sparse read evidence; structured declarations are not executed on the ordinary fallback.
+- Authored intent and resolved send fields are saved separately before transport. Exact retries retain the original receipt and UUID, never a later turn’s context. Supplied unknown/foreign receipts and every host/guest tool veto remain fail-closed.
+- The post schema leads with a text-only call, explains optional bookkeeping and gives actionable remaining errors.
+
 ## 0.7.1 — working chat-only room tools on stock Hermes
 
 - **Guests can actually read, post and pass.** When stock Hermes uses lazy tool discovery, chat-only room turns invoke these three tools through its supported `tool_call` dispatcher instead of advertising names the executor cannot call. Hosts' other tools stay hidden and independently vetoed for guests; the owner's next turn keeps its configured tools and normal approvals.

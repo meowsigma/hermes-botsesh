@@ -743,7 +743,8 @@ class OAuthClient:
                         del receipts[key]
                 if len(receipts) >= 90:
                     raise BotSeshError('receipt_limit_retry_pending_turn')
-                receipts[receipt_id] = {'expires': time.time()+3600, 'numbers': [m['number'] for m in messages]}
+                receipts[receipt_id] = {'expires': time.time()+3600, 'numbers': [m['number'] for m in messages],
+                                        'participant_id': binding['participant_id']}
             self.store.update(save_receipt)
             return result
         if op == 'fail_task':

@@ -76,9 +76,13 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_receipt_alias_or_foreign_scope_inference(self):
         _, args = await self.prepare()
         result, _, _ = self.core_call({'text': ANSWER, 'processed': True,
-            'batch_id': args['receipt_id']}, name='botsesh_post')
-        self.assertFalse(result['ok'])
-        self.assertEqual(result['error'], 'processed_receipt_required')
+            'batch_id': 'not-the-current-receipt'}, name='botsesh_post')
+        # 0.7.2: batch_id stays ignored; only the actual native frozen receipt is used.
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['result']['read_effect'], 'processed_frozen_receipt')
+        saved = next(iter(self.client.store.room('a')['processing_receipts']['3']['explicit_post_calls'].values()))
+        self.assertEqual(saved['payload']['receipt_id'], args['receipt_id'])
+        self.assertNotIn('batch_id', saved['payload'])
         result, _, _ = self.core_call({**args, 'room_id': 'b', 'text': ANSWER}, name='botsesh_post')
         self.assertFalse(result['ok'])
         self.assertEqual(result['error'], 'cross_room_denied')
@@ -86,12 +90,15 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(tools, 'calling_scope', return_value=scope):
                 with self.assertRaises(BotSeshError):
                     tools.scoped_room({'room_id': ''} if scope[1] else {}, Mock(), infer=True)
-        self.assertEqual(self.messages, {})
+        self.assertEqual(len(self.messages), 1)
 
     async def test_rejected_post_cannot_turn_into_nothing_to_add(self):
         adapter, args = await self.prepare()
-        result, _, _ = self.core_call({'room_id': 'a', 'text': ANSWER, 'processed': True}, name='botsesh_post')
+        # Missing bookkeeping now succeeds; an invalid structured declaration is still rejected.
+        result, _, _ = self.core_call({**args, 'text': ANSWER,
+            'draft_ready': {'title': 'Missing recipient'}}, name='botsesh_post')
         self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], 'invalid_runtime_answer')
         result, agent, _ = self.core_call(args)
         self.assertFalse(result['ok'], result)
         self.assertEqual(result['error'], 'reply_attempted_cannot_pass')
