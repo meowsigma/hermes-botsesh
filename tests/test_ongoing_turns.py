@@ -45,7 +45,8 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
             authorParticipant=dict(id='guest', verified=False, active=True, name='Guest'))
         self.frozen = dict(receipt_id='batch', batch={'messages': [self.message]})
         self.policy = dict(room_id='room', participant_id='seat', number=3, batch_id='batch',
-            toolsAllowed=True, requester=dict(id='guest', isOwner=False))
+            toolsAllowed=True, author_is_agent_owner=False, guest_tools_default=False, tools_ceiling_allowed=True,
+            requester=dict(id='guest', isOwner=False))  # Explicit Everyone consent, not the F5-21 default.
 
     def current(self, native=True):
         text = json.dumps(dict(addressed_message_number=3, **self.frozen))
@@ -130,7 +131,7 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.store.room('room')['processing_receipts']['3']['state'], 'admitted')
         self.assertNotIn('handled', self.client.store.room('room'))
 
-    async def test_advanced_intake_and_native_tools_do_not_require_oauth_policy(self):
+    async def test_advanced_intake_is_chat_only_without_authenticated_owner_policy(self):
         # Legacy Advanced bindings have no transport key. Keep that real format.
         self.client.store.update(lambda d: d['rooms']['room'].pop('transport'))
         self.message['authorParticipant']['verified'] = True
@@ -139,6 +140,8 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
                 return {'mentions': [3]}
             if op == 'read':
                 return self.frozen
+            if op == 'verify':
+                return {}
             self.fail('Advanced must not request OAuth operation: ' + op)
         self.client.enrolled = Mock(side_effect=enrolled)
         self.a._admit_event = AsyncMock(return_value=True)
@@ -152,11 +155,12 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
         with patch('gateway.session_context.get_session_env', side_effect=lambda k, default='': env.get(k, default)), \
              patch('hermes_cli.lifecycle.invoke_hook', side_effect=lambda name, **kw: [tool_policy.enforce_tools(**kw)]):
             for tool in ('terminal', 'botsesh_post', 'botsesh_cant_do'):
-                self.assertIsNone(plugins._get_pre_tool_call_directive_details(tool, {}, session_id='s', turn_id='t').action)
-            # The exemption is binding-specific, never a missing-policy fallback.
+                action=plugins._get_pre_tool_call_directive_details(tool, {}, session_id='s', turn_id='t').action
+                self.assertEqual(action,None if tool=='botsesh_post' else 'block')
+            # Missing native policy never falls back to host tools.
             self.client.store.update(lambda d: d['rooms']['room'].update(transport='oauth'))
             self.assertEqual(plugins._get_pre_tool_call_directive_details('terminal', {}, session_id='s', turn_id='t').action, 'block')
-        self.assertEqual([call.args[1] for call in self.client.enrolled.call_args_list], ['check', 'read'])
+        self.assertEqual([call.args[1] for call in self.client.enrolled.call_args_list], ['check', 'read', 'verify', 'verify', 'verify', 'tool_policy'])
         self.assertEqual(self.posts, [])
         self.assertNotIn('handled', self.client.store.room('room'))
 
@@ -279,7 +283,7 @@ class OngoingTurns(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plugins._get_pre_tool_call_directive_details('terminal', {}, session_id='s', turn_id='t').action, 'block')
             with patch('model_tools.registry.dispatch', side_effect=AssertionError('blocked tool reached dispatch')) as dispatch:
                 result = json.loads(handle_function_call('terminal', {'command': 'pwd'}, session_id='s', turn_id='t', tool_call_id='forced'))
-                self.assertIn('not authorized', result['error'])
+                self.assertIn('Tools are off for guests', result['error'])
                 dispatch.assert_not_called()
             self.client.enrolled.side_effect = BotSeshError('membership_revoked', 403)
             self.assertEqual(plugins._get_pre_tool_call_directive_details('read_file', {}, session_id='s', turn_id='t').action, 'block')

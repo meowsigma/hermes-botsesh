@@ -25,7 +25,7 @@ Foreign, paused, expired, missing-owner and mismatched projections do not create
 ```sh
 hermes -p PROFILE botsesh status
 hermes -p PROFILE botsesh status --json
-hermes -p PROFILE botsesh status --set-home LIVE_ROOM_ID
+hermes -p PROFILE botsesh status --set-home=LIVE_ROOM_ID
 ```
 
 Status uses the public profile-aware liveness resolver and exact owning runtime snapshot. The PID rung may already resolve to the multiplexer even when the selected profile has no local runtime file. Only the selected profile's platform entry is projected. Runtime PID/start time and platform writer identity must match; a stale owner heartbeat or incomplete evidence is unknown, not healthy. A platform timestamp is a last state transition, not a periodic heartbeat.

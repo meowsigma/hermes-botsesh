@@ -37,7 +37,7 @@ def creation_result(store, result):
     return {**result, 'join_url': saved['join_url'], 'password': saved['password'],
             'password_required': saved['password_required'],
             **({'password_notice': NO_ROOM_PASSWORD} if saved['password_required'] is False else {}),
-            'credential_recovery': 'hermes botsesh room-info ' + result['room_id'] + ' --show-password'}
+            'credential_recovery': 'hermes botsesh room-info --show-password -- ' + result['room_id']}
 
 
 def resolve(store, reference):

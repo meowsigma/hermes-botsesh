@@ -10,10 +10,11 @@ def register(ctx):
     ctx.register_hook('post_llm_call', processed_turn)
     ctx.register_hook('pre_llm_call', started_turn)
     ctx.register_hook('on_session_end', ended_turn)
-    from .tool_policy import enforce_tools
+    from .tool_policy import enforce_tools, restrict_request
     ctx.register_hook('pre_tool_call', enforce_tools)
+    ctx.register_middleware('llm_request', restrict_request)
     ctx.register_platform(
-        name='botsesh', label='BotSesh', adapter_factory=lambda cfg: BotSeshAdapter(cfg, poll_seconds=ctx.get_config('poll_seconds', 15)),
+        name='botsesh', label='BotSesh', adapter_factory=lambda cfg: BotSeshAdapter(cfg, poll_seconds=ctx.get_config('poll_seconds', 15), guest_tools_override=ctx.get_config('guest_tools', 'server')),
         check_fn=lambda: True, validate_config=lambda config: True,
         required_env=[], install_hint='Run hermes botsesh connect. Node.js 24+ is needed only for advanced invitation access.',
         allowed_users_env='BOTSESH_ALLOWED_USERS',

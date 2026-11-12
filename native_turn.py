@@ -18,6 +18,13 @@ class NativeTurnMixin:
         from hermes_cli.lifecycle import has_hook
         if safe_worker_enabled() or not has_hook('pre_tool_call'):
             raise BotSeshError('native_tool_policy_hook_required')
+        from hermes_cli.plugins import has_middleware
+        from .tool_policy import host_tools_allowed, check_chat_only_runtime
+        if not has_middleware('llm_request'):
+            raise BotSeshError('native_tool_allowlist_required')
+        current = self._current[event.source.chat_id]
+        if not host_tools_allowed(current.get('tool_policy'), self._guest_tools_override):
+            check_chat_only_runtime()
         admitted = await admit_producer(self, event)
         if admitted is None:
             return False

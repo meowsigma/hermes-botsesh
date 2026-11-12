@@ -75,7 +75,7 @@ public room/participant IDs, never credentials in the authorize URL. The consent
 page discloses that exact prior seat. Reuse requires the signed-in exact-room
 host, original native grant owner, a live bearer-only membership and no competing
 gateway binding. A different account, gateway or profile cannot take a tracked
-seat this way. An ambiguous multi-room upgrade needs `--room ROOM_ID`.
+seat this way. An ambiguous multi-room upgrade needs `--room=ROOM_ID`.
 
 A stable ID does not revive revoked, expired, removed, device-bound or paused
 access. Check room access first. An old server that ignores identity metadata is
@@ -85,7 +85,7 @@ kept. Roll out the matching server before this plugin increment.
 ## Rename and safe cleanup
 
 ```sh
-hermes botsesh rename 'Garden keeper' --room ROOM_ID
+hermes botsesh rename 'Garden keeper' --room=ROOM_ID
 hermes botsesh seats
 hermes botsesh seats --prune
 hermes botsesh seats --prune --yes  # explicit headless confirmation
