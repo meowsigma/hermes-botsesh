@@ -139,6 +139,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             from hermes_botsesh_test.adapter import processed_turn, ended_turn
             prompt = json.dumps({'receipt_id': 'receipt-a', 'addressed_message_number': 4, 'context': 'frozen context'})
             adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 4, 'client_id': 'uuid-b', 'delivered': False, 'text': prompt}
+            client.store.update(lambda d: d['rooms']['a']['processing_receipts'].update({
+                '4': {'target': 4, 'state': 'started', 'receipt_id': 'receipt-a'}}))
             processed_turn(user_message=prompt, platform='botsesh', session_id='s', turn_id='t')
             self.assertNotIn('model_processed', adapter._current['a'])
             ended_turn(platform='botsesh', session_id='s', turn_id='t', completed=True, failed=False, interrupted=False)
@@ -224,13 +226,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             client = Client(Store(Path(tmp) / 'private'))
             payload = {'text': 'exact already generated answer', 'client_id': 'retained-id', 'receipt_id': 'frozen-receipt', 'processed': True, 'reply_to': 3}
             client.store.update(lambda d: d['rooms'].update({'a': {'active': True, 'url': 'https://botsesh.com/b/a', 'pending_final': {'target': 3, 'payload': payload}}}))
+            client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={
+                '3': {'target': 3, 'state': 'started', 'receipt_id': 'frozen-receipt'}}))
             client.enrolled = Mock(side_effect=[{'number': 8}, {'mentions': [], 'replies': []}])
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
             adapter._skipped_targets.add(('a', 3))  # A failed turn must not suppress its saved final.
             adapter._admit_event = AsyncMock()
             await adapter._check_room('a')
-            self.assertEqual(client.enrolled.call_args_list[0].kwargs, payload)
+            self.assertEqual(client.enrolled.call_args_list[0].kwargs, {'_input_target': 3, **payload})
             adapter._admit_event.assert_not_called()
             self.assertNotIn('pending_final', client.store.room('a'))
             self.assertEqual(client.store.room('a')['handled'], [3])

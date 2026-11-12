@@ -286,6 +286,7 @@ def post(args, ctx):
     mismatch = False
     correction = None
     receipt_unavailable = False
+    transport_replay = False
     native = calling_scope(ctx)[0] == 'botsesh'
     if native:
         from gateway.session_context import get_session_env
@@ -293,7 +294,7 @@ def post(args, ctx):
     else:
         target = ''
     def journal(data):
-        nonlocal target_key, payload, notice, mismatch, correction, receipt_unavailable
+        nonlocal target_key, payload, notice, mismatch, correction, receipt_unavailable, transport_replay
         room = data['rooms'].get(room_id)
         if not room:
             return  # enrolled() retains the canonical not-enrolled error.
@@ -303,6 +304,7 @@ def post(args, ctx):
                     if key_id == client_id and not call.get('intent_mismatch')]
         transports = [(section, saved) for section in ('oauth_posts', 'oauth_turns')
                       if (saved := room.get(section, {}).get(client_id)) is not None]
+        transport_replay = bool(transports)
         resolved_receipt = receipt_handles.resolve(room, target if native else None, options.get('receipt_id'))
         if previous:
             target_key, call = previous[0]
@@ -366,6 +368,8 @@ def post(args, ctx):
                 call['intent_mismatch'] = True
             elif correction:
                 call['rejected'] = {'code': 'unattested_reply_target_not_supported', 'status': None}
+            elif receipt_unavailable:
+                call['rejected'] = {'code': 'receipt_expired', 'status': None}
             # An altered retry must not retire an existing uncertain ORIGINAL.
             row.setdefault('explicit_post_calls', {}).setdefault(client_id, call)
     client.store.update(journal)  # Freeze resolution before even an uncertain send.
@@ -377,10 +381,11 @@ def post(args, ctx):
         raise BotSeshError('unattested_reply_target_not_supported', rejected=True, message=correction)
     try:
         if receipt_unavailable:
-            # Retain the authored invocation and existing unknown-receipt audit
-            # semantics, but refuse before transport can acknowledge any batch.
-            raise BotSeshError('receipt_expired')
-        result = client.enrolled(room_id, 'post', **payload)
+            # A local scope refusal is provably unsent, not acceptance loss.
+            # Keep the explicit attempt for final suppression, never replay it.
+            raise BotSeshError('receipt_expired', rejected=True)
+        result = client.enrolled(room_id, 'post',
+            **({'_input_target': target} if native and not transport_replay else {}), **payload)
     except BotSeshError as error:
         if error.code == 'receipt_expired':
             def hint(data):
@@ -487,7 +492,7 @@ def pass_turn(args, ctx):
     client.store.update(bind)
     try:
         if receipt_unavailable:
-            raise BotSeshError('receipt_scope')
+            raise BotSeshError('receipt_scope', rejected=True)
         return pass_frozen(client, room_id, resolved, args.get('processed'),
                            target=target, client_id=args.get('client_id'))
     except BotSeshError as error:

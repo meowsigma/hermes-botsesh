@@ -111,10 +111,22 @@ class Client:
             raise BotSeshError(e.get('code', 'bridge_failed'), e.get('status'), e.get('retry_after_ms', 0), pending=result.get('pending'))
         return result['result']
 
-    def enrolled(self, room_id, op, **args):
+    def enrolled(self, room_id, op, *, _input_target=None, **args):
         if room_id not in self.store.read()['rooms']:
             raise BotSeshError('not_enrolled', message='Not in this room yet. Use botsesh_join with the invitation link.')
         binding = self.store.room(room_id)
+        if _input_target is not None:
+            # Adapter recovery has no task-local native session. Carry its
+            # ORIGINAL target explicitly, never infer it from a supplied UUID.
+            from .receipt_handles import require_bound
+            scoped_args = args
+            if op == 'retry':
+                saved = [row for section in ('oauth_posts', 'oauth_turns')
+                         if (row := binding.get(section, {}).get(args.get('client_id')))]
+                if len(saved) != 1:
+                    raise BotSeshError('original_operation_required', rejected=True)
+                scoped_args = saved[0]['exact']
+            require_bound(binding, _input_target, scoped_args.get('receipt_id') or scoped_args.get('batch_id'))
         try:
             if binding.get('transport') == 'oauth':
                 from .oauth import OAuthClient
@@ -140,6 +152,8 @@ class Client:
                     # Tool and gateway sends share a receipt, not necessarily a UUID.
                     # Remember only a confirmed reply to this exact addressed turn.
                     for row in room.get('processing_receipts', {}).values():
+                        if _input_target is not None and str(row.get('target')) != str(_input_target):
+                            continue
                         if row.get('receipt_id') == args.get('receipt_id'):
                             row['read_attested'] = True
                         if (row.get('receipt_id') == args.get('receipt_id')

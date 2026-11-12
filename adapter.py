@@ -500,7 +500,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 from .tool_policy import validate_policy
                 try:
                     policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
-                                                    receipt_id=result['receipt_id'], client_id=client_id)
+                                                    _input_target=target, receipt_id=result['receipt_id'], client_id=client_id)
                     validate_policy(policy, binding, target, result['receipt_id'], author)
                 except BotSeshError as error:
                     if error.terminal:
@@ -586,7 +586,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     async def _delivery(self, room_id, target, state, **args):
         if self.client.store.room(room_id).get('transport') == 'oauth':
-            await asyncio.to_thread(self.client.enrolled, room_id, 'delivery', target=target, state=state, **args)
+            await asyncio.to_thread(self.client.enrolled, room_id, 'delivery',
+                **({'_input_target': target} if args.get('batch_id') else {}), target=target, state=state, **args)
 
     def _queue_failure(self, room_id, target, code):
         def save(data):
@@ -656,6 +657,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return None
         room = self.client.store.room(room_id)
         row = room.get('processing_receipts', {}).get(str(target), {})
+        from .receipt_handles import bound
+        if not bound(room, target, receipt_id):
+            return None  # A different input's transport row is not our reply.
         result = row.get('posted_reply') if row.get('receipt_id') == receipt_id else None
         if result:
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
@@ -670,7 +674,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # uncertain tool send before considering a different final payload.
             posts.sort(key=lambda post: not post.get('complete', False))
             if posts:
-                result = await asyncio.to_thread(self.client.enrolled, room_id, 'retry', client_id=posts[0]['exact']['client_id'])
+                result = await asyncio.to_thread(self.client.enrolled, room_id, 'retry',
+                    _input_target=target, client_id=posts[0]['exact']['client_id'])
         if not result or result.get('read_effect') != 'processed_frozen_receipt':
             return None
         current = self._current.get(room_id)
@@ -687,7 +692,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             await asyncio.to_thread(self.client.enrolled, room_id, 'verify')
         else:
             try:
-                return await self._post_payload(room_id, payload)
+                return await self._post_payload(room_id, payload, target)
             except BotSeshError as error:
                 room = self.client.store.room(room_id)
                 if error.terminal:
@@ -716,7 +721,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             current['failure_delivered'] = True
         return {'read_effect': 'none'}
 
-    async def _post_payload(self, room_id, payload):
+    async def _post_payload(self, room_id, payload, target=None):
+        if payload.get('receipt_id'):
+            from .receipt_handles import require_bound
+            require_bound(self.client.store.room(room_id), target, payload.get('receipt_id'))
         text = payload['text']
         # Exact contiguous bytes, no lossy fallback or reflow. Only the final
         # chunk can attest the frozen input and mark the addressed turn answered.
@@ -733,13 +741,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if not chunks or any(not part.strip() for part in chunks):
             raise BotSeshError('reply_chunk_unrepresentable')
         if len(chunks) == 1:
-            return await asyncio.to_thread(self.client.enrolled, room_id, 'post', **payload)
+            return await asyncio.to_thread(self.client.enrolled, room_id, 'post',
+                **({'_input_target': target} if target is not None else {}), **payload)
         for index, chunk in enumerate(chunks):
             part = {k: v for k, v in payload.items() if k not in ('receipt_id', 'processed')}
             part.update(text=chunk, client_id=self.client.logical_id('reply-chunk', {'room': room_id, 'parent': payload['client_id'], 'index': index}))
             if index == len(chunks)-1:
                 part.update({k: payload[k] for k in ('receipt_id', 'processed') if k in payload})
-            result = await asyncio.to_thread(self.client.enrolled, room_id, 'post', **part)
+            result = await asyncio.to_thread(self.client.enrolled, room_id, 'post',
+                **({'_input_target': target} if target is not None else {}), **part)
         return result
 
     def _gateway_replay(self, chat_id, content, metadata):
@@ -819,7 +829,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         if current and current['client_id'] == replay['payload']['client_id']:
                             current['delivered'] = True
                 else:
-                    result = await self._post_payload(chat_id, replay['payload'])
+                    result = await self._post_payload(chat_id, replay['payload'], replay['target'])
                 return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
             if not (metadata or {}).get('notify'):
                 # Core setup/progress/runtime notices are not authored room

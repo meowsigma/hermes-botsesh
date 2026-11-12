@@ -106,6 +106,28 @@ def resolve(room, target, supplied):
     return next((c['uuid'] for c in choices(room, target) if c['receipt_id'] == supplied), supplied)
 
 
+def bound(room, target, receipt_id):
+    """Exact native input identity, including closed ORIGINAL-operation retries.
+
+    This is not availability/read permission. New model calls still require
+    available(); recovery may retain a closed/expired receipt, never borrow one
+    from a different input. Terminal rows intentionally no longer hold text.
+    """
+    rows = room.get('processing_receipts', {})
+    row = rows.get(str(target), {})
+    frozen = row.get('frozen')
+    return bool(receipt_id and str(row.get('target')) == str(target)
+        and sum(str(r.get('target')) == str(target) for r in rows.values()) == 1
+        and row.get('receipt_id') == receipt_id
+        and (not frozen or frozen.get('receipt_id') == receipt_id))
+
+
+def require_bound(room, target, receipt_id):
+    if receipt_id and not bound(room, target, receipt_id):
+        from .client import BotSeshError
+        raise BotSeshError('receipt_expired', rejected=True, message=corrective(room, target))
+
+
 def corrective(room, target=None):
     candidates = choices(room, target)[:3]
     listing = '; '.join(c['receipt_id'] + ': ' + ', '.join('message #' + str(n) for n in c['messages'])

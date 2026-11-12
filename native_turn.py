@@ -99,7 +99,23 @@ class NativeTurnMixin:
             if call.get('result') or call.get('rejected') or not call.get('payload'):
                 continue
             try:
-                result = await asyncio.to_thread(self.client.enrolled, room_id, 'post', **call['payload'])
+                from . import receipt_handles
+                room = self.client.store.room(room_id)
+                payload = call['payload']
+                rid = payload.get('receipt_id')
+                # Pre-upgrade unsent audits may lack rejected. Recheck them
+                # here; a journal entry is NOT a transport/read authorization.
+                # Exact transport retries may keep an expired original receipt,
+                # but only if it belongs to this same input (also checked below).
+                from .tools import transport_post_payload
+                original = any(transport_post_payload(section, saved) == payload
+                    for section in ('oauth_posts', 'oauth_turns')
+                    if (saved := room.get(section, {}).get(client_id)))
+                if rid and not receipt_handles.available(room, current['target'], rid) and not (
+                        original and receipt_handles.bound(room, current['target'], rid)):
+                    raise BotSeshError('receipt_expired', rejected=True)
+                result = await asyncio.to_thread(self.client.enrolled, room_id, 'post',
+                    _input_target=current['target'], **payload)
             except BotSeshError as error:
                 if not error.definitive:
                     raise  # Preserve the exact unresolved send and frozen context.

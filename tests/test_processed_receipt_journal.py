@@ -316,7 +316,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.client.store.room('a')['processing_receipts']['3']['read_attested'])
         self.assertNotIn('a', adapter._current)
 
-    async def test_structured_unknown_receipt_stays_pending_without_read_or_send(self):
+    async def test_structured_unknown_receipt_is_definitively_rejected_without_read_or_send(self):
         adapter, _ = await self.begin()
         other, _ = await self.begin('b')
         before_b = copy.deepcopy(self.client.store.room('b'))
@@ -326,13 +326,15 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(BotSeshError) as error:
                     self.post(payload)
                 self.assertEqual(error.exception.code, 'receipt_expired')
-                self.assertFalse(error.exception.definitive)
-                self.assertEqual(self.calls()[payload['client_id']], {'payload': payload})
+                # 11j r3: a pre-transport scope refusal is not acceptance loss.
+                self.assertTrue(error.exception.definitive)
+                self.assertIsNone(error.exception.pending)
+                self.assertEqual(self.calls()[payload['client_id']], {'payload': payload,
+                    'rejected': {'code': 'receipt_expired', 'status': None}})
         self.model_ended(adapter)
-        with self.assertRaises(BotSeshError) as error:
-            await adapter._finish_current('a', adapter._current['a'], 'empty_response')
-        self.assertEqual(error.exception.code, 'receipt_expired')
-        self.assertIn('a', adapter._current)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertNotIn('a', adapter._current)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'failed')
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
         self.assertEqual(self.client.store.room('a').get('oauth_turns', {}), {})
         self.assertFalse(any(name in ('send_message', 'hermes_authored', 'finish_room_turn', 'ack')
@@ -350,7 +352,9 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(BotSeshError) as error:
                     self.post(payload)
                 self.assertEqual(error.exception.code, 'receipt_expired')
-                self.assertNotIn('rejected', self.calls()[payload['client_id']])
+                self.assertTrue(error.exception.definitive)
+                self.assertIsNone(error.exception.pending)
+                self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], 'receipt_expired')
                 self.assertEqual(self.client.store.room('a').get('oauth_posts', {}), {})
         receipt = adapter._current['a']['receipt_id']
         with self.assertRaises(BotSeshError) as error:

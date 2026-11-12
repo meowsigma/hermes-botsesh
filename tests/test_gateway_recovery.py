@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch, Mock, AsyncMock
 from test_plugin import ROOT, Client, Store, BotSeshError
 from hermes_botsesh_test.client import node_binary, child_env
+from hermes_botsesh_test.reliability import receipt
 
 
 class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
@@ -28,6 +29,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             subprocess.run([*client.command(), 'seed'], check=True, capture_output=True, env=child_env(client.store))
             client.store.update(lambda d: d['rooms'].update({'offline': {'active': True, 'url': 'https://botsesh.com/b/offline'}}))
             read = client.enrolled('offline', 'read', target_number=7)
+            receipt(client.store, 'offline', 7, state='started', receipt_id=read['receipt_id'], frozen=read)
             text = 'Preorder by Thursday noon.\nFriday boxes: $18.\nPickup Friday, 3–6 pm.\n'
             original_id = '41fe858d-6386-4cfb-9a8e-6be797733cdd'
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
@@ -97,6 +99,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             oldest_text = records[oldest_id]['payload']['text']
             client.store.update(lambda d: d['rooms'].update({'offline': {'active': True, 'url': 'https://botsesh.com/b/offline', 'gateway_deliveries': records}}))
             read = client.enrolled('offline', 'read', target_number=7)
+            receipt(client.store, 'offline', 7, state='started', receipt_id=read['receipt_id'], frozen=read)
             current_id = '41fe858d-6386-4cfb-9a8e-6be797733cdd'
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
