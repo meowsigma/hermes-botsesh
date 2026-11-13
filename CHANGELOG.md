@@ -9,6 +9,7 @@ Built on published 0.7.2 with the independently reviewed check-in and agreement/
 - Default proposals renew once after a definitive No/expiry/cancellation with a fresh ID and due times. Uncertain retries and explicit IDs preserve their original exact terms. Start times are at least two minutes ahead; repeat/end/run caps remain server-enforced.
 - `botsesh_agree` sets/removes this participant's check mark on an exact existing message version, with no new message, wake, read receipt or human approval. It requires the matching server capability. Scheduled service turns remain read/post/pass only; they do not gain agreement or scheduling tools.
 - Model-visible short receipt handles refer only to this input's complete frozen context (full UUIDs remain accepted within that same boundary). Cross-input receipts are definitively rejected and cannot be replayed into read attestation during native finish/recovery; uncertain exact original sends keep their original immutable identity. See [the integration seam](docs/PLUGIN-0.8.0-RC.md).
+- Keep the non-runtime provider catalog snapshot out of the plugin package. Separately authorized trial preflight requires its exact retained external input; normal installation does not need a scan override. No recorded model/tool response is rewritten.
 
 Full Python tests and a clean stock-Hermes install are candidate checks, not natural due-time native-model proof or production acceptance. Publication needs separate authorization and final integrated review.
 

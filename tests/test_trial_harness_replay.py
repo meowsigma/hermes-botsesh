@@ -1,12 +1,15 @@
 """Offline replay of call15's authored pass and shutdown-before-response race."""
 import gzip
 import json
+import hashlib
+import os
 from pathlib import Path
 import socket
 import sys
 import tempfile
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'agreement_trial'))
@@ -36,6 +39,22 @@ def captured_pass_response():
 
 
 class HarnessReplayTests(unittest.TestCase):
+    def test_trial_catalog_requires_external_exact_input_before_any_capture(self):
+        import capture_precondition as precondition
+        with patch.dict(os.environ, {'BOTSESH_TRIAL_MODEL_CATALOG': ''}):
+            with self.assertRaisesRegex(RuntimeError, 'Explicit absolute'):
+                precondition.capture_preflight({})
+        with tempfile.TemporaryDirectory() as temp:
+            catalog = Path(temp) / 'external-catalog.json'
+            raw = b'{"models": []}'
+            catalog.write_bytes(raw)
+            with patch.dict(os.environ, {'BOTSESH_TRIAL_MODEL_CATALOG': str(catalog)}), \
+                    patch.object(precondition, 'CAPTURE_CATALOG_SHA256', hashlib.sha256(raw).hexdigest()):
+                self.assertEqual(precondition.external_catalog(), catalog.resolve())
+                catalog.write_bytes(raw + b' ')
+                with self.assertRaisesRegex(RuntimeError, 'differs'):
+                    precondition.capture_preflight({})
+
     def test_pass_in_flight_is_delivered_before_native_gateway_stop(self):
         waiting, release, entered = threading.Event(), threading.Event(), threading.Event()
         class ObservedDrain(RelayDrain):

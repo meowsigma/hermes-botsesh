@@ -2,9 +2,26 @@
 Only the provider route/catalog are overridden; isolated HOME has no auth.
 """
 import difflib, http.server, json, os, queue, re, threading, time, uuid
+import hashlib
 from pathlib import Path
 
+CAPTURE_CATALOG_SHA256 = '9253c96212be2ac242177bf13f0d0dc64017dbc9f485ac38e6cc1136a4e0e79d'
+
+
+def external_catalog():
+    """Trial-only immutable input, deliberately not shipped with the plugin."""
+    raw = os.environ.get('BOTSESH_TRIAL_MODEL_CATALOG', '')
+    catalog = Path(raw)
+    if not raw or not catalog.is_absolute() or not catalog.is_file():
+        raise RuntimeError('Explicit absolute BOTSESH_TRIAL_MODEL_CATALOG required before capture; see the trial README.')
+    if hashlib.sha256(catalog.read_bytes()).hexdigest() != CAPTURE_CATALOG_SHA256:
+        raise RuntimeError('Trial catalog differs from the retained exact input; no capture started.')
+    return catalog.resolve(strict=True)
+
+
 def capture_preflight(data):
+    # Fail before opening a server, making a private home or launching Codex.
+    catalog = external_catalog()
     from agreement_bridge import W,E,MODEL,EFFORT,NAMES,App,build_call,configured,sha
     stem='capture-'+str(uuid.uuid4())
     (E/(stem+'-invocation.json')).write_text(json.dumps({'stem':stem,'entered':time.time()}))
@@ -22,7 +39,6 @@ def capture_preflight(data):
     threading.Thread(target=server.serve_forever,daemon=True).start()
     home=W/(stem+'-codex-home');home.mkdir(mode=0o700,exist_ok=True)
     assert not (home/'auth.json').exists()
-    catalog=W/'luna-catalog.json'
     overrides=['-c','model_provider="cap"','-c',f'model_providers.cap={{name="cap",base_url="http://127.0.0.1:{server.server_port}/v1",wire_api="responses",requires_openai_auth=false,request_max_retries=0,stream_max_retries=0}}','-c','model_catalog_json='+json.dumps(str(catalog))]
     env={'PATH':os.environ['PATH'],'HOME':str(home),'CODEX_HOME':str(home)}
     app=App(cmd+overrides,W,env,stem)

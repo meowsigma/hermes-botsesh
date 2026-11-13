@@ -48,7 +48,19 @@ Required core patch branch: `meowsigma/hermes-agent`,
 The old stock core bf0203a7 is insufficient: it bypasses `llm_request` middleware
 for iteration-limit summaries. The prepared interpreter paths in the retained
 scripts are installation-specific; verify them before setup, not during a trial.
-The catalog file is only for the auth-free loopback preflight.
+The catalog is only for the auth-free loopback preflight and is **not shipped
+with the plugin**. Its unrelated provider instruction templates caused the
+normal stock installer to require a security override. They are not part of
+BotSesh runtime behavior; no scan bypass is needed by the packaged RC.
+
+For a separately authorized trial, obtain the exact retained input from
+`tools/agreement_trial/luna-catalog.json` at source commit
+`23202a8bf10dd64fb172b181135af0ad1b86f711` (also preserved with this RC task's
+evidence). Place it outside the plugin checkout and explicitly set
+`BOTSESH_TRIAL_MODEL_CATALOG` to its absolute path. The SHA-256 must be
+`9253c96212be2ac242177bf13f0d0dc64017dbc9f485ac38e6cc1136a4e0e79d`.
+Missing/different input fails before opening a capture server or launching
+Codex. This input is not an inference allowance; zero remains the default.
 
 `prepare_agreement_runtime.py` uses two newly named containers under that
 workspace's basename; it never reuses/stops 11d's containers. Run the native

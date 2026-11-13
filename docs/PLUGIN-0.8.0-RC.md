@@ -35,6 +35,12 @@ The new `tests/test_checkin_agreement_integration.py` covers service versus ordi
 
 The stock 0.23.1 approval-control fixture now inherits the real base template (`_EA_*` helpers) with unsupported network/chat methods asserting if called. Its exact action/deny assertions remain intact; product approval behavior is unchanged. Existing agreement, Ari/Bo, handle/scope and terminal replay regressions remain in full discovery.
 
+## Trial-input packaging fix
+
+The first combined stock install refused its normal security scan: the non-runtime `tools/agreement_trial/luna-catalog.json` copied unrelated provider instruction templates into the plugin, producing four HIGH findings. No force/trust/scan override was used. The exact original is retained in this task's evidence (SHA-256 `9253c96212be2ac242177bf13f0d0dc64017dbc9f485ac38e6cc1136a4e0e79d`) and at the approved source commit; the distributed plugin no longer includes it.
+
+Only the opt-in auth-free trial preflight consumed this input. It now requires an explicit absolute `BOTSESH_TRIAL_MODEL_CATALOG` outside the plugin and verifies that exact hash before opening a capture server, creating private state or launching Codex. The trial README documents custody; a no-inference regression retains missing/changed-input denial. Runtime/schema behavior and the original recorded evidence are unchanged. Native validation reports a safe scan on the resulting package; compatibility warnings remain visible.
+
 ## Verification and publication boundary
 
 Run both Python suites from the repository root:
