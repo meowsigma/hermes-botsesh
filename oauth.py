@@ -605,7 +605,8 @@ class OAuthClient:
             saved = self._journal(room_id, 'oauth_turns', client_id, exact)
         result = self._journal_rpc(binding, 'oauth_turns', client_id, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
                           'client_id': client_id, 'output': intent,
-                          **({'allow_stale': allow_stale} if allow_stale is not None else {})})
+                          **({'allow_stale': allow_stale} if allow_stale is not None else {}),
+                          **({'seen_through': seen_through} if seen_through is not None else {})})
         if 'failure' in intent:
             failure = result.get('failure') or {}
             if (result.get('read_effect') != 'none' or failure.get('taskId') != intent['failure']['task_id']

@@ -75,6 +75,48 @@ class RealStalePost(unittest.TestCase):
             'state':'started', 'target':target, 'receipt_id':frozen['receipt_id'], 'frozen':frozen}}))
         return frozen
 
+    def test_definitive_stale_refusal_is_terminal_after_store_restart_for_every_native_send_kind(self):
+        from test_plugin import BotSeshError
+        q = self.command(op='human', text='Frozen input for restart proof')
+        frozen = self.freeze(q['number'])
+        self.command(op='human', text='A follow-up while the native agent thinks')
+        before = self.command(op='inspect')
+        for kind in ('authored', 'processed', 'structured'):
+            with self.subTest(kind=kind):
+                cid = str(uuid.uuid4())
+                args = {'text': 'Must not post stale '+kind, 'client_id': cid}
+                if kind != 'authored':
+                    args.update(processed=True, receipt_id=frozen['receipt_id'])
+                if kind == 'structured':
+                    args['draft_ready'] = {'title': 'Draft for review', 'recipientId': str(uuid.uuid4())}
+                denied = self.post(args, q['number'])
+                self.assertEqual(denied['error'], 'room_moved_on', denied)
+                self.assertNotIn('pending', denied)
+                section = 'oauth_turns' if kind == 'structured' else 'oauth_posts'
+                saved = self.client.store.room(self.room)[section][cid]
+                self.assertEqual(saved['exact']['seen_through'], q['id'])
+                self.assertEqual(saved['failed'], {'code': 'room_moved_on', 'status': 409})
+                # Fresh Client AND Store, not a second call against cached state.
+                self.client = Client(Store(self.client.store.root))
+                self.assertIsNone(OAuthClient(self.client.store).pending(self.room))
+                with patch.object(OAuthClient, 'rpc', side_effect=AssertionError('terminal send replayed on restart')) as rpc:
+                    for _ in range(3):
+                        with self.assertRaises(BotSeshError) as replay:
+                            self.client.enrolled(self.room, 'retry', client_id=cid)
+                        self.assertEqual(replay.exception.code, 'room_moved_on')
+                        self.assertTrue(replay.exception.definitive)
+                        self.assertIsNone(replay.exception.pending)
+                    repeated = self.post(args, q['number'])
+                    self.assertEqual(repeated['error'], 'room_moved_on', repeated)
+                    self.assertNotIn('pending', repeated)
+                    rpc.assert_not_called()
+        self.assertEqual(self.command(op='inspect'), before, 'refusal and restart neither post nor attest reads')
+        later = self.command(op='human', text='Distinct later input after restart')
+        self.freeze(later['number'])
+        result = self.post({'text': 'Fresh later reply', 'processed': True, 'client_id': str(uuid.uuid4())}, later['number'])
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.command(op='inspect')['messages'][-1]['text'], 'Fresh later reply')
+
     def test_native_conflict_reaches_tool_without_read_or_retry_flood_then_explicit_override_and_exact_replay(self):
         q=self.command(op='human', text='Choose option A or B.')
         frozen=self.freeze(q['number'])
