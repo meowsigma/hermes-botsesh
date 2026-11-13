@@ -19,8 +19,8 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
     begin = fixture.FinalAfterPostTests.begin
     model_ended = fixture.FinalAfterPostTests.model_ended
 
-    def post(self, payload, room='a'):
-        with patch.object(tools, 'Client', return_value=self.client), \
+    def post(self, payload, room='a', *, target='3'):
+        with fixture.native_input(room, target), patch.object(tools, 'Client', return_value=self.client), \
              patch.object(tools, 'calling_scope', return_value=('botsesh', room)):
             return tools.post({'room_id': room, **payload}, Mock())
 
@@ -36,9 +36,10 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_receipt_without_native_scope_posts_then_valid_reply_and_later_wake(self):
         # 0.7.2: no exact task-local target means ordinary content, not inferred read.
+        # t_d31c619a: this fallback is explicitly unthreaded; threading now teaches.
         adapter, event = await self.begin()
-        payload = self.payload(reply_to=3)
-        ordinary = self.post(payload)
+        payload = self.payload()
+        ordinary = self.post(payload, target='')
         self.assertEqual(ordinary['read_effect'], 'none')
         self.assertIn('did not advance read state', ordinary['notice'])
         self.assertEqual(self.calls()[payload['client_id']]['authored_options'],
@@ -51,7 +52,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BotSeshError) as mismatch:
             self.post({**payload, 'receipt_id': receipt})
         self.assertEqual(mismatch.exception.code, 'pending_send_mismatch')
-        valid = {**payload, 'client_id': str(uuid.uuid4()), 'receipt_id': receipt}
+        valid = {**payload, 'client_id': str(uuid.uuid4()), 'receipt_id': receipt, 'reply_to': 3}
         result = self.post(valid)
         self.assertEqual(result['read_effect'], 'processed_frozen_receipt')
         self.model_ended(adapter)
@@ -213,7 +214,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_structured_missing_receipt_without_scope_posts_only_ordinary_text(self):
         adapter, _ = await self.begin()
         payload = self.payload(draft_ready=self.draft())
-        result = self.post(payload)
+        result = self.post(payload, target='')
         self.assertEqual(result['read_effect'], 'none')
         self.assertIn('structured declarations', result['notice'])
         saved = self.calls()[payload['client_id']]
@@ -315,7 +316,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.client.store.room('a')['processing_receipts']['3']['read_attested'])
         self.assertNotIn('a', adapter._current)
 
-    async def test_structured_unknown_receipt_stays_pending_without_read_or_send(self):
+    async def test_structured_unknown_receipt_is_definitively_rejected_without_read_or_send(self):
         adapter, _ = await self.begin()
         other, _ = await self.begin('b')
         before_b = copy.deepcopy(self.client.store.room('b'))
@@ -325,13 +326,15 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(BotSeshError) as error:
                     self.post(payload)
                 self.assertEqual(error.exception.code, 'receipt_expired')
-                self.assertFalse(error.exception.definitive)
-                self.assertEqual(self.calls()[payload['client_id']], {'payload': payload})
+                # 11j r3: a pre-transport scope refusal is not acceptance loss.
+                self.assertTrue(error.exception.definitive)
+                self.assertIsNone(error.exception.pending)
+                self.assertEqual(self.calls()[payload['client_id']], {'payload': payload,
+                    'rejected': {'code': 'receipt_expired', 'status': None}})
         self.model_ended(adapter)
-        with self.assertRaises(BotSeshError) as error:
-            await adapter._finish_current('a', adapter._current['a'], 'empty_response')
-        self.assertEqual(error.exception.code, 'receipt_expired')
-        self.assertIn('a', adapter._current)
+        await adapter._finish_current('a', adapter._current['a'], 'empty_response')
+        self.assertNotIn('a', adapter._current)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'failed')
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
         self.assertEqual(self.client.store.room('a').get('oauth_turns', {}), {})
         self.assertFalse(any(name in ('send_message', 'hermes_authored', 'finish_room_turn', 'ack')
@@ -349,7 +352,9 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(BotSeshError) as error:
                     self.post(payload)
                 self.assertEqual(error.exception.code, 'receipt_expired')
-                self.assertNotIn('rejected', self.calls()[payload['client_id']])
+                self.assertTrue(error.exception.definitive)
+                self.assertIsNone(error.exception.pending)
+                self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], 'receipt_expired')
                 self.assertEqual(self.client.store.room('a').get('oauth_posts', {}), {})
         receipt = adapter._current['a']['receipt_id']
         with self.assertRaises(BotSeshError) as error:

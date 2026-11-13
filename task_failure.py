@@ -47,7 +47,7 @@ def flush_failure(client, room_id, target):
         return None
     result = saved.get('result')
     if result is None:
-        result = client.enrolled(room_id, 'fail_task', **saved['payload'])
+        result = client.enrolled(room_id, 'fail_task', _input_target=target, **saved['payload'])
         reference = saved['payload']['failure']
         confirm_failure(result, reference.get('task_id', reference))
     def finish(data):
@@ -142,7 +142,7 @@ def claim_takeover(reason, processed=False):
         if saved and saved.get('result'):
             return saved['result']
         adapter.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][message_id].update(takeover_claim={'payload': exact}))
-    result = adapter.client.enrolled(room_id, 'takeover_claim', **exact)
+    result = adapter.client.enrolled(room_id, 'takeover_claim', _input_target=current['target'], **exact)
     binding = adapter.client.store.room(room_id)
     if (result.get('granted') is not True or result.get('task', {}).get('id') != offer['task_id']
             or result.get('task', {}).get('winner', {}).get('id') != binding.get('participant_id')):

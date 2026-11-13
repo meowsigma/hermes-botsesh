@@ -1,30 +1,39 @@
-# Plugin 0.8.0 release-candidate seam
+# Plugin 0.8.0 release-candidate seams
 
-## Exact scope
+## Exact scope and authorization
 
-`rel/plugin-0.8.0-rc` is an unpublished stock-track candidate, version `0.8.0-rc.1`.
-Base: published `v0.7.2`, `9b97495278bcad562a67d9761ef5b65d6e0279bf`.
-Included check-in source: `f44737e576a4aed57b9a0a2de91f64132787de7d` then `c1e27e0b984695dcd3dabcaffb0cc8e48dc334a6` (Opus review chain `t_64a46e44` → `t_b1b76921`). These are direct descendants of the release base; no other feature branch is merged.
+`rel/plugin-0.8.0-rc` is an unpublished stock-track candidate, version `0.8.0-rc.2`.
 
-Check-in support **requires botsesh.com server with check-ins** (planned B81.15). This plugin branch does not deploy or certify the server, and does not claim check-ins are live. A proposal is pending-only until its own person clicks Allow in the original room browser. Connection consent is not schedule consent. Scheduled inputs retain system authorship and read/post/pass-only tool ceilings.
+- Base: published `v0.7.2`, `9b97495278bcad562a67d9761ef5b65d6e0279bf`.
+- Check-ins: `f44737e576a4aed57b9a0a2de91f64132787de7d` → `c1e27e0b984695dcd3dabcaffb0cc8e48dc334a6` (Opus chain `t_64a46e44` → `t_b1b76921`).
+- Agreement/receipt handles: `9fd1266124f74beb329fa97716c7b57f5aa4bd43` → `c22f316dd893b5f7301eb0a965696dc3cf5f52ca` → `c56b7701b2ce34dfedf2a4226acad8e59419794d` → `23202a8bf10dd64fb172b181135af0ad1b86f711` (Opus `t_c8667f7b`). The parent explicitly added this source before completion; it is now included, superseding this card's original exclusion.
 
-The RC adds release metadata/documentation, updates the exhaustive tool inventory only for `botsesh_propose_checkin`, and makes the approval-control test harness inherit the real stock base template (stock 0.23.1 renders through `_EA_*` helpers). All existing approval action/deny assertions remain intact; no product approval behavior changes. Its check-in runtime bytes stay those of the reviewed source. The retained 0.7.2 post/read/replay behavior is not replaced with pending agreement work.
+The earlier check-in-only `0.8.0-rc.1` tip `8d7ba14783beed000328b312e2d59277a4e64c72` remains in ancestry, with its separate passing receipts retained in the task evidence. The combined RC is an ordinary additive merge, not a rewrite of that pushed ref.
 
-## Excluded work and expected conflicts
+Check-in support **requires botsesh.com server with check-ins** (planned B81.15). This branch does not deploy or certify the server or claim check-ins are live. A proposal is pending-only until its own person clicks Allow in the original room browser. Connection consent is not schedule consent. Scheduled inputs retain system authorship and read/post/pass-only ceilings.
 
-Agreement (✓) source `9fd1266124f74beb329fa97716c7b57f5aa4bd43`, the subsequent 11j receipt-handle work and review `t_c8667f7b` are **not included**. Neither `botsesh_agree` nor short receipt handles are promised by this candidate.
+Agreement requires the matching server capability. The real Codex acceptance rerun is still pending owner authorization: independent code review and offline replays do **not** make this candidate field-verified.
 
-Expected overlap with that work (not a completed merge):
+## Resolved overlaps and retained boundaries
 
-- `adapter.py`: service-policy admission and sender identity must survive agreement/receipt-context changes.
-- `native_turn.py`: system-authored service sender selection must compose with exact current-input receipt handles; do not treat the approving person as the room author.
-- `tool_policy.py`: keep both live service-input identity validation and the independent room-only execution veto. Agreement tool additions must not widen a scheduled turn.
-- `oauth.py`: retain the `propose_check_in` route alongside agreement/post/receipt changes, without changing credential custody or settlement semantics.
-- `tools.py`: union schema/handler additions in their exact paired order. Keep scheduled read/post/pass-only restrictions; a newly advertised tool is not automatically service-turn-authorized.
-- `skills/botsesh/SKILL.md`, `README.md`, `CHANGELOG.md`: preserve pending-only/own-person consent, server prerequisite and cost disclosure while adding separately reviewed agreement guidance. Reconcile versions once at the final combined release.
-- `tests/test_plugin.py`: preserve the exhaustive tool inventory and add only tools actually integrated. Re-run both check-in tests and the final agreement/handle regressions after any later merge.
+Six textual conflicts were reconciled hunk by hunk, with both source deltas retained:
 
-Do not resolve these paths by taking either whole file. The later integration owner must consume the final reviewed agreement SHA, inspect both deltas and exercise their combined boundaries. `t_b15d695c` reviews this check-in-only RC; it is not a substitute for that later integration review.
+- `adapter.py`: keep service-policy admission and its exact approving-person gateway authorization, but preserve BotSesh/system raw authorship. Bind the first service-policy lookup to its frozen original processing row before the shared receipt fence; both lookups reuse the same client ID. Retain receipt-handle projection and the final full-context size check (the older partial-text check is superseded). Ordinary group silence remains optional; typed scheduled inputs retain their prior reply-expected contract.
+- `native_turn.py`: compose restored service sender selection with ordinary group/direct-DM/takeover reply expectations. Keep all reviewed current-input availability checks, definitive rejected-post handling and immutable original replay fences.
+- `oauth.py`: union the independent `propose_check_in` and `agree` routes; neither changes credential custody.
+- `tools.py`: keep the approved check-in schema, the newer receipt-handle pass schema and the agreement schema. Pair proposal/pass/join/ownership handlers in exactly that order, then append the agreement handler. Registration/handler witnesses cover both additions.
+- `tests/test_plugin.py`: union the two intentionally added tools in the still-exhaustive equality assertion.
+- `CHANGELOG.md`: one honest combined RC entry preserves the source contribution/silence/threading details and explicitly disclaims field verification.
+
+Clean textual merges were also inspected:
+
+- `tool_policy.py`: an ordinary chat-only guest may use read/post/pass/agree, but scheduled service inputs may use **only read/post/pass**. Model-schema filtering (direct and lazy `tool_call`) and the independent live execution veto enforce the narrower service set even under local `guest_tools:on`. Service policy cannot enable host tools, another schedule or agreement. An ordinary owner's next turn retains its configured tools. Runtime policy text matches the actual surface.
+- `plugin.yaml`: declare both proposal and agreement tools; the agreement source had not yet added its manifest declaration. Native validation must match the actual registration inventory.
+- `skills/botsesh/SKILL.md`, `README.md`, after-install and release metadata: retain both own-person pending-only check-in consent and agreement/receipt guidance; versions agree on `0.8.0-rc.2`.
+
+The new `tests/test_checkin_agreement_integration.py` covers service versus ordinary schema/veto boundaries under every local override, owner restoration, first-policy original-input binding, system-authored native intake/restore, receipt-handle projection and proposal/agreement handler ordering. The mechanical union exposed agreement on scheduled schemas and unbound first service-policy lookup in its RED witness; the combined integration fixes retain the narrower existing check-in contract.
+
+The stock 0.23.1 approval-control fixture now inherits the real base template (`_EA_*` helpers) with unsupported network/chat methods asserting if called. Its exact action/deny assertions remain intact; product approval behavior is unchanged. Existing agreement, Ari/Bo, handle/scope and terminal replay regressions remain in full discovery.
 
 ## Verification and publication boundary
 
@@ -35,6 +44,12 @@ PYTHONPATH=/path/to/stock-hermes python3 -m unittest discover -s tests -v
 PYTHONPATH=/path/to/stock-hermes python3 -P -m pytest --import-mode=append tests/controls -q
 ```
 
-Use a fresh private HOME/HERMES_HOME and the unmodified stock CLI for an exact-commit native plugin install, then read back installed version, registration and every tracked source byte. No connection, account, model call, gateway start or browser gate is needed for that install smoke. Record exact native compatibility warnings, if any; do not suppress them.
+Use a fresh private HOME/HERMES_HOME and unmodified stock CLI for an exact-commit native install, then read back installed version, registration and every tracked source byte. No connection, account, model call, gateway start or browser gate is needed. Retain compatibility warnings and explicit real-server skips honestly.
 
-A full Python suite plus an install smoke is not natural due-time native-model proof. This card authorizes only an additive push of the candidate branch: no tag, release, main advance, catalog change, live server deployment or installed-user-profile change. Publication requires separate authorization and final review.
+`t_b15d695c` reviews the exact final combined SHA and these seams. A full Python suite plus install smoke is not natural due-time native-model proof or real Codex acceptance. This card authorizes only the candidate branch push: no tag, release, main advance, catalog change, server deployment or installed-user-profile update. Publication requires separate authorization and final review.
+
+### Known stock summary-core dependency
+
+Latest stock v0.23.1 (`3b421578588243f920886e6fe79a6faa87ea026e`) does not call request-policy middleware from its iteration-summary owner. The unmodified `tests/test_summary_recovery_replay.py` therefore exposes the broader cached schema inventory on that stock path. Do not remove/skip its assertion or present stock installation as proof that it passed. The independent native execution veto remains enforced, but model-visible summary inventory is a real outstanding stock compatibility gap.
+
+The source review used core `7b74b110cf771b68a4217360a513ad1f4371be8f` (the summary-owner fix). Run the final full Python suites against that exact separately labelled source archive, and retain the stock failure/focused rerun plus the untouched-stock install smoke as separate rows. No stock or owner-core patch is made by this card; no future released `requires_hermes` floor is guessed. This dependency and the pending real Codex acceptance prevent any stock field-verification claim.

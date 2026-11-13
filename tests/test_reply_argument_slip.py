@@ -33,10 +33,18 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
         with patch('agent.tool_executor._resolve_sequential_dispatch', side_effect=validated):
             return core_fixture.ConfirmedPassTests.core_call(self, args, name=name)
 
-    async def test_fable_first_post_missing_room_and_extra_batch_succeeds(self):
+    async def test_fable_missing_attestation_teaches_before_explicit_unthreaded_post(self):
+        # t_d31c619a keeps the requested thread intact; no automatic fallback.
         adapter, args = await self.prepare()
         result, agent, _ = self.core_call({'text': ANSWER, 'reply_to': 3,
             'batch_id': str(uuid.uuid4())}, name='botsesh_post')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
+        self.assertIn('r1', result['message'])
+        self.assertEqual(self.messages, {})
+        self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
+        # The caller may deliberately choose ordinary no-read content instead.
+        result, agent, _ = self.core_call({'text': ANSWER}, name='botsesh_post')
         self.assertTrue(result['ok'], result)
         self.assertEqual(result['result']['read_effect'], 'none')
         self.assertEqual(next(iter(self.messages.values()))['text'], ANSWER)
@@ -59,7 +67,12 @@ class ReplyArgumentSlipTests(unittest.IsolatedAsyncioTestCase):
         adapter, args = await self.prepare()
         result, _, _ = self.core_call({'room_id': 'a', 'batch_id': str(uuid.uuid4())}, name='botsesh_read')
         self.assertTrue(result['ok'], result)
-        self.assertEqual(result['result'], self.client.store.room('a')['processing_receipts']['3']['frozen'])
+        import copy
+        expected = copy.deepcopy(self.client.store.room('a')['processing_receipts']['3']['frozen'])
+        expected['receipt_id'] = 'r1'
+        expected['briefing'][0]['batch_id'] = 'r1'
+        self.assertEqual(result['result'], expected)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['frozen']['receipt_id'], args['receipt_id'])
         self.assertNotIn('read_attested', self.client.store.room('a')['processing_receipts']['3'])
 
     async def test_extra_keys_dropped_and_logged_without_values(self):

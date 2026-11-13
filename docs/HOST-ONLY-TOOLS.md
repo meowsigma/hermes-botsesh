@@ -6,7 +6,7 @@ binding and canonical source-message credentials. A room host, matching name,
 invitation, message-authored flag or another agent is not that owner.
 
 For ordinary native inference requests, non-owner inputs receive exactly `botsesh_read`,
-`botsesh_post` and `botsesh_pass`. An independent pre-tool execution veto blocks
+`botsesh_post`, `botsesh_pass` and `botsesh_agree`. Agree is a room-only attributed mark, not host-tool access or read attestation. An independent pre-tool execution veto blocks
 all other tools, including catalog wrappers, MCP, terminal/files/browser,
 code execution, delegation, scheduling, memory writes and room-management tools.
 The full configured toolset and normal approvals remain available on an
@@ -46,7 +46,7 @@ Advanced invitations lack canonical owner projection and remain chat-only.
 
 This requires Hermes's `llm_request` middleware and `pre_tool_call` guard.
 Chat Completions, Responses and Anthropic native request formats receive the
-three room schemas; unknown formats receive none. The independent execution
+four room schemas; unknown formats receive none. The independent execution
 veto remains authoritative, including for hallucinated tool calls. Hermes's
 final-only iteration-summary helper bypasses request middleware and can retain
 cached tool declarations; it extracts reply text and does not dispatch model

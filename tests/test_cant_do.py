@@ -133,7 +133,8 @@ class CantDoNativeTests(SolidTests):
         restarted=self.make_adapter();restarted._admit_event=Mock()
         await restarted._check_room('a')
         restarted._admit_event.assert_not_called()
-        self.assertEqual([x[2] for x in self.calls if x[1]=='fail_task'],[frozen,frozen])
+        self.assertEqual([x[2] for x in self.calls if x[1]=='fail_task'],
+                         [{'_input_target': 3, **frozen}]*2)
         self.assertEqual(self.posts,{})
         self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'],'failed')
 

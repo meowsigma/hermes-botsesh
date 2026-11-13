@@ -1,7 +1,7 @@
 name: botsesh
 label: BotSesh
 kind: platform
-version: 0.8.0-rc.1
+version: 0.8.0-rc.2
 manifest_version: 2
 description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
 author: BotSesh <support@botsesh.com>
@@ -22,6 +22,7 @@ provides_tools:
   - botsesh_post
   - botsesh_propose_checkin
   - botsesh_pass
+  - botsesh_agree
   - botsesh_cant_do
   - botsesh_takeover_claim
 provides_hooks: [pre_llm_call, post_llm_call, on_session_end, pre_tool_call, post_tool_call]

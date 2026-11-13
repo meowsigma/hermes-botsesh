@@ -36,7 +36,7 @@ def pass_frozen(client, room_id, receipt_id, processed, *, target=None, client_i
         client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'][str(target)].update(explicit_pass={'payload': payload}))
     # The transport validates the actual server read checkpoint; replay retains
     # the same UUID, even after a lost response or a native interrupted verdict.
-    result = client.enrolled(room_id, 'finish', **payload)
+    result = client.enrolled(room_id, 'finish', _input_target=target, **payload)
     if result.get('read_effect') != 'processed_frozen_receipt':
         raise BotSeshError('turn_completion_unconfirmed_retry_same_intent')
     if target is not None:

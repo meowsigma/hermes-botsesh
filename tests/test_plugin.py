@@ -108,9 +108,9 @@ class Boundaries(unittest.TestCase):
             with self.assertRaises(BotSeshError): tools.create_room({}, ctx)
     def test_schemas_only_scoped_non_destructive_tools(self):
         names = {s['name'] for s in tools.SCHEMAS}
-        # The check-in RC intentionally adds one pending-only proposal tool;
+        # This RC intentionally adds pending-only proposals and agreement;
         # retain an exact allowlist, not a subset check that could hide new tools.
-        self.assertEqual(names, {'botsesh_join', 'botsesh_create_room', 'botsesh_offer_ownership', 'botsesh_revoke_ownership_offer', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_propose_checkin', 'botsesh_pass', 'botsesh_cant_do', 'botsesh_takeover_claim'})
+        self.assertEqual(names, {'botsesh_join', 'botsesh_create_room', 'botsesh_offer_ownership', 'botsesh_revoke_ownership_offer', 'botsesh_invite', 'botsesh_rooms', 'botsesh_read', 'botsesh_post', 'botsesh_propose_checkin', 'botsesh_pass', 'botsesh_agree', 'botsesh_cant_do', 'botsesh_takeover_claim'})
         for schema in tools.SCHEMAS:
             self.assertEqual(schema['parameters']['additionalProperties'], schema['name'] in ('botsesh_post', 'botsesh_read'))
     def test_guarded_error_never_echoes_request(self):
@@ -141,6 +141,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             from hermes_botsesh_test.adapter import processed_turn, ended_turn
             prompt = json.dumps({'receipt_id': 'receipt-a', 'addressed_message_number': 4, 'context': 'frozen context'})
             adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 4, 'client_id': 'uuid-b', 'delivered': False, 'text': prompt}
+            client.store.update(lambda d: d['rooms']['a']['processing_receipts'].update({
+                '4': {'target': 4, 'state': 'started', 'receipt_id': 'receipt-a'}}))
             processed_turn(user_message=prompt, platform='botsesh', session_id='s', turn_id='t')
             self.assertNotIn('model_processed', adapter._current['a'])
             ended_turn(platform='botsesh', session_id='s', turn_id='t', completed=True, failed=False, interrupted=False)
@@ -226,13 +228,15 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             client = Client(Store(Path(tmp) / 'private'))
             payload = {'text': 'exact already generated answer', 'client_id': 'retained-id', 'receipt_id': 'frozen-receipt', 'processed': True, 'reply_to': 3}
             client.store.update(lambda d: d['rooms'].update({'a': {'active': True, 'url': 'https://botsesh.com/b/a', 'pending_final': {'target': 3, 'payload': payload}}}))
+            client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={
+                '3': {'target': 3, 'state': 'started', 'receipt_id': 'frozen-receipt'}}))
             client.enrolled = Mock(side_effect=[{'number': 8}, {'mentions': [], 'replies': []}])
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
             adapter._skipped_targets.add(('a', 3))  # A failed turn must not suppress its saved final.
             adapter._admit_event = AsyncMock()
             await adapter._check_room('a')
-            self.assertEqual(client.enrolled.call_args_list[0].kwargs, payload)
+            self.assertEqual(client.enrolled.call_args_list[0].kwargs, {'_input_target': 3, **payload})
             adapter._admit_event.assert_not_called()
             self.assertNotIn('pending_final', client.store.room('a'))
             self.assertEqual(client.store.room('a')['handled'], [3])

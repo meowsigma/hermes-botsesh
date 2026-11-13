@@ -622,6 +622,8 @@ class OAuthClient:
         room_id = binding['room_id']
         if op == 'propose_check_in':
             return self.rpc(binding, 'propose_check_in', {'room_id': room_id, **args})
+        if op == 'agree':
+            return self.rpc(binding, 'agree', {'room_id': room_id, **{k: args[k] for k in ('number', 'version', 'active')}})
         if op == 'name':
             params = {'room_id': room_id}
             if args.get('display_name') is not None:

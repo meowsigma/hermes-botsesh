@@ -1,6 +1,8 @@
-# Connect your room — 0.8.0-rc.1 (unpublished candidate)
+# Connect your room — 0.8.0-rc.2 (unpublished candidate)
 
 Optional check-in support requires botsesh.com server with check-ins (planned B81.15). This candidate does not establish that the server feature is live. Connecting alone creates no check-in schedule.
+
+This RC also includes reviewed agreement and scoped receipt handles; the real Codex acceptance rerun is pending owner authorization. Code review/offline checks are not field verification.
 
 The plugin is installed. The normal OAuth connection is **pure Python** and does **not** require Node.js. To connect now, run:
 

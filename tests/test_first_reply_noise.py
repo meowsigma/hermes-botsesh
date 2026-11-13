@@ -5,7 +5,7 @@ import uuid
 import unittest
 from unittest.mock import Mock, patch
 from test_plugin import Client, Store, BotSeshError, StorageError, tools
-from test_final_after_post import FinalAfterPostTests
+from test_final_after_post import FinalAfterPostTests, native_input
 from hermes_botsesh_test.oauth import OAuthClient
 
 
@@ -15,15 +15,16 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
     model_ended = FinalAfterPostTests.model_ended
     tool_post = FinalAfterPostTests.tool_post
 
-    async def test_retained_receipt_without_processed_posts_nothing_then_one_final(self):
+    async def test_retained_receipt_without_processed_teaches_then_corrected_post_suppresses_final(self):
+        # t_d31c619a: threaded posts must teach, not infer processed or unthread.
         adapter, event = await self.begin()
         args = {'room_id': 'a', 'text': 'Tool answer', 'reply_to': 3,
                 'receipt_id': adapter._current['a']['receipt_id']}
-        with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
+        with native_input('a', 3), patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
             result = json.loads(tools.guarded(lambda a: tools.post(a, Mock()))(args))
-        self.assertTrue(result['ok'], result)
-        self.assertEqual(result['result']['read_effect'], 'none')
-        self.assertEqual([m['text'] for m in self.messages.values()], ['Tool answer'])
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['error'], 'unattested_reply_target_not_supported')
+        self.assertEqual(self.messages, {})
         self.assertNotIn('handled', self.client.store.room('a'))
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
         row = self.client.store.room('a')['processing_receipts']['3']
@@ -31,13 +32,20 @@ class ReplyNoiseTests(unittest.IsolatedAsyncioTestCase):
         calls = list(row['explicit_post_calls'].values())
         self.assertEqual(len(calls), 1)
         self.assertNotIn('processed', calls[0]['payload'])
+        self.assertNotIn('read_attested', row)
+        corrected = json.JSONDecoder().raw_decode(result['message'].split('botsesh_post(', 1)[1])[0]
+        self.assertEqual(corrected, {**args, 'processed': True})
+        with native_input('a', 3), patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'a')):
+            posted = tools.post(corrected, Mock())
+        self.assertEqual(posted['read_effect'], 'processed_frozen_receipt')
         self.model_ended(adapter)
         self.assertTrue((await adapter.send('a', 'Actual final answer', metadata={'notify': True})).success)
         self.assertEqual([m['text'] for m in self.messages.values()], ['Tool answer'])
         from gateway.platforms.event import ProcessingOutcome
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'completed_unread')
-        self.assertNotIn('processed_cursor', self.client.store.room('a'))
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['3']['state'], 'replied')
+        self.assertEqual(self.client.store.room('a')['processed_cursor'], 3)
+        self.assertTrue(self.client.store.room('a')['processing_receipts']['3']['read_attested'])
 
     async def test_confirmed_post_suppresses_distinct_final_and_keeps_later_target(self):
         adapter, event = await self.begin()
@@ -139,10 +147,17 @@ class JoinTests(unittest.TestCase):
         with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('botsesh', 'room')), patch.object(self.client, 'join') as join:
             with self.assertRaises(BotSeshError): tools.join({'invitation_url': self.link}, ctx)
             join.assert_not_called()
+        # The real join/read persists exact participant receipt metadata before
+        # its model-only handle projection (AGENTS 11j).
+        import time
+        self.client.store.update(lambda d: d['rooms'].update(room={
+            'active': True, 'participant_id': 'joined-seat', 'oauth_receipts': {
+                'frozen': {'participant_id': 'joined-seat', 'expires': time.time()+3600, 'numbers': []}}}))
         with patch.object(tools, 'Client', return_value=self.client), patch.object(tools, 'calling_scope', return_value=('cli', '')), patch.object(self.client, 'join', return_value={'room_id':'room'}) as join, patch.object(self.client, 'enrolled', return_value={'receipt_id':'frozen','read_effect':'none','batch':{'messages':[]}}) as enrolled:
             result = tools.join({'invitation_url':self.link},ctx)
-            self.assertEqual(result['receipt_id'], 'frozen')
+            self.assertEqual(result['receipt_id'], 'r1')
             self.assertEqual(result['read_effect'], 'none')
+            self.assertIn('frozen', self.client.store.room('room')['oauth_receipts'])
             enrolled.assert_called_once_with('room','read')
 
     def test_exact_invitation_parser_existing_identity_and_origin_denial(self):

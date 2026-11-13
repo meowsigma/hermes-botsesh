@@ -170,11 +170,12 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_unicode_chunk_replay_and_only_last_chunk_attests(self):
         text='α🙂\n'*2200
         payload={'text':text,'client_id':str(uuid.uuid4()),'receipt_id':'frozen','processed':True,'reply_to':3}
-        await self.adapter._post_payload('a',payload)
+        receipt(self.client.store, 'a', 3, state='started', receipt_id='frozen')
+        await self.adapter._post_payload('a',payload,3)
         self.assertEqual(''.join(part['text'] for part in self.posts.values()),text)
         self.assertTrue(all(len(part['text'].encode('utf-16-le'))//2<=4000 for part in self.posts.values()))
         parts=list(self.posts.values());self.assertTrue(parts[-1]['processed']);self.assertTrue(all('processed' not in p for p in parts[:-1]))
-        before=len(self.posts);await self.make_adapter()._post_payload('a',payload);self.assertEqual(len(self.posts),before)
+        before=len(self.posts);await self.make_adapter()._post_payload('a',payload,3);self.assertEqual(len(self.posts),before)
     async def test_multiple_rooms_are_independent_and_typing_is_coalesced(self):
         await asyncio.gather(self.adapter._check_room('a'),self.adapter._check_room('b'))
         self.assertEqual(set(self.adapter._current),{'a','b'})

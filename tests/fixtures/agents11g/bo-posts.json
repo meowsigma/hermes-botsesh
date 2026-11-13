@@ -1,0 +1,17 @@
+{
+  "source_task": "t_23520c90",
+  "source_file": "TRANSCRIPTS.md, Call 2 and Call 4",
+  "receipt_id": "83acaf56-8f78-45eb-81dd-0535da06ecc1",
+  "calls": [
+    {
+      "room_id": "6YF3G9CPqDsMdUQhd2EleM5U7F-EFofT",
+      "reply_to": 0,
+      "text": "Yes—Harbour Room is available this Saturday from 14:00 to 16:00, and it has 16 seats and workbenches. I don’t have the group size or workshop duration, so please confirm whether those fit."
+    },
+    {
+      "reply_to": 0,
+      "room_id": "6YF3G9CPqDsMdUQhd2EleM5U7F-EFofT",
+      "text": "Yes—Harbour Room is available this Saturday from 14:00 to 16:00, and it has 16 seats and workbenches. I don’t have the group size or workshop duration, so please confirm whether those fit."
+    }
+  ]
+}

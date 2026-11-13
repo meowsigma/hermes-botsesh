@@ -84,7 +84,7 @@ class NativeTurnMixin:
         # from the redacted state.db result or manufacture a replacement UUID.
         if (current.get('model_processed') and value.get('final_response')
                 and not current.get('intentional_silence') and not saved.get('explicit_pass')
-                and not saved.get('explicit_post_calls')
+                and not saved.get('explicit_post_calls') and not saved.get('explicit_agreement')
                 and not current.get('delivered') and not current.get('failure_delivered')):
             if not await self._posted_reply(room_id, current['target'], current['receipt_id']):
                 return
@@ -99,7 +99,23 @@ class NativeTurnMixin:
             if call.get('result') or call.get('rejected') or not call.get('payload'):
                 continue
             try:
-                result = await asyncio.to_thread(self.client.enrolled, room_id, 'post', **call['payload'])
+                from . import receipt_handles
+                room = self.client.store.room(room_id)
+                payload = call['payload']
+                rid = payload.get('receipt_id')
+                # Pre-upgrade unsent audits may lack rejected. Recheck them
+                # here; a journal entry is NOT a transport/read authorization.
+                # Exact transport retries may keep an expired original receipt,
+                # but only if it belongs to this same input (also checked below).
+                from .tools import transport_post_payload
+                original = any(transport_post_payload(section, saved) == payload
+                    for section in ('oauth_posts', 'oauth_turns')
+                    if (saved := room.get(section, {}).get(client_id)))
+                if rid and not receipt_handles.available(room, current['target'], rid) and not (
+                        original and receipt_handles.bound(room, current['target'], rid)):
+                    raise BotSeshError('receipt_expired', rejected=True)
+                result = await asyncio.to_thread(self.client.enrolled, room_id, 'post',
+                    _input_target=current['target'], **payload)
             except BotSeshError as error:
                 if not error.definitive:
                     raise  # Preserve the exact unresolved send and frozen context.
@@ -130,7 +146,7 @@ class NativeTurnMixin:
             await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
             for target in current.get('batch_targets', [current['target']]):
                 self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
-        elif row.get('explicit_post_calls') and current.get('model_processed'):
+        elif (row.get('explicit_post_calls') or row.get('explicit_agreement')) and current.get('model_processed'):
             # An authored no-read post is not implicit read permission. Retain
             # local completion separately; no read checkpoint is advanced.
             await self._delivery(room_id, current['target'], 'completed_unread', batch_id=current['receipt_id'])
@@ -170,7 +186,8 @@ class NativeTurnMixin:
             user_id=service_sender or message['senderParticipantId'], message_id=str(row['target']))
         event = MessageEvent(text=row['text'], source=source, message_id=row.get('event_id', str(row['target'])),
             user_id=service_sender or message['senderParticipantId'], message_type=MessageType.TEXT,
-            raw_message=message, allow_gateway_control=False, reply_expected=True, auto_skill='botsesh:botsesh')
+            raw_message=message, allow_gateway_control=False,
+            reply_expected=bool(service_sender) or binding.get('room_type') == 'dm' or bool(row.get('takeover_offer')), auto_skill='botsesh:botsesh')
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
         current['batch_targets'] = row.get('batch_targets', [row['target']])
         current['event_id'] = row.get('event_id', str(row['target']))

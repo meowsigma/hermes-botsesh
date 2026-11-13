@@ -74,7 +74,7 @@ class RecentHistoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(envelope['pending_message_numbers'],[3],'history is not newly pending work')
             self.assertIn(rows[1]['text'],event.text)
             self.assertLess(event.text.index(rows[1]['text']),event.text.index('CURRENT BOTSESH INPUTS (exact text;'))
-            self.assertEqual(envelope['briefing'][0],wire)
+            self.assertEqual(envelope['briefing'][0], {**wire, 'batch_id': 'r1'})
             self.assertEqual(envelope['read_effect'],'none')
             self.assertEqual([m['number'] for m in envelope['batch']['messages']],[0,1,2,3])
             saved=client.store.room('room')['processing_receipts']['3']
