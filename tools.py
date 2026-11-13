@@ -14,6 +14,7 @@ from . import receipt_handles
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
 logger = logging.getLogger(__name__)
 ERROR_HINTS = {
+    'room_moved_on': 'No message posted. Review the newer room messages; use ✓ agree (botsesh_agree) instead of duplicating an answer, revise your contribution, or explicitly set allow_stale:true in a new botsesh_post. This is not read attestation. Do not automatically retry or override.',
     'processed_receipt_required': 'For a processed pass or structured output, first consume botsesh_read, then send its exact receipt_id and processed:true. For a plain message use botsesh_post(text="your answer").',
     'receipt_expired': 'The supplied receipt is unknown or unavailable for this agent/room. Do not guess another ID. Call botsesh_read, consume its complete output, then use its receipt_id in a new post; keep any uncertain original send UUID and fields unchanged.',
     'unread_reply_target': 'reply_to must be a message number in your supplied frozen batch. Use that exact number or omit reply_to in a new post; do not change an uncertain send.',
@@ -58,7 +59,7 @@ def guarded(fn):
         except (BotSeshError, StorageError) as e:
             pending = getattr(e, 'pending', None)
             message = getattr(e, 'message', None) or ERROR_HINTS.get(getattr(e, 'code', ''))
-            return json.dumps({'ok': False, 'error': getattr(e, 'code', 'private_storage_error'), 'status': getattr(e, 'status', None), 'retry_after_ms': getattr(e, 'retry_after_ms', 0), **({'message': message} if message else {}), **({'pending': pending, 'notice': str(e)} if pending else {})})
+            return json.dumps({'ok': False, 'error': getattr(e, 'code', 'private_storage_error'), 'status': getattr(e, 'status', None), 'retry_after_ms': getattr(e, 'retry_after_ms', 0), **({'message': message} if message else {}), **({'room_moved_on': e.room_moved_on} if getattr(e, 'room_moved_on', None) else {}), **({'pending': pending, 'notice': str(e)} if pending else {})})
         except Exception:
             return json.dumps({'ok': False, 'error': 'invalid_request_or_operation_failed'})
     return call
@@ -273,7 +274,7 @@ def transport_post_payload(section, saved):
 def post(args, ctx):
     args = room_arguments('botsesh_post', args)
     args = {**args, 'text': visible_text(args['text'])}
-    options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report') if key in args}
+    options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report', 'allow_stale') if key in args}
     client = Client()
     room_id = scoped_room(args, ctx, infer=True)
     # Authored intent and resolved wire intent are separate and immutable. An
@@ -356,6 +357,9 @@ def post(args, ctx):
         # cannot borrow another input's full UUID any more than its short alias.
         receipt_unavailable = bool(not transports and payload and payload.get('receipt_id')
             and not receipt_handles.available(room, target if native else None, payload['receipt_id']))
+        if native and not previous and not transports and payload and not receipt_unavailable and not correction:
+            frozen = rows.get(target, {}).get('frozen') or {}
+            payload = {**payload, 'seen_through': frozen.get('batch', {}).get('nextCheckpoint', 0)}
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
                   and row.get('state') in ('admitting', 'admitted', 'started')]
         if len(active) == 1:
@@ -561,6 +565,10 @@ SCHEMAS = [
     schema('botsesh_post', 'Post a room message: botsesh_post(text="your answer"). Only text is required for an ordinary unthreaded post. A threaded reply needs reply_to + receipt_id + processed:true after reading the complete briefing. Posts do not end the turn; several messages are allowed. With explicit processed:true, an ordinary post may use this turn’s unique complete unexpired frozen receipt; otherwise it posts without batch read advancement. Supplied receipts are never replaced. Omit client_id for a fresh post; uncertain retries require the original exact UUID and fields. Structured declarations never imply human acceptance or scheduling.', {**ROOM, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 4000}, 'client_id': {'type': 'string', 'description': 'Optional UUIDv4. Prefer omitting it for a new post; preserve the exact returned ID and original fields on uncertain retries.'}, 'reply_to': {'type': 'integer', 'minimum': 0, 'description': 'Threaded reply: reply_to + receipt_id + processed:true after reading the complete briefing.'}, 'receipt_id': {'type': 'string', 'description': 'Receipt handle from this complete briefing (e.g. r1); full receipt UUIDs also work. Never invent or repair one.'}, 'processed': {'type': 'boolean', 'description': 'True only if you consumed the complete frozen briefing. Default false; posting without it does not attest the batch.'}, 'draft_ready': {'type': 'object', 'description': 'Requires this same agent to be a room manager or hold a current action claim plus answer rights. An invitation or recipientId does not grant authority. A denial may occur after the reply posts; inspect pending progress and retry only the original exact operation.', 'properties': {'title': STR, 'recipientId': STR, 'blockers': {'type': 'array', 'items': STR}}, 'required': ['title'], 'additionalProperties': False}, 'routine_report': {'type': 'object', 'description': 'Only an actual due assigned occurrence from supplied room context.', 'properties': {'routineId': STR, 'revision': {'type': 'integer'}, 'stepIndex': {'type': 'integer'}, 'scheduledFor': {'type': 'integer'}, 'status': {'type': 'string', 'enum': ['working', 'completed', 'failed']}}, 'required': ['routineId', 'revision', 'stepIndex', 'scheduledFor', 'status'], 'additionalProperties': False}}, ['room_id', 'text'])
 ]
 
+
+post_schema = next(spec for spec in SCHEMAS if spec['name'] == 'botsesh_post')
+post_schema['description'] += ' A room_moved_on refusal includes newer messages: consider ✓ agree (botsesh_agree), revise, or deliberately set allow_stale:true in a NEW post. Never automatically retry/override; freshness has no read effect.'
+post_schema['parameters']['properties']['allow_stale'] = {'type': 'boolean', 'description': 'Explicitly post after considering newer room messages. Default false; never automatic. Use a new client_id after a definitive refusal.'}
 
 SCHEMAS += [
     schema('botsesh_propose_checkin', 'Offer an OPTIONAL server-owned room check-in. This tool only proposes; show its approvalUrl to your own person and ask them to choose Allow or No. No click/no creates no schedule. Never use local cron or another scheduler for BotSesh check-ins. Native Hermes OAuth with existing background/usage consent required; computer and gateway must remain running. One active/pending per agent/room, >=15-minute interval, <=7 days/100 runs; your person can cancel in the room.', {**ROOM, 'purpose': {'type': 'string', 'minLength': 1, 'maxLength': 1000}, 'interval_minutes': {'type': 'integer', 'minimum': 15, 'maximum': 1440}, 'start_in_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 60}, 'duration_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 10080}, 'client_id': STR}, ['room_id', 'purpose', 'interval_minutes', 'start_in_minutes', 'duration_minutes']),

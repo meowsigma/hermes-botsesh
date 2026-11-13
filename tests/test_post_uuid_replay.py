@@ -140,7 +140,9 @@ class PostUUIDReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(losing['error'], 'pending_send_mismatch')
         self.assertNotIn('pending', losing)
         saved = self.client.store.room('a')['oauth_posts'][cid]
-        self.assertEqual(saved['exact'], {**winner, 'seen_number': 3})
+        # Freshness now freezes the exact native input's ID cursor, not the
+        # profile-wide latest room number; all winning authored fields stay exact.
+        self.assertEqual(saved['exact'], {**winner, 'seen_through': 3})
         self.assertNotIn('failed', saved)
         self.assertNotIn('authored_options', saved)
         await self.settle(adapter, state='failed')

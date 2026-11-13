@@ -280,8 +280,10 @@ class OAuthClient:
             if not isinstance(code, str) or not re.fullmatch(r'[a-z0-9_-]{1,80}', code):
                 code = 'mcp_operation_denied'
             status = detail.get('status') if isinstance(detail, dict) else None
+            # Only this typed bounded room-data response reaches the room tool.
+            moved = detail if code == 'room_moved_on' and len(json.dumps(detail, ensure_ascii=False).encode()) <= 7800 else None
             raise BotSeshError(code, status if isinstance(status, int) and 400 <= status < 600 else None,
-                               rejected=isinstance(result, dict) and result.get('isError') is True)
+                               rejected=isinstance(result, dict) and result.get('isError') is True, room_moved_on=moved)
         data = result.get('structuredContent')
         if not isinstance(data, dict):
             raise BotSeshError('invalid_mcp_response')
@@ -561,7 +563,7 @@ class OAuthClient:
                     failed={'code': error.code, 'status': error.status}))
             raise
 
-    def finish(self, binding, *, output, receipt_id, client_id, processed=False):
+    def finish(self, binding, *, output, receipt_id, client_id, processed=False, allow_stale=None, seen_through=None):
         """One canonical resumable room turn, not another client-side executor.
 
         Used for explicit structured outputs only. Native prose replies keep
@@ -585,7 +587,9 @@ class OAuthClient:
             raise BotSeshError('file_bytes_not_supplied', rejected=unsent)
         if 'failure' not in intent and processed is not True:
             raise BotSeshError('processed_receipt_required', rejected=unsent)
-        exact = {'output': intent, 'receipt_id': receipt_id, 'client_id': client_id, 'processed': processed}
+        exact = {'output': intent, 'receipt_id': receipt_id, 'client_id': client_id, 'processed': processed,
+                 **({'allow_stale': allow_stale} if allow_stale is not None else {}),
+                 **({'seen_through': seen_through} if seen_through is not None else {})}
         if saved and saved['exact'] != exact:
             raise BotSeshError('pending_send_mismatch')
         if saved and saved.get('failed'):
@@ -600,7 +604,8 @@ class OAuthClient:
         if not saved:
             saved = self._journal(room_id, 'oauth_turns', client_id, exact)
         result = self._journal_rpc(binding, 'oauth_turns', client_id, 'finish_room_turn', {'room_id': room_id, 'batch_id': receipt_id,
-                          'client_id': client_id, 'output': intent})
+                          'client_id': client_id, 'output': intent,
+                          **({'allow_stale': allow_stale} if allow_stale is not None else {})})
         if 'failure' in intent:
             failure = result.get('failure') or {}
             if (result.get('read_effect') != 'none' or failure.get('taskId') != intent['failure']['task_id']
@@ -741,6 +746,7 @@ class OAuthClient:
                 numbers = [m['number'] for m in messages]
                 if numbers:
                     room['latest_seen_number'] = max(room.get('latest_seen_number', 0), max(numbers))
+                room['latest_seen_id'] = value['next_checkpoint']
                 used = {r.get('receipt_id') for r in data['rooms'][room_id].get('processing_receipts', {}).values() if r.get('state') not in ('replied', 'failed', 'passed', 'completed_unread')}
                 for key in list(receipts):
                     if receipts[key]['expires'] <= time.time() and key not in used:
@@ -786,7 +792,8 @@ class OAuthClient:
                 # spawn the invitation SDK or silently drop a requested target.
                 if args.get('reply_to') is not None:
                     raise BotSeshError('oauth_structured_reply_target_not_supported', rejected=unsent)
-                result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'))
+                result = self.finish(binding, output=intent, receipt_id=receipt_id, client_id=client_id, processed=args.get('processed'),
+                    allow_stale=args.get('allow_stale'), seen_through=args.get('seen_through'))
                 return {'client_id': client_id, 'number': result['reply_number'], 'read_effect': result['read_effect']}
             # Deliberate authored content has no implicit-last-batch read effect.
             # Runtime failures must use delivery status, never this capability.
@@ -794,10 +801,13 @@ class OAuthClient:
                 if args.get('failure_code'):
                     raise BotSeshError('runtime_failure_status_only')
                 prior = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
-                seen_number = (prior['exact'].get('seen_number') if prior else self.store.room(room_id).get('latest_seen_number'))
-                if 'seen_number' not in args and seen_number is not None:
-                    args['seen_number'] = seen_number  # Metadata only, never an ack/permission.
-                exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number') if k in args}
+                if prior:
+                    for key in ('seen_number', 'seen_through'):
+                        if key in prior['exact']:
+                            args.setdefault(key, prior['exact'][key])
+                elif 'seen_through' not in args:
+                    args['seen_through'] = self.store.room(room_id).get('latest_seen_id', 0)
+                exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number', 'seen_through', 'allow_stale') if k in args}
                 saved = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
                 if saved and saved['exact'] != exact:
                     raise BotSeshError('pending_send_mismatch')
@@ -809,7 +819,7 @@ class OAuthClient:
                 if not saved:
                     saved = self._journal(room_id, 'oauth_posts', client_id, exact)
                 result = self._journal_rpc(binding, 'oauth_posts', client_id, 'hermes_authored', {'room_id': room_id, 'text': text,
-                    'client_id': client_id, **{k: args[k] for k in ('reply_to', 'seen_number') if args.get(k) is not None}})
+                    'client_id': client_id, **{k: args[k] for k in ('reply_to', 'seen_number', 'seen_through', 'allow_stale') if args.get(k) is not None}})
                 message = result.get('message') or {}
                 if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                     raise BotSeshError('send_not_confirmed_retry_same_intent')
@@ -824,7 +834,7 @@ class OAuthClient:
                 # old unresolved entries), not an uncertain transport send.
                 # Keep its bytes/UUID intact.
                 raise BotSeshError('processed_receipt_required', rejected=unsent)
-            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to') if k in args}
+            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_through', 'allow_stale') if k in args}
             current = self.store.room(room_id)
             saved = current.get('oauth_posts', {}).get(client_id)
             if saved and saved['exact'] != exact:
@@ -844,7 +854,8 @@ class OAuthClient:
             reply_to = saved.get('native_reply_to', args.get('reply_to'))
             result = self._journal_rpc(binding, 'oauth_posts', client_id, 'send_message', {'room_id': room_id, 'text': text,
                 'client_id': client_id, 'batch_id': receipt_id,
-                **({'reply_to': reply_to} if reply_to is not None else {})})
+                **({'reply_to': reply_to} if reply_to is not None else {}),
+                **{k: args[k] for k in ('seen_through', 'allow_stale') if k in args}})
             message = result.get('message') or {}
             if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                 raise BotSeshError('send_not_confirmed_retry_same_intent')

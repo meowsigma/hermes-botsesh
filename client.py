@@ -20,10 +20,11 @@ BRIDGE = (Path(__file__).parent / 'bridge.mjs').resolve()
 TERMINAL_CODES = {'invalid_grant', 'authorization_revoked', 'membership_revoked', 'access_revoked', 'authorization_expired', 'access_credential_expired', 'refresh_reuse', 'refresh_revoked', 'key_revoked', 'room_expired'}
 
 class BotSeshError(RuntimeError):
-    def __init__(self, code, status=None, retry_after_ms=0, pending=None, *, rejected=False, message=None):
+    def __init__(self, code, status=None, retry_after_ms=0, pending=None, *, rejected=False, message=None, room_moved_on=None):
         self.code, self.status, self.retry_after_ms = code, status, retry_after_ms
         self.pending, self.rejected = pending, rejected
         self.message = message
+        self.room_moved_on = room_moved_on
         super().__init__(f'BotSesh: {code}' + (f' (HTTP {status})' if status else '') + (f'; {pending_notice(pending)}' if pending else ''))
 
     @property
@@ -127,6 +128,10 @@ class Client:
                     raise BotSeshError('original_operation_required', rejected=True)
                 scoped_args = saved[0]['exact']
             require_bound(binding, _input_target, scoped_args.get('receipt_id') or scoped_args.get('batch_id'))
+            if op == 'post' and not any(args.get('client_id') in binding.get(section, {}) for section in ('oauth_posts', 'oauth_turns')):
+                # Freshness belongs to THIS input, not another open native read.
+                frozen = binding.get('processing_receipts', {}).get(str(_input_target), {}).get('frozen') or {}
+                args.setdefault('seen_through', frozen.get('batch', {}).get('nextCheckpoint', 0))
         try:
             if binding.get('transport') == 'oauth':
                 from .oauth import OAuthClient

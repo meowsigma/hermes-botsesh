@@ -60,8 +60,9 @@ def _http(origin, room_id, method, suffix, *, payload=None, bearer=None):
         raise BotSeshError('invalid_server_response' if 200 <= status < 300 else 'request_denied', status, retry) from None
     if not 200 <= status < 300:
         code = value.get('code')
+        moved = {k: v for k, v in value.items() if k != 'error'} if code == 'room_moved_on' and len(raw) <= 7800 else None
         raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code)
-                          else 'request_denied', status, retry)
+                          else 'request_denied', status, retry, room_moved_on=moved)
     return value
 
 
@@ -219,7 +220,9 @@ class InvitationClient(OAuthClient):
             if args.get('reply_to') is not None:
                 raise BotSeshError('unattested_reply_target_not_supported', rejected=True)
             self.verify(binding)
-            self.rest(binding, 'POST', '/messages', {'clientId': args['client_id'], 'text': args['text'], 'readThrough': 0})
+            self.rest(binding, 'POST', '/messages', {'clientId': args['client_id'], 'text': args['text'], 'readThrough': 0,
+                **({'seenThrough': args['seen_through']} if 'seen_through' in args else {}),
+                **({'allowStale': args['allow_stale']} if 'allow_stale' in args else {})})
             message = self.rest(binding, 'GET', '/messages/by-client/' + require_client_id(args['client_id'])).get('message')
             if (not isinstance(message, dict) or message.get('text') != args['text']
                     or message.get('senderParticipantId') != binding['participant_id'] or message.get('replyPreview')):
