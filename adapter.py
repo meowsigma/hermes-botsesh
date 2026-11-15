@@ -765,10 +765,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         for index, chunk in enumerate(chunks):
             part = {k: v for k, v in payload.items() if k not in ('receipt_id', 'processed')}
             part.update(text=chunk, client_id=self.client.logical_id('reply-chunk', {'room': room_id, 'parent': payload['client_id'], 'index': index}))
+            if index:
+                part.pop('seen_through', None)
             if index == len(chunks)-1:
                 part.update({k: payload[k] for k in ('receipt_id', 'processed') if k in payload})
+            # Only the first chunk is freshness-checked against the input; a
+            # later chunk of an already accepted reply must not be refused.
             result = await asyncio.to_thread(self.client.enrolled, room_id, 'post',
-                **({'_input_target': target} if target is not None else {}), **part)
+                **({'_input_target': target} if target is not None else {}),
+                **({'_later_chunk': True} if index else {}), **part)
         return result
 
     def _gateway_replay(self, chat_id, content, metadata):

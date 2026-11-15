@@ -370,9 +370,23 @@ def post(args, ctx):
         # cannot borrow another input's full UUID any more than its short alias.
         receipt_unavailable = bool(not transports and payload and payload.get('receipt_id')
             and not receipt_handles.available(room, target if native else None, payload['receipt_id']))
-        if native and not previous and not transports and payload and not receipt_unavailable and not correction:
-            frozen = rows.get(target, {}).get('frozen') or {}
-            payload = {**payload, 'seen_through': frozen.get('batch', {}).get('nextCheckpoint', 0)}
+        # Freshness is a property of MODEL-AUTHORED sends only, and this is the
+        # one place that owns the default (host/cron delivery, notices and
+        # direct Client.enrolled posts never reach it, so they send none).
+        # Putting it in the wire payload here keeps the saved transport intent
+        # and this audit identical, including when a locally refused attempt
+        # is replayed to the transport.
+        if payload and not transports and not receipt_unavailable and not correction and not mismatch and 'seen_through' not in payload:
+            if native:
+                # Exact native input cursor, never another open read.
+                frozen = rows.get(target, {}).get('frozen') or {}
+                payload = {**payload, 'seen_through': frozen.get('batch', {}).get('nextCheckpoint', 0)}
+            elif (room.get('transport') in ('oauth', 'invitation') and payload.get('processed') is not True
+                  and not any(key in payload for key in ('draft_ready', 'routine_report'))):
+                # A non-native model post (e.g. CLI) is judged against what this
+                # seat has actually read. Receipt-bound and structured sends only
+                # carry an explicit seen_through, as before.
+                payload = {**payload, 'seen_through': room.get('latest_seen_id', 0)}
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
                   and row.get('state') in ('admitting', 'admitted', 'started')]
         if len(active) == 1:

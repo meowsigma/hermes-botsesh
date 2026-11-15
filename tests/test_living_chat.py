@@ -230,7 +230,12 @@ class LivingChatTests(unittest.IsolatedAsyncioTestCase):
         sends = [args for _, name, args in self.requests if name == 'hermes_authored']
         self.assertEqual([s['client_id'] for s in sends], [saved_id, saved_id])
         self.assertEqual(len(self.messages), 1)
-        self.assertEqual(sends[0]['seen_number'], 3)
+        # Migrated (stale-post 0919bb9): a NATIVE authored post freezes freshness on
+        # its exact input's ID cursor (seen_through), replacing the profile-wide
+        # seen_number metadata; the retry carries the identical saved cursor.
+        self.assertEqual(sends[0]['seen_through'], 3)
+        self.assertNotIn('seen_number', sends[0])
+        self.assertEqual(sends[1], sends[0])
         self.assertNotIn('batch_id', sends[0])
         self.assertNotIn('processed_cursor', self.client.store.room('a'))
 

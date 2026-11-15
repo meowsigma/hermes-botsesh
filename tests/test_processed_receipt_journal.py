@@ -120,8 +120,12 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
             self.model_ended(adapter)
             with self.assertRaises(BotSeshError):
                 await adapter._finish_current('a', adapter._current['a'], 'empty_response')
-        self.assertEqual(self.calls()[payload['client_id']], {'payload': payload})
-        self.assertEqual(self.client.store.room('a')['oauth_posts'][payload['client_id']]['exact'], payload)
+        # Migrated (stale-post 0919bb9): the NATIVE tool freezes the exact input's
+        # ID cursor into the wire payload; every authored field stays byte-exact.
+        wire = {**payload, 'seen_through': 3}
+        self.assertEqual(self.calls()[payload['client_id']], {'payload': wire, 'notice': None,
+            'authored_options': {k: v for k, v in payload.items() if k not in ('text', 'client_id')}})
+        self.assertEqual(self.client.store.room('a')['oauth_posts'][payload['client_id']]['exact'], wire)
         self.assertIn('a', adapter._current)
         self.assertEqual(self.messages, {})
         # Independent room still admits its own input; no cross-room clearing.
@@ -179,7 +183,9 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(error.exception.definitive)
         self.assertIsNone(error.exception.pending)
         saved = self.calls()[payload['client_id']]
-        self.assertEqual(saved['payload'], payload)
+        # Migrated (stale-post 0919bb9): the native freshness cursor is part of the wire payload.
+        wire = {**payload, 'seen_through': 3}
+        self.assertEqual(saved['payload'], wire)
         self.assertEqual(saved['rejected']['code'], 'processed_receipt_required')
         with self.assertRaises(BotSeshError) as mismatch:
             self.post({**payload, 'processed': True,
@@ -193,7 +199,7 @@ class ProcessedReceiptJournalTests(unittest.IsolatedAsyncioTestCase):
         self.model_ended(adapter)
         await adapter._finish_current('a', adapter._current['a'], 'empty_response')
         row = self.client.store.room('a')['processing_receipts']['3']
-        self.assertEqual(self.calls()[payload['client_id']]['payload'], payload)
+        self.assertEqual(self.calls()[payload['client_id']]['payload'], wire)
         self.assertEqual(self.calls()[payload['client_id']]['rejected']['code'], 'processed_receipt_required')
         self.assertNotIn('result', self.calls()[payload['client_id']])
         self.assertEqual(self.messages, {})

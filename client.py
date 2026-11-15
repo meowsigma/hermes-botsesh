@@ -112,7 +112,7 @@ class Client:
             raise BotSeshError(e.get('code', 'bridge_failed'), e.get('status'), e.get('retry_after_ms', 0), pending=result.get('pending'))
         return result['result']
 
-    def enrolled(self, room_id, op, *, _input_target=None, **args):
+    def enrolled(self, room_id, op, *, _input_target=None, _later_chunk=False, **args):
         if room_id not in self.store.read()['rooms']:
             raise BotSeshError('not_enrolled', message='Not in this room yet. Use botsesh_join with the invitation link.')
         binding = self.store.room(room_id)
@@ -128,8 +128,11 @@ class Client:
                     raise BotSeshError('original_operation_required', rejected=True)
                 scoped_args = saved[0]['exact']
             require_bound(binding, _input_target, scoped_args.get('receipt_id') or scoped_args.get('batch_id'))
-            if op == 'post' and not any(args.get('client_id') in binding.get(section, {}) for section in ('oauth_posts', 'oauth_turns')):
+            if op == 'post' and not _later_chunk and not any(args.get('client_id') in binding.get(section, {}) for section in ('oauth_posts', 'oauth_turns')):
                 # Freshness belongs to THIS input, not another open native read.
+                # Chunk 2+ of an accepted long reply (_later_chunk) never
+                # re-checks: chunk 1 already passed, and a person's message
+                # landing between chunks must not strand a half-posted reply.
                 frozen = binding.get('processing_receipts', {}).get(str(_input_target), {}).get('frozen') or {}
                 args.setdefault('seen_through', frozen.get('batch', {}).get('nextCheckpoint', 0))
         try:

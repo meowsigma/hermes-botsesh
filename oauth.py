@@ -809,8 +809,11 @@ class OAuthClient:
                     for key in ('seen_number', 'seen_through'):
                         if key in prior['exact']:
                             args.setdefault(key, prior['exact'][key])
-                elif 'seen_through' not in args:
-                    args['seen_through'] = self.store.room(room_id).get('latest_seen_id', 0)
+                # Freshness is opt-in per caller: only a model-authored tool
+                # post (tools.post) or a native exact-input send supplies
+                # seen_through. Host/cron delivery, runtime notices and direct
+                # Client.enrolled posts send none, so the server keeps its
+                # legacy no-freshness behaviour for them.
                 exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number', 'seen_through', 'allow_stale') if k in args}
                 saved = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
                 if saved and saved['exact'] != exact:

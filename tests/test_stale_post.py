@@ -129,7 +129,14 @@ class RealStalePost(unittest.TestCase):
         self.assertEqual(refused['error'],'room_moved_on')
         self.assertEqual(refused['room_moved_on']['messages'][0]['id'],peer['id'])
         self.assertEqual(refused['room_moved_on']['messages'][0]['text'],'Option A fits the constraints.')
-        self.assertIn('✓ agree',refused['message'])
+        if os.environ.get('BOTSESH_EXPECT_AGREEMENT') == '0':
+            # rc.3 gate: a server whose reads prove no agreement marks (d2cdb6b3) gets the
+            # same refusal without offering a tool it lacks. Supporting servers keep the
+            # original assertion below, unchanged.
+            self.assertNotIn('agree',refused['message'])
+            self.assertIn('allow_stale:true',refused['message'])
+        else:
+            self.assertIn('✓ agree',refused['message'])
         self.assertNotIn('pending',refused)
         self.assertEqual(self.command(op='inspect'),before)
         audit=self.client.store.room(self.room)['processing_receipts'][str(q['number'])]['explicit_post_calls'][rejected_id]

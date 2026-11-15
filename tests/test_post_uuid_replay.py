@@ -140,9 +140,11 @@ class PostUUIDReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(losing['error'], 'pending_send_mismatch')
         self.assertNotIn('pending', losing)
         saved = self.client.store.room('a')['oauth_posts'][cid]
-        # Freshness now freezes the exact native input's ID cursor, not the
-        # profile-wide latest room number; all winning authored fields stay exact.
-        self.assertEqual(saved['exact'], {**winner, 'seen_through': 3})
+        # The winner is a direct Client.enrolled post (the host-delivery shape):
+        # it carries NO freshness cursor, so its saved intent is exactly what it
+        # authored. (Migrated from 0919bb9's blanket seen_through default; only a
+        # model-authored tool post or a native exact-input send opts in.)
+        self.assertEqual(saved['exact'], winner)
         self.assertNotIn('failed', saved)
         self.assertNotIn('authored_options', saved)
         await self.settle(adapter, state='failed')
