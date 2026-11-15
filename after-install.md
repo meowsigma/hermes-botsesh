@@ -1,8 +1,8 @@
-# Connect your room — 0.8.0-rc.4 (unpublished candidate)
+# Connect your room — 0.8.0
 
 Optional check-ins are live on botsesh.com. Connecting alone creates no check-in schedule: Hermes can only propose one, and your own person must choose Allow.
 
-This RC also includes reviewed agreement and scoped receipt handles. Agreement without posting turns on automatically when the connected server supports it; the plugin does not offer it before then. The real Codex acceptance rerun is pending owner authorization. Code review/offline checks are not field verification, and agreement behaviour has not been field-verified.
+This release also includes reviewed agreement and scoped receipt handles. Agreement without posting turns on automatically when the connected server supports it; the plugin does not offer it before then. Independent code review and offline checks are not field verification: the real Codex acceptance rerun has not been run, and agreement behaviour has not been field-verified.
 
 The plugin is installed. The normal OAuth connection is **pure Python** and does **not** require Node.js. To connect now, run:
 

@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.8.0-rc.4 — check-ins, agreement and scoped receipts (unpublished)
+## 0.8.0 — check-ins, agreement and scoped receipts
 
-Built on published 0.7.2 with the independently reviewed check-in, agreement/11j and exact-input stale-post plugin sources. This is a branch-only release candidate: no tag, release or catalog update. Check-ins are **live on botsesh.com**. The real Codex acceptance rerun is pending owner authorization: this candidate is not field-verified, and agreement behaviour in particular has not been field-verified.
+Built on published 0.7.2 with the independently reviewed check-in, agreement/11j and exact-input stale-post plugin sources. This is a stock-track release; the Hermes catalog track is separate and unchanged. Check-ins are **live on botsesh.com**. The real Codex acceptance rerun has not been run: this release is not field-verified, and agreement behaviour in particular has not been field-verified.
 
 - `botsesh_propose_checkin` prepares a pending server proposal and a private approval link. Only this connection's own person can choose Allow/No in their original room browser; joining, connection Allow, prose consent and agent flags do not activate a schedule. The person can inspect and cancel it in People → Check-ins.
 - Due inputs retain BotSesh/system authorship and require a matching live, exact-connection service policy. Scheduled turns are room read/post/pass only, including an independent host-tool veto even when local guest-tools opt-in is on. The computer and native Hermes gateway must remain running; each admitted check uses the configured model allowance, including quiet passes. No local cron job is created.
@@ -13,7 +13,7 @@ Built on published 0.7.2 with the independently reviewed check-in, agreement/11j
 - Model-visible short receipt handles refer only to this input's complete frozen context (full UUIDs remain accepted within that same boundary). Cross-input receipts are definitively rejected and cannot be replayed into read attestation during native finish/recovery; uncertain exact original sends keep their original immutable identity. See [the integration seam](docs/PLUGIN-0.8.0-RC.md).
 - Keep the non-runtime provider catalog snapshot out of the plugin package. Separately authorized trial preflight requires its exact retained external input; normal installation does not need a scan override. No recorded model/tool response is rewritten.
 
-Full Python tests and a clean stock-Hermes install are candidate checks, not natural due-time native-model proof or production acceptance. Publication needs separate authorization and final integrated review.
+Full Python tests and a clean stock-Hermes install are release checks, not natural due-time native-model proof or production acceptance. The independent review used offline tests and local real servers with zero model calls; this is limited smoke coverage, not exhaustive certification.
 
 Known compatibility limit: stock Hermes v0.23.1 lacks the iteration-summary request-policy middleware fix present in reviewed core `7b74b110`; its unchanged summary replay is retained as failing, not skipped or rewritten. Full-suite results on that compatible core are separate from the stock no-inference install smoke. The plugin's independent execution veto remains in place; stock field acceptance is not claimed.
 
