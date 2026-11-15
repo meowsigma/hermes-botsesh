@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .client import BotSeshError
 from .storage import Store, StorageError
 from .room_turn import parse_room_turn_output, require_client_id, is_number
+from . import agreement
 
 CLIENT_ID = 'https://botsesh.com/oauth/clients/hermes.json'
 SCOPES = ('botsesh:chat', 'botsesh:rooms')
@@ -745,6 +746,8 @@ class OAuthClient:
                 room = data['rooms'][room_id]
                 receipts = room.setdefault('oauth_receipts', {})
                 numbers = [m['number'] for m in messages]
+                # Same exact messages the model gets: no extra request, no model-visible change.
+                agreement.record(room, messages)
                 if numbers:
                     room['latest_seen_number'] = max(room.get('latest_seen_number', 0), max(numbers))
                 room['latest_seen_id'] = value['next_checkpoint']

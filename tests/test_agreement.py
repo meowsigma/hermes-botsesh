@@ -11,7 +11,18 @@ from hermes_botsesh_test.client import BotSeshError
 from gateway.platforms.event import ProcessingOutcome
 
 class AgreementTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = fixture.LivingChatTests.asyncSetUp
+    async def asyncSetUp(self):
+        await fixture.LivingChatTests.asyncSetUp(self)
+        # rc.3 offers agreement only once a room read shows the server projects `agreements`
+        # (see test_agreement_capability). These tests model such a server, so its catch-up
+        # messages carry the (empty) list; every assertion below is unchanged.
+        inner = OAuthClient.rpc
+        def rpc(api, binding, name, args=None, **kwargs):
+            value = inner(api, binding, name, args, **kwargs)
+            if name == 'catchup':
+                value = {**value, 'messages': [{**m, 'agreements': []} for m in value['messages']]}
+            return value
+        p = patch.object(OAuthClient, 'rpc', rpc);p.start();self.addCleanup(p.stop)
     begin = fixture.LivingChatTests.begin
     model_ended = fixture.LivingChatTests.model_ended
     prepare = core_fixture.ConfirmedPassTests.prepare

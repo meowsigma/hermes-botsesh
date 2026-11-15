@@ -10,11 +10,13 @@ from .client import Client, BotSeshError
 from .storage import StorageError
 from .provider_text import visible_text
 from . import receipt_handles
+from . import agreement
 
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
 logger = logging.getLogger(__name__)
 ERROR_HINTS = {
-    'room_moved_on': 'No message posted. Review the newer room messages; use ✓ agree (botsesh_agree) instead of duplicating an answer, revise your contribution, or explicitly set allow_stale:true in a new botsesh_post. This is not read attestation. Do not automatically retry or override.',
+    'room_moved_on': agreement.MOVED_ON_AGREE,
+    'agreement_unsupported': agreement.UNSUPPORTED,
     'processed_receipt_required': 'For a processed pass or structured output, first consume botsesh_read, then send its exact receipt_id and processed:true. For a plain message use botsesh_post(text="your answer").',
     'receipt_expired': 'The supplied receipt is unknown or unavailable for this agent/room. Do not guess another ID. Call botsesh_read, consume its complete output, then use its receipt_id in a new post; keep any uncertain original send UUID and fields unchanged.',
     'unread_reply_target': 'reply_to must be a message number in your supplied frozen batch. Use that exact number or omit reply_to in a new post; do not change an uncertain send.',
@@ -52,6 +54,15 @@ def scoped_room(args, ctx, *, infer=False):
         raise BotSeshError('room_id_required')
     return room
 
+def _agreement_available(args):
+    """Room-scoped, store-only lookup; unknown never hides the unchanged text."""
+    try:
+        from gateway.session_context import get_session_env
+        room = (args or {}).get('room_id') or get_session_env('HERMES_SESSION_CHAT_ID', '')
+        return agreement.exposed_for(Client().store, room)
+    except Exception:
+        return True
+
 def guarded(fn):
     def call(args, **kwargs):
         try:
@@ -59,6 +70,8 @@ def guarded(fn):
         except (BotSeshError, StorageError) as e:
             pending = getattr(e, 'pending', None)
             message = getattr(e, 'message', None) or ERROR_HINTS.get(getattr(e, 'code', ''))
+            if message == agreement.MOVED_ON_AGREE and not _agreement_available(args):
+                message = agreement.MOVED_ON_NO_AGREE
             return json.dumps({'ok': False, 'error': getattr(e, 'code', 'private_storage_error'), 'status': getattr(e, 'status', None), 'retry_after_ms': getattr(e, 'retry_after_ms', 0), **({'message': message} if message else {}), **({'room_moved_on': e.room_moved_on} if getattr(e, 'room_moved_on', None) else {}), **({'pending': pending, 'notice': str(e)} if pending else {})})
         except Exception:
             return json.dumps({'ok': False, 'error': 'invalid_request_or_operation_failed'})
@@ -447,6 +460,10 @@ def agree(args, ctx):
     payload = {key: args[key] for key in ('number', 'version', 'active')}
     target = None
     if calling_scope(ctx)[0] == 'botsesh':
+        # A native turn on a server whose reads proved it has no agreement
+        # marks never reaches the transport: no 404/Unknown-tool noise, no journal.
+        if not agreement.exposed(client.store.room(room_id)):
+            raise BotSeshError('agreement_unsupported', rejected=True)
         from gateway.session_context import get_session_env
         target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
         row = client.store.room(room_id).get('processing_receipts', {}).get(target)
@@ -567,7 +584,7 @@ SCHEMAS = [
 
 
 post_schema = next(spec for spec in SCHEMAS if spec['name'] == 'botsesh_post')
-post_schema['description'] += ' A room_moved_on refusal includes newer messages: consider ✓ agree (botsesh_agree), revise, or deliberately set allow_stale:true in a NEW post. Never automatically retry/override; freshness has no read effect.'
+post_schema['description'] += agreement.POST_NOTE_AGREE
 post_schema['parameters']['properties']['allow_stale'] = {'type': 'boolean', 'description': 'Explicitly post after considering newer room messages. Default false; never automatic. Use a new client_id after a definitive refusal.'}
 
 SCHEMAS += [
