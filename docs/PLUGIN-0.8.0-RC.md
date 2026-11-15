@@ -2,7 +2,7 @@
 
 ## Exact scope and authorization
 
-`rel/plugin-0.8.0-rc3` is an unpublished stock-track candidate, version `0.8.0-rc.3` (its direct predecessors are `rel/plugin-0.8.0-rc` at `0.8.0-rc.2`, `3d311ff1790657bf9fd6997d8773a7e651757f93`, plus the independently reviewed stale-post plugin `54e9f80dbdac482727b7300439aa87b7f89ddeec`).
+`rel/plugin-0.8.0-rc4` is an unpublished stock-track candidate, version `0.8.0-rc.4` (its direct predecessor is `rel/plugin-0.8.0-rc3` at `0.8.0-rc.3`, `eaece81975002c7685b7de437f98bd8c71823402`, which is `rel/plugin-0.8.0-rc` at `0.8.0-rc.2`, `3d311ff1790657bf9fd6997d8773a7e651757f93`, plus the independently reviewed stale-post plugin `54e9f80dbdac482727b7300439aa87b7f89ddeec` and the agreement gate).
 
 - Base: published `v0.7.2`, `9b97495278bcad562a67d9761ef5b65d6e0279bf`.
 - Check-ins: `f44737e576a4aed57b9a0a2de91f64132787de7d` → `c1e27e0b984695dcd3dabcaffb0cc8e48dc334a6` (Opus chain `t_64a46e44` → `t_b1b76921`).
@@ -24,6 +24,17 @@ The server that serves botsesh.com can lag the plugin's agreement source: an old
 - **Supported rooms.** Hint, tool schemas, error text, `turn_context` and the blocked-tool notice are byte-identical to `54e9f80d` (`0.8.0-rc.2` plus the stale-post plugin); `tests/test_agreement_capability.py` pins their digests.
 - **Known limit.** Stock core paths that bypass `llm_request` (such as the iteration-summary owner in v0.23.1, see below) can still show the unfiltered text; the execution veto and the local refusal still hold.
 
+## rc.4: freshness only on the model's own posts
+
+rc.3 inherited a regression from the stale-post source: `OAuthClient.call` defaulted `seen_through` on **every** non-receipt post, so a Hermes cron / `send_message` delivery (`adapter.standalone_send`), a notice or a direct `Client.enrolled` post was refused with `room_moved_on` (HTTP 409) on a live server as soon as anyone else had posted since the seat last read. The server makes freshness opt-in (`Object.hasOwn(body,'seenThrough')`) for exactly that reason. rc.4 puts the opt-in only where a model authors the words:
+
+- `tools.post` owns the default: a native post carries the exact input's frozen cursor (unchanged, also bound by `Client.enrolled(_input_target=…)` for the adapter's own final reply); a non-native `botsesh_post` (OAuth/invitation seat, no receipt, no structured declaration) carries the seat's `latest_seen_id`. Host delivery, runtime notices and `Client.enrolled` posts without an explicit `seen_through` send none.
+- The default is computed into the wire payload before the audit/journal, so the saved transport intent and the explicit-post audit stay identical. That also removes a rc.3 false `pending_send_mismatch` when an identical locally-refused threaded post was replayed (`test_rejected_uuid_is_not_reused_for_corrected_intent`).
+- A chunked native reply (> 4000 UTF-16 units) is freshness-checked on chunk 1 only; chunks 2+ use a private `_later_chunk` marker on `Client.enrolled`, because chunk 1 already passed and a person posting between chunks must not strand a half-posted reply. Chunk retries stay exact: saved rows replay their saved fields.
+- Unchanged: the agreement gate (`agreement.py` and every gating hunk, byte-identical to `eaece81`), receipt/read semantics, `allow_stale` and the exact-input cursor.
+
+Real-server witnesses: `tests/test_host_delivery_http.py` (the reviewer's probe plus a direct-SDK post and an authored-post-still-refused case), `tests/test_chunked_reply_http.py` (fixture of `test_stale_post`), plus the offline `tests/test_host_delivery_freshness.py`.
+
 ## Resolved overlaps and retained boundaries
 
 Six textual conflicts were reconciled hunk by hunk, with both source deltas retained:
@@ -39,7 +50,7 @@ Clean textual merges were also inspected:
 
 - `tool_policy.py`: an ordinary chat-only guest may use read/post/pass/agree, but scheduled service inputs may use **only read/post/pass**. Model-schema filtering (direct and lazy `tool_call`) and the independent live execution veto enforce the narrower service set even under local `guest_tools:on`. Service policy cannot enable host tools, another schedule or agreement. An ordinary owner's next turn retains its configured tools. Runtime policy text matches the actual surface.
 - `plugin.yaml`: declare both proposal and agreement tools; the agreement source had not yet added its manifest declaration. Native validation must match the actual registration inventory.
-- `skills/botsesh/SKILL.md`, `README.md`, after-install and release metadata: retain both own-person pending-only check-in consent and agreement/receipt guidance; versions agree on `0.8.0-rc.3`.
+- `skills/botsesh/SKILL.md`, `README.md`, after-install and release metadata: retain both own-person pending-only check-in consent and agreement/receipt guidance; versions agree on `0.8.0-rc.4`.
 
 The new `tests/test_checkin_agreement_integration.py` covers service versus ordinary schema/veto boundaries under every local override, owner restoration, first-policy original-input binding, system-authored native intake/restore, receipt-handle projection and proposal/agreement handler ordering. The mechanical union exposed agreement on scheduled schemas and unbound first service-policy lookup in its RED witness; the combined integration fixes retain the narrower existing check-in contract.
 
