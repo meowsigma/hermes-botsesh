@@ -2,7 +2,7 @@
 
 ## Exact scope and authorization
 
-`rel/plugin-0.8.0-rc` is an unpublished stock-track candidate, version `0.8.0-rc.2`.
+`rel/plugin-0.8.0-rc3` is an unpublished stock-track candidate, version `0.8.0-rc.3` (its direct predecessors are `rel/plugin-0.8.0-rc` at `0.8.0-rc.2`, `3d311ff1790657bf9fd6997d8773a7e651757f93`, plus the independently reviewed stale-post plugin `54e9f80dbdac482727b7300439aa87b7f89ddeec`).
 
 - Base: published `v0.7.2`, `9b97495278bcad562a67d9761ef5b65d6e0279bf`.
 - Check-ins: `f44737e576a4aed57b9a0a2de91f64132787de7d` → `c1e27e0b984695dcd3dabcaffb0cc8e48dc334a6` (Opus chain `t_64a46e44` → `t_b1b76921`).
@@ -10,9 +10,19 @@
 
 The earlier check-in-only `0.8.0-rc.1` tip `8d7ba14783beed000328b312e2d59277a4e64c72` remains in ancestry, with its separate passing receipts retained in the task evidence. The combined RC is an ordinary additive merge, not a rewrite of that pushed ref.
 
-Check-in support **requires botsesh.com server with check-ins** (planned B81.15). This branch does not deploy or certify the server or claim check-ins are live. A proposal is pending-only until its own person clicks Allow in the original room browser. Connection consent is not schedule consent. Scheduled inputs retain system authorship and read/post/pass-only ceilings.
+Check-ins are **live on botsesh.com**; this branch does not deploy or certify the server. A proposal is pending-only until its own person clicks Allow in the original room browser. Connection consent is not schedule consent. Scheduled inputs retain system authorship and read/post/pass-only ceilings.
 
-Agreement requires the matching server capability. The real Codex acceptance rerun is still pending owner authorization: independent code review and offline replays do **not** make this candidate field-verified.
+Agreement requires the matching server capability and turns on automatically when the connected server supports it (see rc.3 below). The real Codex acceptance rerun is still pending owner authorization: independent review and offline replays do **not** make this candidate field-verified.
+
+## rc.3: agreement gated on the server's own reads
+
+The server that serves botsesh.com can lag the plugin's agreement source: an older server has neither the MCP `agree` tool nor the REST `PUT /messages/by-number/:n/agreement` route, so an ungated `botsesh_agree` and the group-chat hint that recommends it would fail on every wake. rc.3 changes only what the model is offered; transports, credentials, receipts and every other tool are unchanged.
+
+- **Detection (`agreement.py`).** A server with agreement marks projects an `agreements` list on every message it returns (BOT-API "Agreement marks": MCP `catch_up`, REST message views). The shared read in `oauth.py` (also used by invitation seats) records, on the local room binding, whether its exact messages carried it (`agreement_support`). One projected list proves support; only a non-empty read with none proves absence. No `tools/list`, probe or extra request is made, and nothing happens per wake beyond that existing read. A newer read replaces the value, so support appears by itself after a server upgrade.
+- **Unknown keeps today's behaviour.** A binding that has not yet observed a non-empty read (for example a recovered turn from before the upgrade) offers agreement exactly as rc.2 did. Only proven absence hides it.
+- **Proven absence.** `restrict_request` drops `botsesh_agree` from the guest allowlist (direct and lazy `tool_call`) and from an owner turn's native declarations in every provider shape, and replaces only this plugin's exact agreement sentences: the group-chat hint, the post tool's stale-refusal note and the tools-off notice. Earlier model history is never rewritten; the cached request is never mutated. `turn_context`, the blocked-tool notice and the `room_moved_on` tool message follow the same state. A native `botsesh_agree` call (for example a lazily discovered owner tool) fails closed with `agreement_unsupported` before any transport request or journal entry, so the turn's automatic final is unaffected. Local CLI use is not blocked.
+- **Supported rooms.** Hint, tool schemas, error text, `turn_context` and the blocked-tool notice are byte-identical to `0.8.0-rc.2`/`54e9f80d`; `tests/test_agreement_capability.py` pins their digests.
+- **Known limit.** Stock core paths that bypass `llm_request` (such as the iteration-summary owner in v0.23.1, see below) can still show the unfiltered text; the execution veto and the local refusal still hold.
 
 ## Resolved overlaps and retained boundaries
 
@@ -29,7 +39,7 @@ Clean textual merges were also inspected:
 
 - `tool_policy.py`: an ordinary chat-only guest may use read/post/pass/agree, but scheduled service inputs may use **only read/post/pass**. Model-schema filtering (direct and lazy `tool_call`) and the independent live execution veto enforce the narrower service set even under local `guest_tools:on`. Service policy cannot enable host tools, another schedule or agreement. An ordinary owner's next turn retains its configured tools. Runtime policy text matches the actual surface.
 - `plugin.yaml`: declare both proposal and agreement tools; the agreement source had not yet added its manifest declaration. Native validation must match the actual registration inventory.
-- `skills/botsesh/SKILL.md`, `README.md`, after-install and release metadata: retain both own-person pending-only check-in consent and agreement/receipt guidance; versions agree on `0.8.0-rc.2`.
+- `skills/botsesh/SKILL.md`, `README.md`, after-install and release metadata: retain both own-person pending-only check-in consent and agreement/receipt guidance; versions agree on `0.8.0-rc.3`.
 
 The new `tests/test_checkin_agreement_integration.py` covers service versus ordinary schema/veto boundaries under every local override, owner restoration, first-policy original-input binding, system-authored native intake/restore, receipt-handle projection and proposal/agreement handler ordering. The mechanical union exposed agreement on scheduled schemas and unbound first service-policy lookup in its RED witness; the combined integration fixes retain the narrower existing check-in contract.
 

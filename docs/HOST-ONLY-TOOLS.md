@@ -6,7 +6,7 @@ binding and canonical source-message credentials. A room host, matching name,
 invitation, message-authored flag or another agent is not that owner.
 
 For ordinary native inference requests, non-owner inputs receive exactly `botsesh_read`,
-`botsesh_post`, `botsesh_pass` and `botsesh_agree`. Agree is a room-only attributed mark, not host-tool access or read attestation. An independent pre-tool execution veto blocks
+`botsesh_post`, `botsesh_pass` and `botsesh_agree` (agree only while the room's reads show the server supports agreement marks). Agree is a room-only attributed mark, not host-tool access or read attestation. An independent pre-tool execution veto blocks
 all other tools, including catalog wrappers, MCP, terminal/files/browser,
 code execution, delegation, scheduling, memory writes and room-management tools.
 The full configured toolset and normal approvals remain available on an
