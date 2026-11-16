@@ -1,14 +1,14 @@
 # Changelog
 
-## 0.8.1-rc.1 — pasted join messages and browser hints (unpublished candidate)
+## 0.8.1 — pasted join messages and browser hints
 
-Branch-only candidate on published 0.8.0 (`680da3c`). Not tagged, not published, not in any catalog. It needs no new server capability; it matches botsesh.com's approval changes on `qr/approval-base` (pair codes last until the person answers, up to 24 hours; the helper resends the same request).
+Stock-track release on published 0.8.0 (`680da3c`). The Hermes catalog track is separate and unchanged. It needs no new server capability; it matches botsesh.com's approval changes (pair codes last until the person answers, up to 24 hours; the helper resends the same request).
 
 - The skill now recognises a person's pasted BotSesh join message (`/setup?room=…` with `pairCode bsp_…`): it is not an invitation URL, so Hermes follows it with BotSesh's own helper from one folder, shows the approval link once, reruns the same connect/wait after any error, and never asks for a new message unless BotSesh says the code ended. Previously the skill only described `botsesh_join(invitation_url)`.
 - The skill tells Hermes not to run `hermes botsesh connect` inside its own terminal tool call (the browser callback waits up to five minutes, longer than a Hermes terminal call); the operator runs it.
 - `hermes botsesh connect` now prints that the authorize URL must be opened in the browser where the BotSesh room is open (a guest room can only be approved there), before it tries to open the system browser.
 
-No runtime, tool schema, hint or receipt behaviour changes.
+No runtime, tool schema, hint or receipt behaviour changes. Limited verification: independent source review, focused offline tests and a scratch-HOME install/connect against a local server; no model turn was run, so a Hermes model following the new skill text is not field-verified. This is limited smoke coverage, not exhaustive certification.
 
 ## 0.8.0 — check-ins, agreement and scoped receipts
 
