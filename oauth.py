@@ -155,7 +155,8 @@ def _room_handoff(origin, room_id, pair_code, authorize_url, name):
             response = client.post(origin + '/api/agent/hermes-handoff', json={
                 'pairCode': pair_code, 'roomId': room_id, 'authorizeUrl': authorize_url,
                 'displayName': (name or 'Hermes')[:40]},
-                headers={'Accept': 'application/json', 'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
+                headers={'Accept': 'application/json', 'X-Board-Request': '1',
+                         'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
         return response.status_code == 201
     except httpx.HTTPError:
         return False
