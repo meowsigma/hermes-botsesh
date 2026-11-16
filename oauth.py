@@ -186,7 +186,8 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_
         authorize_url = cfg.authorize_url + '?' + urlencode(params)
         # As in native login, show the authorize URL for manual authorization.
         # Never print the received callback query, error prose, verifier or tokens.
-        print(f'\nOpen this URL to authorize Hermes with BotSesh:\n  {authorize_url}\n')
+        print(f'\nOpen this URL to authorize Hermes with BotSesh, in the browser where your BotSesh room is open\n'
+              f'(a guest room can only be approved there):\n  {authorize_url}\n')
         print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
         if not paste_redirect:
             print('Phone cannot reach loopback? Re-run with --no-browser --paste-redirect for hidden URL paste and URL re-print.')
