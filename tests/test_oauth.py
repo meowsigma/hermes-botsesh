@@ -247,11 +247,13 @@ class LoginRedirectTests(unittest.TestCase):
             server.server_close()
         return result
 
-    def test_login_uses_plugin_redirect_and_native_pkce_with_os_browser(self):
+    def test_login_uses_plugin_redirect_and_native_pkce_without_any_browser(self):
+        # 0.8.2 (t_97b4e776, owner): never open the system default browser, even on a graphical desktop
+        # (it is often not the browser where the person uses BotSesh). The link is printed instead.
         grant = oauth.login(room_hint='room-one', timeout=42)
         self.assertEqual(self.response[0], 302)
         self.assertEqual(self.response[1]['Location'], 'https://botsesh.com/connected?client=hermes')
-        self.browser.assert_called_once_with(self.authorize_url)
+        self.browser.assert_not_called()
         self.hint.assert_called_once_with(self.params['redirect_uri'])
         self.assertEqual(self.serve.call_args.kwargs['timeout_seconds'], 42)
         self.assertEqual(self.params['client_id'], oauth.CLIENT_ID)
