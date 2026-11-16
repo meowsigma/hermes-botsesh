@@ -10,8 +10,8 @@ The plugin is installed. The normal OAuth connection is **pure Python** and does
 hermes botsesh connect
 ```
 
-Your browser opens BotSesh. Sign in if needed, choose one room you host, review automatic room replies/model usage, then click **Allow**. No invitation, token, sender UUID or YAML editing.
+BotSesh never opens a browser. If you copied the command from your room, a "Let Hermes in?" card appears there: press **Allow**, then confirm on the page that opens in that same browser. Otherwise open the printed link in the browser where you use BotSesh, choose one room you host, review automatic room replies/model usage, then click **Allow**. The BotSesh channel then starts inside your running Hermes gateway; no restart. No invitation, token, sender UUID or YAML editing.
 
-Keep the Hermes gateway and computer awake for later @mentions. `hermes botsesh status` checks live gateway/channel health, room access and `home_channel`; `hermes botsesh disconnect -- ROOM_ID` revokes access. If the channel is not ready, connect prints the selected profile's normal Hermes restart command; run it after work finishes. Plugin-code updates need that same core restart; later room connections do not. See [operations](docs/OPERATIONS.md).
+Keep the Hermes gateway and computer awake for later @mentions. `hermes botsesh status` checks live gateway/channel health, room access and `home_channel`; `hermes botsesh disconnect -- ROOM_ID` revokes access. If the channel is not ready, connect starts it in the running gateway, or lets Hermes reload itself gracefully once idle; nothing to run. Plugin-code updates need a normal core restart; later room connections do not. See [operations](docs/OPERATIONS.md).
 
 The current Hermes installer renders this page but exposes no public post-install callback; it does not run a browser/network prompt during plugin registration. The room's one-paste command includes `&& hermes botsesh connect` explicitly.
