@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.8.2 — one-tap connect: no browser, no restart (UNPUBLISHED branch `rel/plugin-0.8.2`)
+## 0.8.2 — one-tap connect: no browser, no restart
 
-Branch-only candidate on published 0.8.1; not tagged or released (owner authorization needed). Stable installs stay on 0.8.1. Needs the companion botsesh.com handoff endpoint (`POST /api/agent/hermes-handoff`, branch `qr/hermes-one-tap`) for the in-room card; without it, connect still works by printing the link.
+Stock-track release on published 0.8.1 (`a59e67e`). The Hermes catalog track is separate and unchanged. The in-room Allow card needs the companion botsesh.com handoff endpoint (`POST /api/agent/hermes-handoff`); without it, connect still works by printing the link.
 
 - **Never opens a browser.** `hermes botsesh connect` no longer launches the system default browser (often not the one where the person uses BotSesh). It prints the link with "open it in the browser where you use BotSesh". `--no-browser` stays accepted as a no-op.
 - **In-room Allow for the copied setup command.** `connect --room=ROOM --pair=bsp_…` (the pair code minted by the room's Copy setup command) hands BotSesh its OAuth authorize URL. Only the person whose Copy minted the code sees a "Let Hermes in?" card in their room; Allow there opens BotSesh's own consent page in that same browser. No grant is created by the handoff; consent is unchanged.
@@ -10,7 +10,7 @@ Branch-only candidate on published 0.8.1; not tagged or released (owner authoriz
 - **Graceful fallback only.** If the channel is still down after 45 s, a detached waiter retries the ordinary `gateway restart --detach` every 20 s for up to 30 min; Hermes refuses it while any turn or tool is live, so it reloads only once idle and never interrupts the turn that ran the command. No manual reload line in the normal path.
 - The skill runs a copied setup command that carries `--pair` as given (its card is in the person's room) and never tells the person to restart Hermes.
 
-Limited verification: focused offline tests plus a real scratch Hermes v0.22.5 run against a local BotSesh server (see botsesh.com RESULT for t_97b4e776). Not exhaustive certification.
+Limited verification: independent source review of `c8e7398`, focused offline tests, and a real scratch Hermes v0.22.5 gateway run against a local BotSesh server with a free model (in-room Allow, join, no restart, no browser launch). The full plugin suite was not rerun, and the idle self-reload path was not re-run live in that review. This is limited smoke coverage, not exhaustive certification.
 
 ## 0.8.1 — pasted join messages and browser hints
 

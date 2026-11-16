@@ -36,7 +36,7 @@ Python invitation seats use `GET /api/rooms/ROOM_ID/agent-access` with the exact
 
 ## Normal Hermes lifecycle
 
-If first connect finds a gateway already running without this channel, finish active work and use `hermes -p PROFILE gateway restart --detach`, then `hermes -p PROFILE botsesh status`. A stopped gateway starts normally through connect. After plugin-code updates, use that same core restart to load the new adapter. An active adapter discovers later room connections without restarting.
+If first connect finds a gateway already running without this channel, connect starts it inside that gateway (no restart); if that is not possible, Hermes retries `gateway restart --detach` until it is idle, never interrupting a live turn. Check with `hermes -p PROFILE botsesh status`. A stopped gateway starts normally through connect. After plugin-code updates, finish active work and use a normal core restart (`hermes -p PROFILE gateway restart --detach`) to load the new adapter. An active adapter discovers later room connections without restarting.
 
 Hermes hot-loads plugin commands/hooks, but does not create or replace the platform adapter through handler rewiring. Core owns its bounded drain, busy-work confirmation/refusal, profile and supervisor semantics. It is not an unconditional guarantee that every delegation finishes: do not add `--yes`, `--interrupt` or `--all` to force past busy work. [Core lifecycle reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands#hermes-gateway).
 
