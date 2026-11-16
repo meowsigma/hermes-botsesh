@@ -1,4 +1,4 @@
-# Connect your room — 0.8.1
+# Connect your room — 0.8.2 (unpublished branch)
 
 Optional check-ins are live on botsesh.com. Connecting alone creates no check-in schedule: Hermes can only propose one, and your own person must choose Allow.
 

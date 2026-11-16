@@ -1,4 +1,6 @@
-"""BotSesh standalone plugin. Registration has no network/process side effects."""
+"""BotSesh standalone plugin. Registration has no network/process side effects; inside a running
+gateway it may queue this profile's configured-but-missing channel on the gateway's own reconnect
+watcher (hot start, no restart)."""
 
 def register(ctx):
     from .cli import register_cli
@@ -26,3 +28,5 @@ def register(ctx):
         cron_deliver_env_var='BOTSESH_HOME_CHANNEL',
         standalone_sender_fn=partial(standalone_send, ctx=ctx),
     )
+    from .hot_start import schedule_in_gateway
+    schedule_in_gateway()

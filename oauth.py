@@ -146,8 +146,25 @@ def _native_loopback_helpers():
     return {name: function for name, (function, _, _) in calls.items()}
 
 
-def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
-          gateway_id=None, profile=None, name=None, previous=None, paste_redirect=False):
+def _room_handoff(origin, room_id, pair_code, authorize_url, name):
+    """0.8.2: hand the authorize URL to the person's own BotSesh room (in-room card) instead of
+    opening any browser here. True only when BotSesh confirms the card; never raises."""
+    import httpx
+    try:
+        with httpx.Client(timeout=15, follow_redirects=False, trust_env=False) as client:
+            response = client.post(origin + '/api/agent/hermes-handoff', json={
+                'pairCode': pair_code, 'roomId': room_id, 'authorizeUrl': authorize_url,
+                'displayName': (name or 'Hermes')[:40]},
+                headers={'Accept': 'application/json', 'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
+        return response.status_code == 201
+    except httpx.HTTPError:
+        return False
+
+
+def login(*, origin='https://botsesh.com', open_browser=False, timeout=300, room_hint=None,
+          gateway_id=None, profile=None, name=None, previous=None, paste_redirect=False, pair_code=None):
+    # 0.8.2: BotSesh never opens a browser (the system default one is often not where the person
+    # uses BotSesh). open_browser is accepted for compatibility and ignored.
     from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, login as hermes_login
     origin = checked_origin(origin)
     cfg = OAuthPKCEConfig(client_id=CLIENT_ID, authorize_url=origin + '/oauth/authorize',
@@ -163,11 +180,10 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_
         if paste_redirect:
             raise BotSeshError('upgrade_hermes_for_no_browser_callback')
         print('Native callback compatibility mode: upgrade Hermes for POST diagnostics and --paste-redirect support.')
-        return hermes_login('botsesh', cfg, open_browser=open_browser)
+        return hermes_login('botsesh', cfg, open_browser=False)
 
     import hmac
     import secrets
-    import webbrowser
     from urllib.parse import urlencode
 
     helpers['validate']('botsesh', cfg)
@@ -186,17 +202,18 @@ def login(*, origin='https://botsesh.com', open_browser=True, timeout=300, room_
         authorize_url = cfg.authorize_url + '?' + urlencode(params)
         # As in native login, show the authorize URL for manual authorization.
         # Never print the received callback query, error prose, verifier or tokens.
-        print(f'\nOpen this URL to authorize Hermes with BotSesh, in the browser where your BotSesh room is open\n'
-              f'(a guest room can only be approved there):\n  {authorize_url}\n')
+        carded = bool(pair_code and room_hint and _room_handoff(origin, room_hint, pair_code, authorize_url, name))
+        if carded:
+            print('\nA "Let Hermes in?" card is waiting in your BotSesh room. Press Allow there,'
+                  ' in the browser where you use BotSesh.\n')
+        else:
+            print(f'\nOpen this link in the browser where you use BotSesh (the one with your room open;'
+                  f' a guest room can only be approved there):\n  {authorize_url}\n')
         print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
-        if not paste_redirect:
+        if not paste_redirect and not carded:
             print('Phone cannot reach loopback? Re-run with --no-browser --paste-redirect for hidden URL paste and URL re-print.')
-        helpers['hint'](redirect_uri)
-        if open_browser and helpers['graphical']():
-            try:
-                webbrowser.open(authorize_url)
-            except Exception:
-                print('Could not open the browser automatically; use the URL above.')
+        if not carded:
+            helpers['hint'](redirect_uri)
         from .oauth_callback import paste_callback, timeout_diagnostic
         try:
             callback = (paste_callback(redirect_uri=redirect_uri, authorize_url=authorize_url,
@@ -312,16 +329,18 @@ class OAuthClient:
                 raise BotSeshError('invalid_mcp_page')
         return data
 
-    def connect(self, *, origin='https://botsesh.com', open_browser=True, timeout=300, room_hint=None,
-                name=None, profile=None, paste_redirect=False, preserve_name=False):
+    def connect(self, *, origin='https://botsesh.com', open_browser=False, timeout=300, room_hint=None,
+                name=None, profile=None, paste_redirect=False, preserve_name=False, pair_code=None):
         # Serialize complete browser enrollments separately from refresh: two
         # concurrent callbacks must not replace a newer local grant with an old
         # grant that the server just superseded. Refresh can continue meanwhile.
         with _lock(self.store, connect=True):
             return self._connect(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
-                                 name=name, profile=profile, paste_redirect=paste_redirect, preserve_name=preserve_name)
+                                 name=name, profile=profile, paste_redirect=paste_redirect, preserve_name=preserve_name,
+                                 pair_code=pair_code)
 
-    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect, preserve_name=False):
+    def _connect(self, *, origin, open_browser, timeout, room_hint, name, profile, paste_redirect, preserve_name=False,
+                 pair_code=None):
         from .identity import current_profile, gateway_install_id
         profile = profile or current_profile()
         name = preferred_name(name)  # Refuse invalid names before creating a grant.
@@ -332,7 +351,8 @@ class OAuthClient:
         previous = candidates[0] if len(candidates) == 1 else None
         fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
                        gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous,
-                       **({'paste_redirect': True} if paste_redirect else {}))
+                       **({'paste_redirect': True} if paste_redirect else {}),
+                       **({'pair_code': pair_code} if pair_code else {}))
         provisional = {'origin': origin}
         try:
             rooms = self.rpc(provisional, 'list_rooms', token=fields['access_token']).get('rooms')

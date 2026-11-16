@@ -20,8 +20,9 @@ def setup(parser):
         'Use COMMAND --help for room selectors and explicit mutation options.'
     )
     sub = parser.add_subparsers(dest='botsesh_action', required=True, title='commands', metavar='COMMAND')
-    connect = sub.add_parser('connect', help='Sign in in your browser and approve room access')
-    connect.add_argument('--no-browser', action='store_true', help='Print the browser URL (SSH loopback forwarding supported)')
+    connect = sub.add_parser('connect', help='Approve room access in the browser where you use BotSesh')
+    connect.add_argument('--no-browser', action='store_true', help='Kept for compatibility: BotSesh never opens a browser; it prints the link')
+    connect.add_argument('--pair', help='Pair code from the BotSesh room you copied this command in: approve with the card in that room')
     connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')
     connect.add_argument('--set-home', action='store_true', help='Set home_channel to this newly connected, verified room')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
@@ -74,10 +75,20 @@ def configure(binding):
 
 
 def connect_runtime(profile):
+    """Bring the BotSesh channel up with nothing left for the person to run (0.8.2)."""
+    import time
     from .ops_status import gateway_snapshot
+    from .hot_start import graceful_restart_when_idle, nudge_running_gateway
     def ready():
         live = gateway_snapshot()
         return live.get('running') is True and live.get('channel') == 'up'
+    def wait(seconds):
+        until = time.monotonic() + seconds
+        while time.monotonic() < until:
+            if ready():
+                return True
+            time.sleep(2)
+        return ready()
     if ready():
         print('Hermes gateway and this profile’s BotSesh channel are already running.')
         return
@@ -91,9 +102,18 @@ def connect_runtime(profile):
         if ready():
             print('Hermes gateway and this profile’s BotSesh channel are ready.')
             return
+    # The gateway was already running without BotSesh: start the channel inside it (no restart).
+    nudge_running_gateway()
+    if wait(45):
+        print('BotSesh channel started in the running Hermes gateway (no restart). Mention it in the room.')
+        return
+    if graceful_restart_when_idle(profile):
+        print('BotSesh channel starts as soon as Hermes is idle: Hermes reloads its background service by itself,'
+              ' without interrupting any running work. Nothing else to do.')
+        return
     import shlex
     prefix = shlex.join(['hermes', '-p', profile])
-    print(f'Room connected; BotSesh channel not ready. After work finishes, run `{prefix} gateway restart --detach`, then `{prefix} botsesh status`.')
+    print(f'Room connected; BotSesh channel not ready. Run `{prefix} gateway restart --detach` once Hermes is idle.')
 
 
 def connect_in_profile(args, profile, home):
@@ -106,7 +126,7 @@ def connect_in_profile(args, profile, home):
     for flag in ('no_browser', 'paste_redirect', 'set_home', 'no_start'):
         if getattr(args, flag, False):
             argv.append('--' + flag.replace('_', '-'))
-    for field in ('room', 'name', 'timeout', 'dev_origin'):
+    for field in ('room', 'name', 'timeout', 'dev_origin', 'pair'):
         value = getattr(args, field, None)
         if value is not None:
             argv.append('--' + field.replace('_', '-') + '=' + str(value))
@@ -154,11 +174,15 @@ def _handle_profile(args, profile):
             from .identity import handle_identity
             return handle_identity(args, client, oauth)
         if args.botsesh_action == 'connect':
+            import re
+            if getattr(args, 'pair', None) is not None and not re.fullmatch(r'bsp_[A-Za-z0-9_-]{43}', args.pair):
+                raise BotSeshError('invalid_pair_code')
             from .identity import configured_name, save_identity_config
             binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout,
                                     room_hint=args.room, name=configured_name(profile, args.name), profile=profile,
                                     preserve_name=args.name is None,
-                                    **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}))
+                                    **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}),
+                                    **({'pair_code': args.pair} if getattr(args, 'pair', None) else {}))
             configure(binding)
             save_identity_config(profile=profile, display_name=binding['display_name'])
             print(f"Connected to {binding['name']} as @{binding['display_name']}. This exact name is addressable while the gateway runs.")
