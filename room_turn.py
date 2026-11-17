@@ -185,7 +185,7 @@ def _routine(value):
             and is_number(value['scheduledFor']) and value['status'] in ('working', 'completed', 'failed'))
 
 
-def parse_room_turn_output(output):
+def parse_room_turn_output(output, reply_limit=4000):
     def bad():
         raise BotSeshError('invalid_runtime_answer')
     try:
@@ -207,7 +207,7 @@ def parse_room_turn_output(output):
         if 'draft_ready' in value and ('reply' not in value or not _draft(value['draft_ready'])
                 or len(actions) >= 10 or any(a['op'] == 'draft_ready' for a in actions)):
             bad()
-        for key, limit in (('reply', 4000), ('decision', 2000), ('status', 160)):
+        for key, limit in (('reply', reply_limit), ('decision', 2000), ('status', 160)):
             if key in value and not is_text(value[key], limit):
                 bad()
         if 'decision' in value and 'reply' not in value or 'status' in value and any(ord(c) <= 31 or ord(c) == 127 for c in value['status']):

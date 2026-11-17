@@ -93,6 +93,7 @@ class LiveRelay:
         self._off_until = {}
         self._tasks = set()
         self._closed = set()       # (room, target) whose live view ended (Stop / new session)
+        self._proven = set()       # rooms whose server answered hermes_live (DM P1 capability)
 
     # ── thread-safe entry points (Hermes hook threads) ──────────────────────────────────────
     def attach(self, loop):
@@ -123,6 +124,10 @@ class LiveRelay:
     # ── loop-thread state ───────────────────────────────────────────────────────────────────
     def available(self, room_id):
         return self._off_until.get(room_id, 0) <= time.monotonic()
+
+    def proven(self, room_id):
+        """This room's server implements hermes_live (it accepted or seq-refused a frame)."""
+        return room_id in self._proven and self.available(room_id)
 
     def draft_id_for(self, room_id, target):
         """draft_id for the final only after the server accepted a draft for this exact turn."""
@@ -258,7 +263,10 @@ class LiveRelay:
         frame = {'version': 1, **frame}
         frame['seq'] = self._next_seq(room_id, frame['kind'], frame.get('turnTarget'))
         try:
-            return await asyncio.to_thread(self.adapter.client.enrolled, room_id, 'live', frame=frame)
+            result = await asyncio.to_thread(self.adapter.client.enrolled, room_id, 'live', frame=frame)
+            if isinstance(result, dict) and (result.get('accepted') is True or result.get('reason') in ('stale', 'stale_seq')):
+                self._proven.add(room_id)
+            return result
         except BotSeshError as error:
             if error.terminal:
                 return None  # The room loop owns revocation handling.

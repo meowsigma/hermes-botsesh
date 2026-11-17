@@ -841,7 +841,11 @@ class OAuthClient:
             room = self.store.room(room_id)
             unsent = all(client_id not in room.get(section, {}) for section in ('oauth_posts', 'oauth_turns'))
             try:
-                intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}})
+                # 32 000 only for an exact processed DM final the adapter proved the server accepts
+                # (DM P1 server); every other path keeps the 4 000 bound.
+                limit = 32000 if (args.get('processed') is True and binding.get('room_type') == 'dm'
+                                  and (args.get('reply_limit') == 32000 or client_id in room.get('oauth_posts', {}))) else 4000
+                intent = parse_room_turn_output({'reply': text, **{k: args[k] for k in ('draft_ready', 'routine_report') if k in args}}, reply_limit=limit)
             except BotSeshError as error:
                 raise BotSeshError('invalid_runtime_answer', rejected=unsent) from error
             if 'draft_ready' in args or 'routine_report' in args:

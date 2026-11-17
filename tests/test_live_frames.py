@@ -279,6 +279,36 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
         a.handle_message.assert_not_awaited()
 
 
+class LongDmFinal(unittest.IsolatedAsyncioTestCase):
+    """DM P1 server: a long DM final is one message (≤ 32 000), never on an unproven server."""
+
+    def make(self, proven, room_type='dm'):
+        from hermes_botsesh_test import adapter as adapter_mod
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / 'plugin')
+        store.update(lambda d: d['rooms'].update({ROOM: {'room_id': ROOM, 'active': True, 'transport': 'oauth', 'room_type': room_type}}))
+        a = adapter_mod.BotSeshAdapter.__new__(adapter_mod.BotSeshAdapter)
+        calls = []
+        a.client = SimpleNamespace(store=store, logical_id=lambda kind, data: '%s-%s' % (kind, data.get('index')),
+                                   enrolled=lambda room, op, **kw: calls.append(kw) or {'number': len(calls)})
+        if proven:
+            a.live._proven.add(ROOM)
+        return a, calls
+
+    async def test_proven_dm_sends_one_message_unproven_or_room_keeps_4000_chunks(self):
+        text = 'x' * 9000
+        a, calls = self.make(True)
+        await a._post_payload(ROOM, {'text': text, 'processed': True, 'client_id': 'c1'}, 7)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((calls[0]['text'], calls[0]['reply_limit']), (text, 32000))
+        for proven, kind in ((False, 'dm'), (True, 'group')):
+            a, calls = self.make(proven, kind)
+            await a._post_payload(ROOM, {'text': text, 'processed': True, 'client_id': 'c1'}, 7)
+            self.assertEqual([len(c['text']) for c in calls], [4000, 4000, 1000])
+            self.assertTrue(all('reply_limit' not in c for c in calls))
+
+
 class ManifestV11(unittest.TestCase):
     def test_v11_fields_and_exact_v10_fallback_shape(self):
         command = SimpleNamespace(name='busy', category='Configuration', subcommands=('queue', 'steer', 'interrupt', '--global'))

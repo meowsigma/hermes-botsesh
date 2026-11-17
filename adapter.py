@@ -966,12 +966,22 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             from .receipt_handles import require_bound
             require_bound(self.client.store.room(room_id), target, payload.get('receipt_id'))
         text = payload['text']
+        # A DM final is one message up to 32 000 UTF-16 units once this room's server proved the
+        # DM P1 capability (it accepted a live frame); otherwise 4 000-unit chunks as before.
+        room = self.client.store.room(room_id)
+        journaled = payload.get('client_id') in room.get('oauth_posts', {})
+        limit = 32000 if (target is not None and payload.get('processed') is True and room.get('room_type') == 'dm'
+                          # A journaled single send is retried as exactly that one send, never re-chunked.
+                          and (self.live.proven(room_id) or journaled)) else 4000
+        if limit == 32000 and not journaled and len(text.encode('utf-16-le')) // 2 > 4000 and self.client.logical_id('reply-chunk', {
+                'room': room_id, 'parent': payload['client_id'], 'index': 0}) in room.get('oauth_posts', {}):
+            limit = 4000  # An earlier chunked attempt of this exact reply keeps its chunks.
         # Exact contiguous bytes, no lossy fallback or reflow. Only the final
         # chunk can attest the frozen input and mark the addressed turn answered.
         chunks, chunk, units = [], [], 0
         for char in text:
             width = 2 if ord(char) > 0xffff else 1  # Server JavaScript limits UTF-16 units.
-            if units + width > 4000:
+            if units + width > limit:
                 chunks.append(''.join(chunk))
                 chunk, units = [], 0
             chunk.append(char)
@@ -982,7 +992,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             raise BotSeshError('reply_chunk_unrepresentable')
         if len(chunks) == 1:
             return await asyncio.to_thread(self.client.enrolled, room_id, 'post',
-                **({'_input_target': target} if target is not None else {}), **payload)
+                **({'_input_target': target} if target is not None else {}),
+                **({'reply_limit': 32000} if limit == 32000 else {}), **payload)
         for index, chunk in enumerate(chunks):
             part = {k: v for k, v in payload.items() if k not in ('receipt_id', 'processed')}
             part.update(text=chunk, client_id=self.client.logical_id('reply-chunk', {'room': room_id, 'parent': payload['client_id'], 'index': index}))
