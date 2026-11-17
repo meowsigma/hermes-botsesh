@@ -129,6 +129,11 @@ class LiveRelay:
         """This room's server implements hermes_live (it accepted or seq-refused a frame)."""
         return room_id in self._proven and self.available(room_id)
 
+    def tool_running(self, room_id, target):
+        """A tool call of this exact turn is in flight right now (from Hermes's own tool hooks)."""
+        turn = self._turns.get(room_id)
+        return bool(turn and turn.target == target and any(s.get('state') == 'running' for s in turn.steps.values()))
+
     def draft_id_for(self, room_id, target):
         """draft_id for the final only after the server accepted a draft for this exact turn."""
         turn = self._turns.get(room_id)

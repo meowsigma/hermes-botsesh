@@ -637,7 +637,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         for target in targets:
             if target in self._current.get(room_id, {}).get('batch_targets', [self._current.get(room_id, {}).get('target')]) or (room_id, target) in self._skipped_targets:
                 continue
-            if target in steer and self._turn_running(room_id) and await self._steer_queued(room_id, target):
+            if target in steer and self._steer_point(room_id) and await self._steer_queued(room_id, target):
                 continue
             if str(target) in saved:
                 continue
@@ -729,7 +729,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         human = self._control_context(room_id)['human_id']
         mode = self._busy_mode(room_id, human)
         if mode == 'steer':
-            return await self._steer_message(room_id, target, message)
+            # No certain delivery point: keep it queued (runs next as its own turn).
+            return self._steer_point(room_id) and await self._steer_message(room_id, target, message)
         if mode == 'interrupt':
             current = self._current[room_id]
             if current.get('busy_interrupt_by') is None:
@@ -764,6 +765,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return False
         row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current.get('target')), {})
         return row.get('state') == 'started' or bool(current.get('start_reported'))
+
+    def _steer_point(self, room_id):
+        """Hermes delivers /steer text "after the next tool call". Steer only while a tool call of
+        the running turn is in flight, so that delivery point is certain. Otherwise a steer can
+        be left over when the turn ends without another tool call (seen live: the text never
+        ran); the message then simply runs as its own turn next."""
+        current = self._current.get(room_id) or {}
+        return self._turn_running(room_id) and self.live.tool_running(room_id, current.get('target'))
 
     async def _steer_message(self, room_id, target, message):
         human = self._owner_plain_text(room_id, message)

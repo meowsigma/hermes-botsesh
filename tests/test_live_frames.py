@@ -240,6 +240,9 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
         a.handle_message = AsyncMock()
         a._delivery = AsyncMock()
         a._control_invalidate = AsyncMock()
+        # A tool call of the running turn is in flight: Hermes's /steer delivery point.
+        a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock(),
+                                        tool_running=lambda room, target: True)
         return a
 
     def message(self, text='also check the logs', author='owner'):
@@ -261,9 +264,18 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await a._apply_busy_mode(ROOM, 8, self.message()))  # consumed once
         self.assertEqual(a.handle_message.await_count, 1)
 
+    async def test_steer_without_a_tool_in_flight_stays_queued(self):
+        # Live finding: Hermes delivers /steer "after the next tool call"; with none left the
+        # steered text never ran. Without a certain delivery point the message runs next.
+        a = self.make('steer')
+        a._live_relay.tool_running = lambda room, target: False
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
+        a.handle_message.assert_not_awaited()
+        self.assertNotIn('8', a.client.store.room(ROOM).get('control_inputs', {}))
+
     async def test_interrupt_stops_once_and_the_message_still_runs_next(self):
         a = self.make('interrupt')
-        a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock())
+        a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock(), tool_running=lambda room, target: True)
         self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
         self.assertFalse(await a._apply_busy_mode(ROOM, 9, self.message()))
         self.assertEqual(a.handle_message.await_count, 1)
@@ -285,7 +297,7 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
             for state in ({'delivered': True}, {'failure_delivered': True}, {'interrupt_requested': True},
                           {'start_reported': False}):
                 a = self.make(mode)
-                a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock())
+                a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock(), tool_running=lambda room, target: True)
                 a._current[ROOM].update(state)
                 self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()), (mode, state))
                 a.handle_message.assert_not_awaited()
