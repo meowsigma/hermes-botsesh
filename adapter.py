@@ -746,6 +746,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             reply_expected=False, metadata={'botsesh_control': True})
         self._dm_contexts[room_id]['generation'] = str(uuid.uuid4())
         await self._control_invalidate(room_id)
+        if room_id in self._current:
+            self._current[room_id]['interrupt_requested'] = True
         self.live._spawn(self.live.clear_now(room_id))
         logger.info('BotSesh DM %s: busy mode interrupt; stopping the running turn for message %s.', room_id, target)
         await self.handle_message(event)  # The native stop; its ack stays a local runtime notice.
