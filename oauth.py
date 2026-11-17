@@ -504,30 +504,55 @@ class OAuthClient:
         # DMs can source themselves rather than a selected shared room; filtering
         # by source_room_id would silently remove consented access on refresh.
         accepted = rooms
-        if not any(room.get('room_id') == root for room in accepted):
+        if not accepted:
             raise BotSeshError('authorization_revoked', 401)
         for room in accepted:
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room.get('room_id', '')) or not room.get('participant_id'):
                 raise BotSeshError('invalid_room_binding')
+        new_root = root
+        if not any(room.get('room_id') == root for room in accepted):
+            # The owner removed this connection's first room on BotSesh (Your
+            # agents). The same live grant still lists its other rooms, so keep
+            # discovering through its owner DM (or next room) instead of failing.
+            dm = next((r for r in accepted if r.get('room_type') == 'dm'), None)
+            new_root = (dm or accepted[0])['room_id']
         with _lock(self.store):
             row = self._credential(binding)
             row['extra']['room_ids'] = [room['room_id'] for room in accepted]
+            if new_root != root:
+                row['extra']['room_id'] = new_root
             _save(row)
+            def fresh(room):
+                rid = room['room_id']
+                return {'room_id': rid, 'url': binding['origin']+'/b/'+rid, 'origin': binding['origin'],
+                    'name': room['name'], 'display_name': room['display_name'], 'participant_id': room['participant_id'],
+                    'oauth_id': binding['oauth_id'], **({'oauth_root': new_root} if rid != new_root else {}),
+                    'room_type': room.get('room_type', 'room'), 'active': True, 'state': 'connected', 'transport': 'oauth'}
             def enroll(data):
                 live = set(row['extra']['room_ids'])
                 for saved in data['rooms'].values():
-                    if saved.get('oauth_id') == binding['oauth_id'] and saved['room_id'] not in live:
+                    if saved.get('oauth_id') != binding['oauth_id']:
+                        continue
+                    if saved['room_id'] not in live:
                         saved.update(active=False, state='membership_revoked')
+                    elif new_root != root:
+                        if saved['room_id'] == new_root:
+                            saved.pop('oauth_root', None)
+                        else:
+                            saved['oauth_root'] = new_root
                 for room in accepted:
                     if room['room_id'] in data.get('forgotten_rooms', {}):
                         continue  # Passive discovery cannot undo explicit forget.
-                    if room['room_id'] in data['rooms']:
+                    saved = data['rooms'].get(room['room_id'])
+                    if saved:
+                        # Added back on BotSesh after a removal: the server made a
+                        # fresh seat for this same grant. Never revive the old seat.
+                        if (not saved.get('active') and saved.get('state') == 'membership_revoked'
+                                and saved.get('oauth_id') == binding['oauth_id']
+                                and saved.get('participant_id') != room['participant_id']):
+                            data['rooms'][room['room_id']] = fresh(room)
                         continue
-                    rid = room['room_id']
-                    data['rooms'][rid] = {'room_id': rid, 'url': binding['origin']+'/b/'+rid, 'origin': binding['origin'],
-                        'name': room['name'], 'display_name': room['display_name'], 'participant_id': room['participant_id'],
-                        'oauth_id': binding['oauth_id'], 'oauth_root': root, 'room_type': room.get('room_type', 'room'),
-                        'active': True, 'state': 'connected', 'transport': 'oauth'}
+                    data['rooms'][room['room_id']] = fresh(room)
             self.store.update(enroll)
         return {'rooms': accepted}
 

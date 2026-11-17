@@ -131,6 +131,47 @@ class LifecycleUnit(unittest.TestCase):
         self.assertNotIn(ROOM, self.store.read()['rooms'])
         self.assertIn(dm, self.store.read()['rooms'])
 
+    def _discover(self, binding, rooms):
+        from hermes_botsesh_test.oauth import OAuthClient
+        oauth = OAuthClient(self.store)
+        row = {'id': 'shared', 'extra': {}}
+        with patch.object(oauth, 'rpc', return_value={'rooms': rooms}), patch.object(oauth, '_credential', return_value=row), patch('hermes_botsesh_test.oauth._save'):
+            oauth.discover(binding)
+        return row, self.store.read()['rooms']
+
+    def test_room_added_back_after_removal_gets_its_fresh_seat(self):
+        # Your agents: Remove from a room, then Add to this room again = a new seat.
+        other = 'O' * 32
+        root = {'room_id': ROOM, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'participant_id': 'root-seat'}
+        self.store.update(lambda d: d.update(rooms={ROOM: {**root, 'active': True},
+            other: {'room_id': other, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'oauth_root': ROOM, 'participant_id': 'old-seat', 'active': False, 'state': 'membership_revoked'}}))
+        _, rooms = self._discover(root, [{'room_id': ROOM, 'participant_id': 'root-seat', 'name': 'Root', 'display_name': 'Hermes'},
+                                         {'room_id': other, 'participant_id': 'new-seat', 'name': 'Other', 'display_name': 'Hermes 2'}])
+        self.assertTrue(rooms[other]['active'])
+        self.assertEqual(rooms[other]['participant_id'], 'new-seat')
+        self.assertEqual(rooms[other]['oauth_root'], ROOM)
+        # The same (still revoked) seat is never revived.
+        self.store.update(lambda d: d['rooms'][other].update(active=False, state='membership_revoked'))
+        _, rooms = self._discover(root, [{'room_id': ROOM, 'participant_id': 'root-seat', 'name': 'Root', 'display_name': 'Hermes'},
+                                         {'room_id': other, 'participant_id': 'new-seat', 'name': 'Other', 'display_name': 'Hermes 2'}])
+        self.assertFalse(rooms[other]['active'])
+
+    def test_removed_first_room_re_roots_on_the_owner_dm(self):
+        dm, other = 'D' * 32, 'O' * 32
+        root = {'room_id': ROOM, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'participant_id': 'root-seat'}
+        self.store.update(lambda d: d.update(rooms={ROOM: {**root, 'active': True},
+            dm: {'room_id': dm, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'oauth_root': ROOM, 'participant_id': 'dm-seat', 'active': True, 'room_type': 'dm'},
+            other: {'room_id': other, 'origin': 'https://botsesh.com', 'oauth_id': 'shared', 'oauth_root': ROOM, 'participant_id': 'o-seat', 'active': True}}))
+        row, rooms = self._discover(root, [{'room_id': dm, 'participant_id': 'dm-seat', 'name': 'DM', 'display_name': 'Hermes', 'room_type': 'dm'},
+                                           {'room_id': other, 'participant_id': 'o-seat', 'name': 'Other', 'display_name': 'Hermes'}])
+        self.assertFalse(rooms[ROOM]['active'])
+        self.assertEqual(rooms[ROOM]['state'], 'membership_revoked')
+        self.assertNotIn('oauth_root', rooms[dm])
+        self.assertEqual(rooms[other]['oauth_root'], dm)
+        self.assertEqual(row['extra']['room_id'], dm)
+        with self.assertRaises(BotSeshError):
+            self._discover(root, [])
+
 
 @unittest.skipUnless(all(os.environ.get(k) for k in ('BOTSESH_TEST_SERVER_APP','BOTSESH_TEST_NODE','BOTSESH_TEST_HERMES')), 'explicit localhost app, node server and hermes executable required')
 class NativeCLINoNode(unittest.TestCase):

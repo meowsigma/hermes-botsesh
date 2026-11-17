@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — "Your agents" room changes reach a running gateway
+
+Patch on 0.9.0 (`733cc96`) for BotSesh's account "Your agents" (add an already-connected Hermes to a room in one tap; remove it from a room). A room added on BotSesh already reached 0.9.0 within ~30 s through the existing passive OAuth discovery. Two follow-ups did not:
+
+- **Added back after a removal.** Removing Hermes from a room and adding it again creates a fresh server seat; 0.9.0 skipped any room it had seen before, so the room stayed `membership_revoked` until a reconnect. Discovery now replaces that revoked local binding with the server's new seat for the same grant. Explicit `forget` tombstones, other grants' bindings and the old seat are never revived.
+- **First room removed.** 0.9.0 discovered new rooms only through the room it was first connected in; removing that room made discovery fail (`authorization_revoked`) and later additions never arrived. Discovery now re-roots on the connection's owner DM (or its next room) while the same grant still lists rooms. An empty list is still a revocation.
+
+No transport, credential, admission or model-call change.
+
 ## 0.9.0 — live DMs: drafts, tool steps, status, Stop and busy parity
 
 Stock-track release on published 0.8.2 (`0cbb413`). The Hermes catalog track is separate and unchanged. The live view needs the BotSesh DM overhaul P1 server (`hermes_live`, PROTOCOL v1); against an older server it turns itself off and 0.8.2 behaviour is unchanged. Keeps 0.8.2's no-restart start, in-room Allow and no browser launch.
