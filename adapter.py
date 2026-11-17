@@ -788,8 +788,18 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             else:
                 calls = row.get('explicit_post_calls', {})
                 reply_failed = bool(calls) and all(call.get('rejected') for call in calls.values())
-                await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'],
-                                     **({'failure_stage': 'reply_delivery'} if reply_failed else {}))
+                try:
+                    await self._delivery(room_id, int(target), 'failed', failure_code=saved['code'],
+                                         **({'failure_stage': 'reply_delivery'} if reply_failed else {}))
+                except BotSeshError as error:
+                    if error.terminal or not error.definitive:
+                        raise  # Uncertain: retry the same status-only report later.
+                    # A definitive refusal of a content-free status report is the server's
+                    # verdict on it, not a reason to stall this room: every later message
+                    # (including Stop) would wait behind it forever. Keep the refusal locally.
+                    logger.warning('BotSesh failure status for %s refused (%s); not retried.', target, error.code)
+                    self.client.store.update(lambda d: d['rooms'][room_id]['processing_receipts'].setdefault(target, {}).update(
+                        failure_report_rejected={'code': error.code, 'status': error.status}))
             def finish(data):
                 room = data['rooms'][room_id]
                 row = room['processing_receipts'][target]
