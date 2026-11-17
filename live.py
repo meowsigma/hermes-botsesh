@@ -319,6 +319,8 @@ class LiveRelay:
         if target is not None:
             # Late deltas/tool events of the stopped turn must not reopen its live view.
             self._closed.add((room_id, target))
+            if len(self._closed) > 2000:  # Bounded: old stopped turns can never be current again.
+                self._closed = set(list(self._closed)[-1000:])
         if turn is not None and (turn.sent or turn.draft_accepted):
             await self._post(room_id, {'kind': 'clear', 'turnTarget': turn.target})
 
