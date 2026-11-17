@@ -1133,7 +1133,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 current['failure_delivered'] = True
                 return SendResult(success=True)
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
-                code = current.get('provider_hint') or failure_code(content)
+                code = 'interrupted' if current.get('interrupt_requested') else current.get('provider_hint') or failure_code(content)
                 self._queue_failure(chat_id, current['target'], code)
                 await self._flush_failures(chat_id)
                 current['failure_delivered'] = True
