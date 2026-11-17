@@ -485,6 +485,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         receipt(self.client.store, room_id, target, state='withdrawn')
                         continue
                     if error.code != 'context_limit':
+                        if error.definitive and not error.terminal and error.status not in (408, 429):
+                            # The server refuses this exact target read (e.g. an earlier
+                            # admission whose outcome this process never journaled). Never
+                            # replay it, and never let it stall every later message (and
+                            # Stop) behind a growing backoff: settle it as interrupted.
+                            logger.warning('BotSesh target %s read refused (%s); reported as interrupted.', target, error.code)
+                            self._queue_failure(room_id, target, 'interrupted')
+                            await self._flush_failures(room_id)
+                            continue
                         raise
                     self._queue_failure(room_id, target, 'context_limit')
                     await self._flush_failures(room_id)
