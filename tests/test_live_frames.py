@@ -335,6 +335,19 @@ class LongDmFinal(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([len(c['text']) for c in calls], [4000, 4000, 1000])
             self.assertTrue(all('reply_limit' not in c for c in calls))
 
+    def test_dm_final_is_posted_even_if_the_owner_wrote_meanwhile_and_binding_is_frozen(self):
+        # Live finding: a DM final refused `room_moved_on` because the owner sent a follow-up
+        # while Hermes worked; the answer was lost. DM finals allow stale; rooms keep freshness.
+        for kind, expected in (('dm', {'allow_stale': True}), ('group', {})):
+            a, _calls = self.make(False, kind)
+            current = {'target': 7, 'client_id': 'c1'}
+            self.assertEqual(a._final_draft_binding(ROOM, current), expected)
+            self.assertEqual(a._final_draft_binding(ROOM, current), expected)  # Frozen per turn.
+        # A final journaled before a restart keeps its exact saved shape.
+        a, _calls = self.make(False, 'dm')
+        a.client.store.update(lambda d: d['rooms'][ROOM].update(pending_final={'payload': {'client_id': 'c2', 'text': 'x'}, 'target': 7}))
+        self.assertEqual(a._final_draft_binding(ROOM, {'target': 7, 'client_id': 'c2'}), {})
+
 
 class ManifestV11(unittest.TestCase):
     def test_v11_fields_and_exact_v10_fallback_shape(self):

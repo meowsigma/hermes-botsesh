@@ -1344,18 +1344,27 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         """Frozen once per turn: the journaled final and its transport payload must be equal.
 
         `draft_id` lets the server swap the live draft for this final in place. Only when the
-        server accepted a draft for this exact turn (so an older server never sees the field)."""
-        if 'final_draft_id' not in current:
+        server accepted a draft for this exact turn (so an older server never sees the field).
+        In a DM the final is posted even if the owner wrote again meanwhile (`allow_stale`):
+        a two-person DM has no peer agent to stay fresh against, the newer message runs next,
+        and a refused final lost the answer (seen live: `room_moved_on` -> "Failed")."""
+        if 'final_extras' not in current:
             # A final journaled before a restart keeps its exact saved binding.
             room = self.client.store.room(chat_id)
             saved = [r['payload'] for r in [room.get('pending_final') or {}, *room.get('gateway_deliveries', {}).values()]
                      if (r.get('payload') or {}).get('client_id') == current['client_id']]
             if saved:
-                current['final_draft_id'] = saved[0].get('draft_id')
+                current['final_extras'] = {k: saved[0][k] for k in ('draft_id', 'allow_stale') if k in saved[0]}
             else:
-                current['final_draft_id'] = self.live.draft_id_for(chat_id, current['target'])
+                extras = {}
+                draft_id = self.live.draft_id_for(chat_id, current['target'])
+                if draft_id:
+                    extras['draft_id'] = draft_id
+                if room.get('room_type') == 'dm' and room.get('transport') == 'oauth':
+                    extras['allow_stale'] = True
+                current['final_extras'] = extras
             self.live.close_drafts(chat_id, current['target'])
-        return {'draft_id': current['final_draft_id']} if current['final_draft_id'] else {}
+        return dict(current['final_extras'])
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, ctx=None):
     if media_files:
