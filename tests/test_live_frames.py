@@ -231,7 +231,7 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
         store.update(lambda d: d['rooms'].update({ROOM: {'room_id': ROOM, 'active': True, 'transport': 'oauth', 'room_type': 'dm', 'name': 'Fairy · DM'}}))
         a = adapter_mod.BotSeshAdapter.__new__(adapter_mod.BotSeshAdapter)
         a.client = SimpleNamespace(store=store)
-        a._current = {ROOM: {'target': 7}}
+        a._current = {ROOM: {'target': 7, 'start_reported': True}}  # A genuinely running turn.
         a._dm_contexts = {ROOM: {'human_id': 'owner', 'generation': 'g'}}
         a._control_context = lambda room: {'human_id': 'owner'} if room == ROOM else None
         a._is_sender_authorized = lambda user, kind, room: user == 'owner'
@@ -277,6 +277,18 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
         a.client.store.update(lambda d: d['rooms'][ROOM].update(room_type='group'))
         self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
         a.handle_message.assert_not_awaited()
+
+    async def test_a_settling_or_unstarted_turn_is_never_steered_or_interrupted(self):
+        # Live finding: a new task sent 1 s after an answer landed was steered into the
+        # finished turn and never ran. It must wait and run as its own turn.
+        for mode in ('steer', 'interrupt'):
+            for state in ({'delivered': True}, {'failure_delivered': True}, {'interrupt_requested': True},
+                          {'start_reported': False}):
+                a = self.make(mode)
+                a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock())
+                a._current[ROOM].update(state)
+                self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()), (mode, state))
+                a.handle_message.assert_not_awaited()
 
 
 class LongDmFinal(unittest.IsolatedAsyncioTestCase):

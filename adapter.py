@@ -637,7 +637,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         for target in targets:
             if target in self._current.get(room_id, {}).get('batch_targets', [self._current.get(room_id, {}).get('target')]) or (room_id, target) in self._skipped_targets:
                 continue
-            if target in steer and room_id in self._current and await self._steer_queued(room_id, target):
+            if target in steer and self._turn_running(room_id) and await self._steer_queued(room_id, target):
                 continue
             if str(target) in saved:
                 continue
@@ -724,7 +724,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         runs next in order; `queue` keeps it queued. Returns True only when the input was
         consumed (steered). Rooms are unchanged: they always queue.
         """
-        if room_id not in self._current or self._owner_plain_text(room_id, message) is None:
+        if not self._turn_running(room_id) or self._owner_plain_text(room_id, message) is None:
             return False
         human = self._control_context(room_id)['human_id']
         mode = self._busy_mode(room_id, human)
@@ -751,6 +751,19 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         self.live._spawn(self.live.clear_now(room_id))
         logger.info('BotSesh DM %s: busy mode interrupt; stopping the running turn for message %s.', room_id, target)
         await self.handle_message(event)  # The native stop; its ack stays a local runtime notice.
+
+    def _turn_running(self, room_id):
+        """A model turn is genuinely running (started, outcome not yet delivered, not stopped).
+
+        A turn whose answer already landed is only settling: steering or interrupting it would
+        swallow the new message (seen live: a new task sent 1 s after an answer was steered
+        into the finished turn and never ran). Such input waits and runs as its own turn."""
+        current = self._current.get(room_id)
+        if (not current or current.get('delivered') or current.get('failure_delivered')
+                or current.get('interrupt_requested')):
+            return False
+        row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current.get('target')), {})
+        return row.get('state') == 'started' or bool(current.get('start_reported'))
 
     async def _steer_message(self, room_id, target, message):
         human = self._owner_plain_text(room_id, message)
