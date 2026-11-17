@@ -9,9 +9,10 @@ import uuid
 
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from .command_catalog import build_manifest
+from .command_catalog import build_manifest, v10
 from .dm_controls import DmControlsMixin
 from .client import BotSeshError
+from .live import STATUS_COMMANDS
 
 _NATIVE_INPUT = ContextVar('botsesh_native_dm_input', default=None)
 logger = logging.getLogger(__name__)
@@ -127,19 +128,40 @@ class CommandTransportMixin(DmControlsMixin):
                 logger.warning('BotSesh DM manifest unavailable (%s); native authorized commands remain available.', type(error).__name__)
             finally:
                 self._dm_manifest_at[chat_id] = time.monotonic()
+        live = getattr(self, 'live', None)
+        status_at = getattr(self, '_dm_status_at', None)
+        if status_at is None:
+            status_at = self._dm_status_at = {}
+        # One status frame per DM after connect, then a slow refresh so a CLI-side change
+        # (e.g. `hermes config set approvals.mode`) shows without a turn. Never blocks this check.
+        if live is not None and time.monotonic() - status_at.get(chat_id, -1e9) >= 300:
+            status_at[chat_id] = time.monotonic()
+            live._spawn(live.publish_status(chat_id))
 
     async def _publish_dm_manifest(self, chat_id, member):
-        commands = build_manifest()
+        full = build_manifest()
+        previous = self._dm_manifests.get(chat_id)
+        # Manifest v1.1 adds optional fields. An older server that refuses or strips them gets the
+        # exact v1.0 shape (remembered per DM membership) so the / palette never goes empty.
+        legacy = bool(previous and previous['member'] == member and previous.get('legacy'))
+        try:
+            await self._publish_dm_manifest_shape(chat_id, member, v10(full) if legacy else full, legacy)
+        except BotSeshError as error:
+            if legacy or not (error.definitive or error.code == 'manifest_readback_mismatch'):
+                raise
+            await self._publish_dm_manifest_shape(chat_id, member, v10(full), True)
+
+    async def _publish_dm_manifest_shape(self, chat_id, member, commands, legacy):
         previous = self._dm_manifests.get(chat_id)
         # Retain one exact in-flight refresh; idle refreshes do not fill the
         # durable operation journal (or resurrect an older catalog on A→B→A).
         if previous and previous['member'] == member and previous['confirmed'] and previous['payload']['commands'] == commands:
             return
-        if previous and previous['member'] == member and not previous['confirmed']:
+        if previous and previous['member'] == member and not previous['confirmed'] and previous.get('legacy', False) == legacy:
             payload = previous['payload']
         else:
             payload = dict(version=1, clientId=str(uuid.uuid4()), commands=commands)
-            self._dm_manifests[chat_id] = dict(member=member, payload=payload, confirmed=False)
+            self._dm_manifests[chat_id] = dict(member=member, payload=payload, confirmed=False, legacy=legacy)
         response = await asyncio.to_thread(self.client.enrolled, chat_id, 'dm_control', action='manifest', payload=payload)
         projected = (response.get('message') or {}).get('dmControl') or {}
         if projected.get('commands') != payload['commands'] or projected.get('agentMembershipId') != member:
@@ -221,10 +243,19 @@ class CommandTransportMixin(DmControlsMixin):
             elif event.is_command() and not event.get_command():
                 await self._control_notice(chat_id, 'Choose a command from the / menu, or send /commands for the native list. No model was called for this incomplete command.')
             else:
-                if event.get_command() in ('new', 'reset', 'stop'):
+                command = event.get_command()
+                live = getattr(self, 'live', None)
+                if command in ('new', 'reset', 'stop'):
                     self._dm_contexts[chat_id]['generation'] = str(uuid.uuid4())
                     await self._control_invalidate(chat_id)
+                    if live is not None:
+                        # The live draft/steps of an interrupted turn end now; the durable
+                        # outcome (cancelled notice or final) still settles that turn.
+                        live._spawn(live.clear_now(chat_id))
                 await self.handle_message(event)  # The installed native dispatcher, never a prompt wrapper.
+                if live is not None and command in STATUS_COMMANDS:
+                    # Native dispatch may finish in its own task: read the state shortly after.
+                    live._spawn(live.publish_status_later(chat_id))
             await self._delivery(chat_id, target, 'handled')  # Transport handling, not a read/answer attestation.
         finally:
             _NATIVE_INPUT.reset(token)

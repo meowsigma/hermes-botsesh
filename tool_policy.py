@@ -185,6 +185,14 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
 
 def enforce_tools(**kwargs):
     result = _enforce_tools(**kwargs)
+    if result is None:
+        # Allowed by BotSesh's policy: show it as a live owner-only step. Presentation only;
+        # a failure here never changes the verdict.
+        try:
+            from .live import tool_started_hook
+            tool_started_hook(**kwargs)
+        except Exception:
+            pass
     if result is not None and result.get('message') == DENIED['message']:
         # The blocked-tool notice must not advertise a tool this server cannot run.
         try:

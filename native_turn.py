@@ -161,6 +161,8 @@ class NativeTurnMixin:
         await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
         if self._current.get(room_id) is current:
             self._current.pop(room_id)
+        # The durable final/failure is settled: end the owner-only live view, publish status.
+        self.live.end_turn_soon(room_id, current['target'])
         # Only terminal native settlement retires frozen policy context.
         def retire(data):
             # Older inline/Advanced delivery journals may predate receipts.

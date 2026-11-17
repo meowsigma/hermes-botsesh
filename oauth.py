@@ -711,6 +711,13 @@ class OAuthClient:
             return validate_policy(value, binding, args['target'], args['receipt_id'])
         if op == 'working':
             return self.rpc(binding, 'working', {'room_id': room_id, 'status': 'Hermes is working…', **({'mention_number': args['target']} if args.get('target') is not None else {})})
+        if op == 'live':
+            # Ephemeral presentation frame (protocol v1). No read effect, no durable row,
+            # never journaled or retried: the next snapshot supersedes a lost one.
+            frame = args.get('frame')
+            if not isinstance(frame, dict) or frame.get('kind') not in ('draft', 'activity', 'status', 'clear'):
+                raise BotSeshError('live_frame_invalid', rejected=True)
+            return self.rpc(binding, 'hermes_live', {'room_id': room_id, 'frame': frame})
         if op in ('verify', 'pending'):
             rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
             if not any(room['room_id'] == room_id and room['participant_id'] == binding['participant_id'] for room in rooms):
@@ -722,7 +729,10 @@ class OAuthClient:
                 self.call(binding, 'verify')
                 return {'pending': pending, 'hasMore': False, 'mentions': [], 'replies': []}
             inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
-            return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets'] if not target.get('takeover')], 'takeover_targets': [target for target in inbox['targets'] if target.get('takeover')], 'offers': inbox.get('offers', []), 'replies': [], 'backlog': inbox['backlog']}
+            return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets'] if not target.get('takeover')], 'takeover_targets': [target for target in inbox['targets'] if target.get('takeover')], 'offers': inbox.get('offers', []), 'replies': [], 'backlog': inbox['backlog'],
+                    # DM queue action (protocol v1 §2): the human asked to hand this queued input
+                    # to the running turn. A request only; the DM owner check happens locally.
+                    'steer': [target['number'] for target in inbox['targets'] if target.get('steer') is True and is_number(target.get('number'))]}
         if op in ('takeover_accept', 'takeover_pickup', 'takeover_claim', 'takeover_settle'):
             action = op.removeprefix('takeover_')
             payload = {'room_id': room_id, 'action': action, 'event_id': args['event_id']}
@@ -863,7 +873,7 @@ class OAuthClient:
                 # old unresolved entries), not an uncertain transport send.
                 # Keep its bytes/UUID intact.
                 raise BotSeshError('processed_receipt_required', rejected=unsent)
-            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_through', 'allow_stale') if k in args}
+            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_through', 'allow_stale', 'draft_id') if k in args}
             current = self.store.room(room_id)
             saved = current.get('oauth_posts', {}).get(client_id)
             if saved and saved['exact'] != exact:
@@ -884,7 +894,9 @@ class OAuthClient:
             result = self._journal_rpc(binding, 'oauth_posts', client_id, 'send_message', {'room_id': room_id, 'text': text,
                 'client_id': client_id, 'batch_id': receipt_id,
                 **({'reply_to': reply_to} if reply_to is not None else {}),
-                **{k: args[k] for k in ('seen_through', 'allow_stale') if k in args}})
+                # Optional live-draft binding (protocol v1 §1.2). Present only when this exact
+                # turn's draft was accepted, so an older server never receives the new field.
+                **{k: args[k] for k in ('seen_through', 'allow_stale', 'draft_id') if k in args}})
             message = result.get('message') or {}
             if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                 raise BotSeshError('send_not_confirmed_retry_same_intent')

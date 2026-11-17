@@ -112,6 +112,7 @@ from .reliability import receipt, health, backoff, failure_code, TERMINAL, can_b
 from .command_transport import CommandTransportMixin, _NATIVE_INPUT
 from .dm_controls import _shutdown_notice, _native_notice
 from . import agreement
+from .live import LiveRelay
 
 HINT = (
     "You're a member of this group chat and you see every new message from other members, including agents. "
@@ -158,6 +159,16 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         self._skipped_targets = set()
         self._dedup = MessageDeduplicator(ttl_seconds=86400)
         self.poll_seconds = max(5, min(300, int((config.extra or {}).get('poll_seconds', poll_seconds))))
+        self._heartbeats = {}
+        self._working_at = {}
+
+    @property
+    def live(self):
+        """Ephemeral owner-only live frames (draft text, tool steps, status). Never durable."""
+        relay = self.__dict__.get('_live_relay')
+        if relay is None:
+            relay = self.__dict__['_live_relay'] = LiveRelay(self)
+        return relay
 
     async def connect(self, *, is_reconnect=False):
         from .identity import current_profile
@@ -166,6 +177,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             logger.error('BotSesh profile choice belongs to another native home; run connect for the selected profile. No seats loaded in the wrong runtime.')
             return False
         self._running = True
+        self.live.attach(asyncio.get_running_loop())
         self._tasks.append(asyncio.create_task(self._supervise()))
         self._mark_connected()
         from .ops_status import record_channel
@@ -181,7 +193,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             task.cancel()
         for task in list(self._rooms.values()):
             task.cancel()
-        await asyncio.gather(*self._tasks, *self._rooms.values(), return_exceptions=True)
+        beats = self.__dict__.get('_heartbeats', {})
+        for task in list(beats.values()):
+            task.cancel()
+        await asyncio.gather(*self._tasks, *self._rooms.values(), *beats.values(), return_exceptions=True)
+        beats.clear()
         self._rooms.clear()
         self._mark_disconnected()
         from .ops_status import record_channel
@@ -450,6 +466,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     if pickup:
                         result['takeover_offer'] = {'event_id': offer['event_id'], 'task': pickup['task'], 'instructions': 'This is an offered replacement, NOT your claim. Consume the complete supplied context, then call botsesh_takeover_claim(processed=true, reason=your own reason) before work, reply or cant_do. Continue this same native turn only if granted. No tool or outside authority is implied by partial notes.'}
                 except BotSeshError as error:
+                    if error.code == 'withdrawn':
+                        # The human cancelled this queued input before admission (protocol v1
+                        # §2). Skip it: no model call, no read attestation, no reply.
+                        self._skipped_targets.add((room_id, target))
+                        receipt(self.client.store, room_id, target, state='withdrawn')
+                        continue
                     if error.code != 'context_limit':
                         raise
                     self._queue_failure(room_id, target, 'context_limit')
@@ -550,6 +572,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             event_id = 'takeover:' + saved['takeover_offer']['event_id'] if saved and saved.get('takeover_offer') else str(target)
             receipt(self.client.store, room_id, target, event_id=event_id)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
+            self.live.begin_turn(room_id, target)
             source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.
@@ -558,6 +581,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 current_receipt = self.client.store.room(room_id)['processing_receipts'][str(target)]
                 if current_receipt['state'] == 'admitting':
                     receipt(self.client.store, room_id, target, state='admitted', admitted_at=time.time())
+                self._start_heartbeat(room_id)
                 return  # Keep exactly one admitted event in flight per room.
             # Native admission rejection has no processing-complete callback or read effect.
             self._current.pop(room_id, None)
@@ -587,9 +611,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
         targets = sorted(_input_numbers(check))
         health(self.client.store, room_id, backlog=check.get('backlog', len(targets)))
+        steer = set(check.get('steer') or ())
         saved = self.client.store.room(room_id).get('processing_receipts', {})
         for target in targets:
-            if target in self._current.get(room_id, {}).get('batch_targets', [self._current.get(room_id, {}).get('target')]) or str(target) in saved or (room_id, target) in self._skipped_targets:
+            if target in self._current.get(room_id, {}).get('batch_targets', [self._current.get(room_id, {}).get('target')]) or (room_id, target) in self._skipped_targets:
+                continue
+            if target in steer and room_id in self._current and await self._steer_queued(room_id, target):
+                continue
+            if str(target) in saved:
                 continue
             # Native DM controls must still resolve while inference is busy.
             # Fetch only to inspect this separate input; never replace the active
@@ -602,6 +631,87 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     continue
             receipt(self.client.store, room_id, target)
             await self._delivery(room_id, target, 'received')
+
+    async def _steer_queued(self, room_id, target):
+        """DM 'Steer now' on a queued input: hand its CURRENT text to the running turn through
+        Hermes's native /steer (exactly as if the DM owner typed `/steer <text>`).
+
+        Only the verified DM owner's own message, only in an active DM with live owner context,
+        at most once per message. Returns True when the input was consumed (steered or refused
+        as a duplicate); False leaves it queued for the normal FIFO.
+        """
+        binding = self.client.store.room(room_id)
+        context = self._control_context(room_id)
+        if binding.get('room_type') != 'dm' or binding.get('transport') != 'oauth' or not context:
+            return False
+        if str(target) in binding.get('control_inputs', {}):
+            return True
+        try:
+            frozen = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
+        except BotSeshError as error:
+            if error.code == 'withdrawn':
+                self._skipped_targets.add((room_id, target))
+                return True
+            raise
+        message = next((m for m in frozen['batch']['messages'] if m.get('number') == target and not m.get('isOwn')), None)
+        author = (message or {}).get('authorParticipant') or {}
+        human = context['human_id']
+        text = (message or {}).get('text') or ''
+        if (not message or message.get('senderParticipantId') != human or author.get('id') != human
+                or author.get('verified') is not True or not text.strip()
+                or self._is_sender_authorized(human, 'dm', room_id) is not True):
+            return False
+        if text.lstrip().startswith('/'):
+            return False  # A queued command runs as a command, never as steer text.
+        def remember(data):
+            rows = data['rooms'][room_id].setdefault('control_inputs', {})
+            rows[str(target)] = {'received_at': time.time(), 'steer': True}
+            while len(rows) > 1000:
+                rows.pop(next(iter(rows)))
+        self.client.store.update(remember)
+        source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id),
+            chat_type='dm', user_id=human, user_name=author.get('name') or 'DM owner')
+        event = MessageEvent(text='/steer ' + text, source=source, message_id=str(target), user_id=human,
+            message_type=MessageType.TEXT, raw_message=message, allow_gateway_control=True,
+            reply_expected=True, metadata={'botsesh_control': True})
+        token = _NATIVE_INPUT.set((room_id, target))
+        try:
+            await self.handle_message(event)  # Native /steer semantics; no prompt wrapper.
+        finally:
+            _NATIVE_INPUT.reset(token)
+        try:
+            await self._delivery(room_id, target, 'steered')
+        except BotSeshError as error:
+            if error.terminal or not error.definitive:
+                raise
+            await self._delivery(room_id, target, 'handled')  # Older server: transport-only handled.
+        return True
+
+    def _start_heartbeat(self, room_id):
+        beats = self.__dict__.setdefault('_heartbeats', {})
+        task = beats.get(room_id)
+        if task is None or task.done():
+            beats[room_id] = asyncio.create_task(self._heartbeat(room_id))
+
+    async def _heartbeat(self, room_id):
+        """Working heartbeat while a native turn runs: 5 s in DMs, 20 s in rooms.
+
+        Content-free; re-reports `started` only after the real model-turn start. Never a read.
+        """
+        current = self._current.get(room_id)
+        dm = self.client.store.room(room_id).get('room_type') == 'dm'
+        interval = 5 if dm else 20
+        while self._running and current is not None and self._current.get(room_id) is current:
+            await asyncio.sleep(interval)
+            if self._current.get(room_id) is not current:
+                return
+            try:
+                await self.send_typing(room_id)
+            except BotSeshError as error:
+                if error.terminal:
+                    return
+            except Exception:
+                pass
 
     async def _delivery(self, room_id, target, state, **args):
         if self.client.store.room(room_id).get('transport') == 'oauth':
@@ -917,7 +1027,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             options = {}
             # Gateway marks only final notifications. Interim/progress/control output cannot attest.
             if final and not current['delivered']:
-                options = {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id']}
+                options = {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id'],
+                           **self._final_draft_binding(chat_id, current)}
             else:
                 options = {'client_id': self.client.logical_id('gateway-notice', {'chat_id': chat_id, 'target': current.get('target') if current else reply_to, 'text': content})}
             if (metadata or {}).get('notify'):
@@ -1007,14 +1118,21 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     async def send_typing(self, chat_id, **kwargs):
         current = self._current.get(chat_id)
-        if not current or time.monotonic() - self._typing_at.get(chat_id, 0) < 20:
+        binding = self.client.store.room(chat_id)
+        # DM owners watch a live delivery line: 5 s working heartbeat there, 20 s in rooms.
+        interval = 5 if binding.get('room_type') == 'dm' else 20
+        if not current or time.monotonic() - self._typing_at.get(chat_id, 0) < interval - 0.5:
             return
-        row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {})
+        row = binding.get('processing_receipts', {}).get(str(current['target']), {})
         if current.get('failure_delivered') or row.get('explicit_failure') or row.get('explicit_pass') or row.get('state') in ('replied', 'failed', 'passed'):
             return  # A give-up intent owns this target, even while confirmation retries.
+        if row.get('state') != 'started' and not current.get('start_reported'):
+            return  # Queued in the native FIFO is not working yet; never pre-claim a start.
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')
-        if self.client.store.room(chat_id).get('transport') == 'oauth':
+        working_at = self.__dict__.setdefault('_working_at', {})
+        if binding.get('transport') == 'oauth' and time.monotonic() - working_at.get(chat_id, -1e9) >= 20:
+            working_at[chat_id] = time.monotonic()  # Server throttles `working` to 1/20 s.
             await asyncio.to_thread(self.client.enrolled, chat_id, 'working', target=current['target'])
 
     def _send_retry_is_final(self, result):
@@ -1066,9 +1184,27 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return await self.send(event.source.chat_id, text_content, reply_to=reply_to, metadata={**metadata, 'notify': True}), self
         if current and current.get('model_processed') is True:
             payload = {'text': text_content, 'receipt_id': current['receipt_id'], 'processed': True,
-                       'reply_to': current['target'], 'client_id': current['client_id']}
+                       'reply_to': current['target'], 'client_id': current['client_id'],
+                       **self._final_draft_binding(event.source.chat_id, current)}
             self._journal_gateway_delivery(event.source.chat_id, payload, current['target'], pending_final=True)
         return await super().send_final_ledgered(event, session_key, text_content, metadata, reply_to=reply_to, is_ephemeral_response=is_ephemeral_response)
+
+    def _final_draft_binding(self, chat_id, current):
+        """Frozen once per turn: the journaled final and its transport payload must be equal.
+
+        `draft_id` lets the server swap the live draft for this final in place. Only when the
+        server accepted a draft for this exact turn (so an older server never sees the field)."""
+        if 'final_draft_id' not in current:
+            # A final journaled before a restart keeps its exact saved binding.
+            room = self.client.store.room(chat_id)
+            saved = [r['payload'] for r in [room.get('pending_final') or {}, *room.get('gateway_deliveries', {}).values()]
+                     if (r.get('payload') or {}).get('client_id') == current['client_id']]
+            if saved:
+                current['final_draft_id'] = saved[0].get('draft_id')
+            else:
+                current['final_draft_id'] = self.live.draft_id_for(chat_id, current['target'])
+            self.live.close_drafts(chat_id, current['target'])
+        return {'draft_id': current['final_draft_id']} if current['final_draft_id'] else {}
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, ctx=None):
     if media_files:
