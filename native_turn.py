@@ -5,10 +5,13 @@ runtime must refuse admission, not guess that a successful callback ran a model.
 """
 from __future__ import annotations
 import asyncio
+import logging
 from dataclasses import asdict
 
 from .client import BotSeshError
 from .reliability import receipt, health
+
+logger = logging.getLogger(__name__)
 
 
 class NativeTurnMixin:
@@ -138,9 +141,22 @@ class NativeTurnMixin:
         elif row.get('explicit_pass') or (current.get('model_processed') and current.get('intentional_silence')
                                        and not row.get('explicit_post_calls')):
             from .room_pass import pass_frozen
-            await asyncio.to_thread(pass_frozen, self.client, room_id, current['receipt_id'], True, target=current['target'])
-            for target in current.get('batch_targets', [current['target']]):
-                self._mark_handled(room_id, target, state='replied' if row.get('posted_reply') else 'passed')
+            try:
+                await asyncio.to_thread(pass_frozen, self.client, room_id, current['receipt_id'], True, target=current['target'])
+            except BotSeshError as error:
+                # A refused or impossible pass (server verdict, or a reply attempt already on
+                # record) must settle this turn once, not stall every later message behind it.
+                local = error.code in ('reply_attempted_cannot_pass', 'receipt_scope', 'task_already_settled',
+                                       'pending_send_mismatch', 'processed_receipt_required', 'takeover_claim_required')
+                if error.terminal or not (error.definitive or local):
+                    raise  # Uncertain transport: retry the same saved intent.
+                logger.warning('BotSesh pass for %s not recorded (%s); reported as failed.', current['target'], error.code)
+                if not current.get('failure_delivered'):
+                    self._queue_failure(room_id, current['target'], 'runtime_error')
+                    await self._flush_failures(room_id)
+            else:
+                for target in current.get('batch_targets', [current['target']]):
+                    self._mark_handled(room_id, target, state='replied' if row.get('posted_reply') else 'passed')
         elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
         elif current.get('delivered') or row.get('read_attested'):

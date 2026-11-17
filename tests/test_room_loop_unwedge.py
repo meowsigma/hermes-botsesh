@@ -54,6 +54,25 @@ class RoomLoopUnwedge(unittest.IsolatedAsyncioTestCase):
             await self.a._flush_failures('room')
         self.assertIn('5', self.client.store.room('room')['failure_outbox'])
 
+    async def test_a_refused_pass_settles_the_turn_once_instead_of_wedging(self):
+        # Live finding: a definitively refused finish_room_turn pass was re-raised on every check.
+        self.a._delivery = AsyncMock()
+        current = {'target': 3, 'receipt_id': 'batch', 'client_id': 'c', 'batch_targets': [3],
+                   'model_processed': True, 'intentional_silence': True}
+        self.a._current['room'] = current
+        from hermes_botsesh_test.reliability import receipt
+        receipt(self.client.store, 'room', 3, state='started', receipt_id='batch', frozen=self.frozen)
+        with patch('hermes_botsesh_test.room_pass.pass_frozen', side_effect=BotSeshError('mcp_operation_denied', rejected=True)), \
+                patch('hermes_botsesh_test.task_failure.settle_takeover', return_value=None):
+            await self.a._finish_current('room', current, 'empty_response')  # No exception.
+        self.assertNotIn('room', self.a._current)
+        self.a._delivery.assert_any_await('room', 3, 'failed', failure_code='runtime_error')
+        # An uncertain transport failure still re-raises (same saved intent retried later).
+        self.a._current['room'] = current
+        with patch('hermes_botsesh_test.room_pass.pass_frozen', side_effect=BotSeshError('connection_failed_retry_same_intent')):
+            with self.assertRaises(BotSeshError):
+                await self.a._finish_current('room', current, 'empty_response')
+
 
 if __name__ == '__main__':
     unittest.main()
