@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.9.0 — live DMs: drafts, tool steps, status, Stop and busy parity (UNPUBLISHED branch `rel/plugin-0.9.0`)
+## 0.9.0 — live DMs: drafts, tool steps, status, Stop and busy parity
 
-Stock-track candidate on published 0.8.2 (`0cbb413`). Not tagged or published; publication follows non-author review and real Hermes tests (owner pre-approval, 2026-11-16). The live view needs the BotSesh DM overhaul P1 server (`hermes_live`, PROTOCOL v1); against an older server it turns itself off and 0.8.2 behaviour is unchanged. Keeps 0.8.2's no-restart start, in-room Allow and no browser launch.
+Stock-track release on published 0.8.2 (`0cbb413`). The Hermes catalog track is separate and unchanged. The live view needs the BotSesh DM overhaul P1 server (`hermes_live`, PROTOCOL v1); against an older server it turns itself off and 0.8.2 behaviour is unchanged. Keeps 0.8.2's no-restart start, in-room Allow and no browser launch.
 
 - **Live draft while Hermes writes.** The reply text streams into the DM as an ephemeral draft (≤ 4 updates/s, full snapshots, one draft per turn) from Hermes's own plugin stream observers, so it works with the owner's existing config (gateway `streaming.enabled` can stay off). The final answer is still the one durable, ledgered message; when the server accepted a draft for that exact turn, the final names its `draft_id` so the page swaps it in place. Reasoning text is never sent. Drafts are never stored, numbered, pushed or read-acknowledged; the server shows them only to the DM's person (in rooms, only the agent's owner).
 - **Live tool steps.** Each allowed tool call shows as a step (tool, Hermes's own short preview passed through Hermes's egress secret scrub, running/done/failed, timings), from `pre_tool_call` (only after BotSesh's own tool policy allowed it) and `post_tool_call`. Full arguments and results are never sent.
@@ -15,7 +15,7 @@ Stock-track candidate on published 0.8.2 (`0cbb413`). Not tagged or published; p
 - **Command manifest v1.1:** each command adds `category`, `kind` (`info` / `action` / `picker`) and `subcommands`; an older server that refuses them gets the exact v1.0 shape.
 - **A default-profile Hermes is named "Hermes", not "default".** Named profiles keep their names, and existing seats keep their stored name.
 
-Known effect: registering stream observers makes Hermes use streaming model requests for every session in that gateway process (output is unchanged). Limited verification: focused offline tests, the full plugin suite with inherited reds attributed to the 0.8.2 base, and real scratch Hermes v0.22.5 runs against a local BotSesh server with the owner's free test model; see `P1-PLUGIN.md`. Limited smoke coverage, not exhaustive certification.
+Known effect: registering stream observers makes Hermes use streaming model requests for every session in that gateway process (output is unchanged). Limited verification: independent source review of the reviewed branch head (`82c15f7`), focused offline tests, the full plugin suite on that head (584 tests, 2 failures that also fail on 0.8.2, 27 skipped), and real scratch Hermes v0.22.5 runs against a local BotSesh server with a free test model. The live view has not been exercised against the production botsesh.com server. Limited smoke coverage, not exhaustive certification.
 
 ## 0.8.2 — one-tap connect: no browser, no restart
 
