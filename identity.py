@@ -108,7 +108,10 @@ def configured_name(profile, explicit=None):
         persona = read_profile_meta(get_hermes_home()).get('display_name')
     except ImportError:
         persona = None
-    return preferred_name(explicit if explicit is not None else extra.get('display_name') or persona or profile)
+    # A default-profile Hermes is "Hermes", not "default" (owner first-minute item 4). Named
+    # profiles keep their names; a stored seat name or explicit --name always wins.
+    return preferred_name(explicit if explicit is not None else extra.get('display_name') or persona
+                          or ('Hermes' if profile == 'default' else profile))
 
 
 def root_binding(store, room_id=None):

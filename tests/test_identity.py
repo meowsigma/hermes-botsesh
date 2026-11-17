@@ -67,6 +67,16 @@ class ProfileSelection(unittest.TestCase):
         with patch('hermes_cli.profiles.read_profile_meta', return_value={'display_name': 'goonbot'}):
             self.assertEqual(identity.configured_name('default'), 'goonbot')
 
+    def test_default_profile_is_named_hermes_but_named_and_stored_names_win(self):
+        # Owner first-minute item 4: a one-profile Hermes is "Hermes", not "default".
+        with patch('hermes_cli.profiles.read_profile_meta', return_value={}):
+            self.assertEqual(identity.configured_name('default'), 'Hermes')
+            self.assertEqual(identity.configured_name('goonbot'), 'goonbot')
+            self.assertEqual(identity.configured_name('default', 'Scout'), 'Scout')
+            # An existing seat keeps its stored name (no identity rename on reconnect).
+            self.config['platforms']['botsesh']['extra']['display_name'] = 'default'
+            self.assertEqual(identity.configured_name('default'), 'default')
+
 
 class SeatLifecycle(unittest.TestCase):
     setUp = original.OAuthTests.setUp

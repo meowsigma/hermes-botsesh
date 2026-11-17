@@ -705,6 +705,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             await asyncio.sleep(interval)
             if self._current.get(room_id) is not current:
                 return
+            row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
+            if row.get('state') != 'started' and not current.get('start_reported'):
+                continue  # Queued in the native FIFO is not working yet; never pre-claim a start.
             try:
                 await self.send_typing(room_id)
             except BotSeshError as error:
@@ -1126,8 +1129,6 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         row = binding.get('processing_receipts', {}).get(str(current['target']), {})
         if current.get('failure_delivered') or row.get('explicit_failure') or row.get('explicit_pass') or row.get('state') in ('replied', 'failed', 'passed'):
             return  # A give-up intent owns this target, even while confirmation retries.
-        if row.get('state') != 'started' and not current.get('start_reported'):
-            return  # Queued in the native FIFO is not working yet; never pre-claim a start.
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')
         working_at = self.__dict__.setdefault('_working_at', {})
