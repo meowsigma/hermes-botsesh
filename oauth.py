@@ -545,10 +545,11 @@ class OAuthClient:
                         continue  # Passive discovery cannot undo explicit forget.
                     saved = data['rooms'].get(room['room_id'])
                     if saved:
-                        # Added back on BotSesh after a removal: the server made a
-                        # fresh seat for this same grant. Never revive the old seat.
-                        if (not saved.get('active') and saved.get('state') == 'membership_revoked'
-                                and saved.get('oauth_id') == binding['oauth_id']
+                        # Added back on BotSesh after a removal or a disconnect:
+                        # the server made a fresh seat for this live grant. A
+                        # stopped binding (revoked/expired seat or dead grant)
+                        # is replaced; an active one or an explicit forget never.
+                        if (not saved.get('active') and saved.get('transport', 'oauth') == 'oauth'
                                 and saved.get('participant_id') != room['participant_id']):
                             data['rooms'][room['room_id']] = fresh(room)
                         continue
