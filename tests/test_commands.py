@@ -64,6 +64,10 @@ class RoomTransport:
         if operation == 'read':
             target = kwargs['target_number']
             return dict(receipt_id=f'frozen-{target}', batch=dict(messages=[deepcopy(self.messages[target])]))
+        if operation == 'peek':
+            # 0.9.0: busy-time DM controls use the passive exact-message read. A real server
+            # refuses the turn-admitting target read with identity_busy while a turn runs.
+            return dict(messages=[deepcopy(self.messages[kwargs['number']])], read_effect='none')
         if operation == 'delivery':
             self.deliveries.append(deepcopy(kwargs))
             # Retain the inbox item deliberately: replay suppression must be local/durable.
@@ -267,6 +271,9 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter._current['native-dm'], active)
         self.assertFalse(self.client.store.room('native-dm').get('processing_receipts'))
         self.assertTrue(all('receipt_id' not in p and 'processed' not in p for p in self.transport.posts))
+        # A busy-time command is inspected passively, never by a second turn-admitting read.
+        self.assertIn(('peek', {'number': 51}), self.transport.calls)
+        self.assertFalse(any(op == 'read' and kw.get('target_number') == 51 for op, kw in self.transport.calls))
 
     def choice(self, number, card, value):
         option = next(token for token, actual in card.values.items() if actual == value)

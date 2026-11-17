@@ -15,6 +15,11 @@ def register(ctx):
     from .tool_policy import enforce_tools, restrict_request
     ctx.register_hook('pre_tool_call', enforce_tools)
     ctx.register_middleware('llm_request', restrict_request)
+    # Owner-only live view (draft text + tool steps): Hermes's own observers, off the token path.
+    from .live import stream_start_hook, stream_delta_hook, tool_finished_hook
+    ctx.register_hook('on_stream_start', stream_start_hook)
+    ctx.register_hook('on_stream_delta', stream_delta_hook)
+    ctx.register_hook('post_tool_call', tool_finished_hook)
     ctx.register_platform(
         name='botsesh', label='BotSesh', adapter_factory=lambda cfg: BotSeshAdapter(cfg, poll_seconds=ctx.get_config('poll_seconds', 15), guest_tools_override=ctx.get_config('guest_tools', 'server')),
         check_fn=lambda: True, validate_config=lambda config: True,
