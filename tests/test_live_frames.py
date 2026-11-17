@@ -220,6 +220,65 @@ class StatusFrame(unittest.IsolatedAsyncioTestCase):
             adapter._tmp.cleanup()
 
 
+class BusyModeParity(unittest.IsolatedAsyncioTestCase):
+    """Telegram parity: Hermes's own /busy mode decides what a plain DM message does mid-turn."""
+
+    def make(self, mode):
+        from hermes_botsesh_test import adapter as adapter_mod
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / 'plugin')
+        store.update(lambda d: d['rooms'].update({ROOM: {'room_id': ROOM, 'active': True, 'transport': 'oauth', 'room_type': 'dm', 'name': 'Fairy · DM'}}))
+        a = adapter_mod.BotSeshAdapter.__new__(adapter_mod.BotSeshAdapter)
+        a.client = SimpleNamespace(store=store)
+        a._current = {ROOM: {'target': 7}}
+        a._dm_contexts = {ROOM: {'human_id': 'owner', 'generation': 'g'}}
+        a._control_context = lambda room: {'human_id': 'owner'} if room == ROOM else None
+        a._is_sender_authorized = lambda user, kind, room: user == 'owner'
+        a.build_source = lambda **kw: SimpleNamespace(**kw)
+        a.gateway_runner = SimpleNamespace(_effective_busy_input_mode=lambda source: mode)
+        a.handle_message = AsyncMock()
+        a._delivery = AsyncMock()
+        a._control_invalidate = AsyncMock()
+        return a
+
+    def message(self, text='also check the logs', author='owner'):
+        return {'number': 8, 'text': text, 'senderParticipantId': author,
+                'authorParticipant': {'id': author, 'verified': True, 'name': 'Owner'}}
+
+    async def test_queue_keeps_it_queued(self):
+        a = self.make('queue')
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
+        a.handle_message.assert_not_awaited()
+
+    async def test_steer_hands_exact_text_to_the_running_turn_once(self):
+        a = self.make('steer')
+        self.assertTrue(await a._apply_busy_mode(ROOM, 8, self.message()))
+        event = a.handle_message.await_args.args[0]
+        self.assertEqual(event.text, '/steer also check the logs')
+        self.assertTrue(event.allow_gateway_control)
+        a._delivery.assert_awaited_with(ROOM, 8, 'steered')
+        self.assertTrue(await a._apply_busy_mode(ROOM, 8, self.message()))  # consumed once
+        self.assertEqual(a.handle_message.await_count, 1)
+
+    async def test_interrupt_stops_once_and_the_message_still_runs_next(self):
+        a = self.make('interrupt')
+        a._live_relay = SimpleNamespace(_spawn=lambda coro: coro.close(), clear_now=AsyncMock())
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
+        self.assertFalse(await a._apply_busy_mode(ROOM, 9, self.message()))
+        self.assertEqual(a.handle_message.await_count, 1)
+        self.assertEqual(a.handle_message.await_args.args[0].text, '/stop')
+        self.assertEqual(a._current[ROOM]['busy_interrupt_by'], 8)
+
+    async def test_commands_foreign_authors_and_rooms_are_untouched(self):
+        a = self.make('steer')
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message('/status')))
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message(author='someone-else')))
+        a.client.store.update(lambda d: d['rooms'][ROOM].update(room_type='group'))
+        self.assertFalse(await a._apply_busy_mode(ROOM, 8, self.message()))
+        a.handle_message.assert_not_awaited()
+
+
 class ManifestV11(unittest.TestCase):
     def test_v11_fields_and_exact_v10_fallback_shape(self):
         command = SimpleNamespace(name='busy', category='Configuration', subcommands=('queue', 'steer', 'interrupt', '--global'))

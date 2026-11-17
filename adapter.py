@@ -659,6 +659,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                                 if m.get('number') == target and not m.get('isOwn')), None)
                 if message and await self._control_ingest(room_id, message):
                     continue
+                if message and await self._apply_busy_mode(room_id, target, message):
+                    continue
             receipt(self.client.store, room_id, target)
             await self._delivery(room_id, target, 'received')
 
@@ -686,15 +688,77 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 raise
             return False  # Unreadable now: it stays queued and runs in order.
         message = next((m for m in frozen['messages'] if m.get('number') == target and not m.get('isOwn')), None)
-        author = (message or {}).get('authorParticipant') or {}
+        return bool(message) and await self._steer_message(room_id, target, message)
+
+    def _owner_plain_text(self, room_id, message):
+        """The verified DM owner's own non-command text, else None."""
+        context = self._control_context(room_id)
+        if not context or self.client.store.room(room_id).get('room_type') != 'dm':
+            return None
+        author = message.get('authorParticipant') or {}
         human = context['human_id']
-        text = (message or {}).get('text') or ''
-        if (not message or message.get('senderParticipantId') != human or author.get('id') != human
-                or author.get('verified') is not True or not text.strip()
+        text = message.get('text') or ''
+        if (message.get('senderParticipantId') != human or author.get('id') != human
+                or author.get('verified') is not True or not text.strip() or message.get('dmControl')
                 or self._is_sender_authorized(human, 'dm', room_id) is not True):
-            return False
+            return None
         if text.lstrip().startswith('/'):
-            return False  # A queued command runs as a command, never as steer text.
+            return None  # A queued command runs as a command, never as steer text.
+        return human
+
+    def _busy_mode(self, room_id, human):
+        """Hermes's own effective /busy mode for this DM (display.busy_input_mode), as Telegram uses it."""
+        runner = getattr(self, 'gateway_runner', None)
+        try:
+            source = self.build_source(chat_id=room_id, chat_type='dm', user_id=human, user_name='DM owner')
+            mode = runner._effective_busy_input_mode(source)
+        except Exception:
+            return 'queue'
+        return mode if mode in ('queue', 'steer', 'interrupt') else 'queue'
+
+    async def _apply_busy_mode(self, room_id, target, message):
+        """Telegram parity for a plain DM message that arrives while a turn runs.
+
+        Hermes's own busy mode decides: `steer` hands the text to the running turn (native
+        /steer); `interrupt` stops the running turn once (native /stop) and the new message
+        runs next in order; `queue` keeps it queued. Returns True only when the input was
+        consumed (steered). Rooms are unchanged: they always queue.
+        """
+        if room_id not in self._current or self._owner_plain_text(room_id, message) is None:
+            return False
+        human = self._control_context(room_id)['human_id']
+        mode = self._busy_mode(room_id, human)
+        if mode == 'steer':
+            return await self._steer_message(room_id, target, message)
+        if mode == 'interrupt':
+            current = self._current[room_id]
+            if current.get('busy_interrupt_by') is None:
+                current['busy_interrupt_by'] = target
+                await self._interrupt_current(room_id, human, target)
+        return False  # Still waits in order and runs right after the stopped turn.
+
+    async def _interrupt_current(self, room_id, human, target):
+        binding = self.client.store.room(room_id)
+        source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id),
+            chat_type='dm', user_id=human, user_name='DM owner')
+        event = MessageEvent(text='/stop', source=source, message_id='busy-interrupt:%s' % target, user_id=human,
+            message_type=MessageType.TEXT, raw_message=None, allow_gateway_control=True,
+            reply_expected=False, metadata={'botsesh_control': True})
+        self._dm_contexts[room_id]['generation'] = str(uuid.uuid4())
+        await self._control_invalidate(room_id)
+        self.live._spawn(self.live.clear_now(room_id))
+        logger.info('BotSesh DM %s: busy mode interrupt; stopping the running turn for message %s.', room_id, target)
+        await self.handle_message(event)  # The native stop; its ack stays a local runtime notice.
+
+    async def _steer_message(self, room_id, target, message):
+        human = self._owner_plain_text(room_id, message)
+        if human is None:
+            return False
+        binding = self.client.store.room(room_id)
+        if str(target) in binding.get('control_inputs', {}):
+            return True  # At most once per message.
+        author = message.get('authorParticipant') or {}
+        text = message.get('text') or ''
         def remember(data):
             rows = data['rooms'][room_id].setdefault('control_inputs', {})
             rows[str(target)] = {'received_at': time.time(), 'steer': True}
