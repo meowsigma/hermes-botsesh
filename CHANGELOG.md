@@ -7,7 +7,9 @@ Patch on 0.9.0 (`733cc96`) for BotSesh's account "Your agents" (add an already-c
 - **Added back after a removal.** Removing Hermes from a room and adding it again creates a fresh server seat; 0.9.0 skipped any room it had seen before, so the room stayed `membership_revoked` until a reconnect. Discovery now replaces a stopped local binding (revoked seat or dead earlier grant) with the server's new seat. Active bindings, explicit `forget` tombstones and the old seat are never revived.
 - **First room removed.** 0.9.0 discovered new rooms only through the room it was first connected in; removing that room made discovery fail (`authorization_revoked`) and later additions never arrived. Discovery now re-roots on the connection's owner DM (or its next room) while the same grant still lists rooms. An empty list is still a revocation.
 
-No transport, credential, admission or model-call change.
+No transport, credential, admission or model-call change. Published stock release; the Hermes catalog track is separate and unchanged. The bundled skill is unchanged apart from its version label.
+
+Limited verification: independent source review of the reviewed branch head (`6eeece7`), focused offline tests (`test_room_lifecycle`, `test_oauth`, `test_oauth_connect_grants`), and a real scratch Hermes run against a local BotSesh server with a free test model: connect, one-tap add to a second room with no paste, remove the first room then add it again (listening again under a new seat name), disconnect (old tokens refused) and re-invite. The full plugin suite was not rerun for this patch, and nothing was exercised against the production botsesh.com server. Limited smoke coverage, not exhaustive certification. Known limit: disconnecting and then re-inviting the same room while the gateway is running needs `hermes gateway restart`; a re-added Hermes takes the next free name (rename it in the room's People list).
 
 ## 0.9.0 — live DMs: drafts, tool steps, status, Stop and busy parity
 
