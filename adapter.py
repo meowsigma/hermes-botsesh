@@ -645,7 +645,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # Inspect this separate input with a passive exact-message read (no pickup,
             # batch, checkpoint or second turn admission); never replace the active
             # frozen context/policy or attest any later room content.
-            if self._control_context(room_id):
+            active = self._current.get(room_id) or {}
+            finishing = active.get('delivered') or active.get('failure_delivered')
+            # A turn whose outcome is already delivered is only settling: a command sent in
+            # that window must wait for the normal post-turn path (dispatching it into the
+            # settling native session lost it silently in a real run).
+            if self._control_context(room_id) and not finishing:
                 try:
                     peeked = await asyncio.to_thread(self.client.enrolled, room_id, 'peek', number=target)
                 except BotSeshError as error:
