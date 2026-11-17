@@ -26,6 +26,11 @@ _GATEWAY_RECOVERY_MARKERS = (
 _HOOK_LOCK = threading.RLock()
 
 
+def _transport_only(error):
+    """A pure connection loss with no server verdict and no Retry-After (never a 429/5xx answer)."""
+    return error.code == 'connection_failed_retry_same_intent' and error.status is None and not error.retry_after_ms
+
+
 def _input_numbers(check):
     # Invitation Python pickup has the same living-chat broadcast semantics as
     # OAuth's authoritative inbox. These are candidate inputs, not permissions.
@@ -282,7 +287,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         changed.set()
                         return
                     attempt += 1
-                    await asyncio.sleep(backoff(attempt, retry_after=error.retry_after_ms/1000))
+                    delay = backoff(attempt, retry_after=error.retry_after_ms/1000)
+                    if _transport_only(error):
+                        # A lost connection (server restart, Wi-Fi) is not server pushback: the
+                        # long-poll is cheap and costs no inference, so come back within 10 s.
+                        delay = min(delay, 10)
+                    await asyncio.sleep(delay)
             return
         attempt = 0
         while self._running:
@@ -344,6 +354,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         return
                     attempt += 1
                     delay = backoff(attempt, minimum=self.poll_seconds, retry_after=e.retry_after_ms/1000)
+                    if _transport_only(e):
+                        delay = min(delay, 30)  # Reconnect promptly after an outage; no model call.
                     health(self.client.store, room_id, state='retrying', error=e.code, retry_in=delay)
                     logger.warning('BotSesh room %s retrying: %s in %.1fs.', room_id, e.code, delay)
                 try:
@@ -621,11 +633,20 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if str(target) in saved:
                 continue
             # Native DM controls must still resolve while inference is busy.
-            # Fetch only to inspect this separate input; never replace the active
+            # Inspect this separate input with a passive exact-message read (no pickup,
+            # batch, checkpoint or second turn admission); never replace the active
             # frozen context/policy or attest any later room content.
             if self._control_context(room_id):
-                frozen = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
-                message = next((m for m in frozen['batch']['messages']
+                try:
+                    peeked = await asyncio.to_thread(self.client.enrolled, room_id, 'peek', number=target)
+                except BotSeshError as error:
+                    if error.terminal:
+                        raise
+                    # One unreadable input must not stall the room loop (and every later
+                    # Stop/queued message) behind a growing backoff; it stays queued.
+                    logger.warning('BotSesh queued input %s not inspected (%s); it stays queued.', target, error.code)
+                    peeked = {'messages': []}
+                message = next((m for m in peeked['messages']
                                 if m.get('number') == target and not m.get('isOwn')), None)
                 if message and await self._control_ingest(room_id, message):
                     continue
@@ -647,13 +668,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if str(target) in binding.get('control_inputs', {}):
             return True
         try:
-            frozen = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target)
+            frozen = await asyncio.to_thread(self.client.enrolled, room_id, 'peek', number=target)
         except BotSeshError as error:
             if error.code == 'withdrawn':
                 self._skipped_targets.add((room_id, target))
                 return True
-            raise
-        message = next((m for m in frozen['batch']['messages'] if m.get('number') == target and not m.get('isOwn')), None)
+            if error.terminal:
+                raise
+            return False  # Unreadable now: it stays queued and runs in order.
+        message = next((m for m in frozen['messages'] if m.get('number') == target and not m.get('isOwn')), None)
         author = (message or {}).get('authorParticipant') or {}
         human = context['human_id']
         text = (message or {}).get('text') or ''

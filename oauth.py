@@ -718,6 +718,27 @@ class OAuthClient:
             if not isinstance(frame, dict) or frame.get('kind') not in ('draft', 'activity', 'status', 'clear'):
                 raise BotSeshError('live_frame_invalid', rejected=True)
             return self.rpc(binding, 'hermes_live', {'room_id': room_id, 'frame': frame})
+        if op == 'peek':
+            # Passive exact-message read for DM controls while another turn runs: no pickup,
+            # acknowledgment batch, read checkpoint or turn admission (catchup with a target
+            # number admits a turn and is refused `identity_busy` while one is in flight).
+            if not is_number(args.get('number')):
+                raise BotSeshError('invalid_message_number', rejected=True)
+            params = {'room_id': room_id, 'number': args['number'], 'before': 0, 'after': 0}
+            try:
+                value = self.rpc(binding, 'read_message', params)
+            except BotSeshError as error:
+                if error.terminal:
+                    raise
+                value = self.rpc(binding, 'read_around', params)  # Older catalog name.
+            messages = []
+            for source in value.get('messages') or []:
+                if not isinstance(source, dict) or source.get('number') != args['number']:
+                    continue
+                author = source.get('authorParticipant') or {}
+                messages.append({**source, 'senderParticipantId': source.get('senderParticipantId'),
+                                 'isOwn': author.get('id') == binding['participant_id']})
+            return {'messages': messages, 'read_effect': 'none'}
         if op in ('verify', 'pending'):
             rooms = self.rpc(binding, 'list_rooms').get('rooms', [])
             if not any(room['room_id'] == room_id and room['participant_id'] == binding['participant_id'] for room in rooms):
