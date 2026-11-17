@@ -799,6 +799,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             await self.handle_message(event)  # Native /steer semantics; no prompt wrapper.
         finally:
             _NATIVE_INPUT.reset(token)
+        current = self._current.get(room_id)
+        if current is not None and isinstance(message.get('id'), int):
+            # The running turn now has this message (Hermes delivers it after the in-flight tool
+            # call). Its final must not be refused as stale (`room_moved_on`) because of it.
+            def seen(data):
+                row = data['rooms'][room_id].get('processing_receipts', {}).get(str(current['target']))
+                if row is not None:
+                    row['steer_seen_through'] = max(row.get('steer_seen_through', 0), message['id'])
+            self.client.store.update(seen)
         try:
             await self._delivery(room_id, target, 'steered')
         except BotSeshError as error:

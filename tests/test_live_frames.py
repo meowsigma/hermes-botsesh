@@ -256,7 +256,10 @@ class BusyModeParity(unittest.IsolatedAsyncioTestCase):
 
     async def test_steer_hands_exact_text_to_the_running_turn_once(self):
         a = self.make('steer')
-        self.assertTrue(await a._apply_busy_mode(ROOM, 8, self.message()))
+        a.client.store.update(lambda d: d['rooms'][ROOM].setdefault('processing_receipts', {}).update({'7': {'target': 7, 'state': 'started'}}))
+        self.assertTrue(await a._apply_busy_mode(ROOM, 8, dict(self.message(), id=197)))
+        # The running turn saw the steered message: its final is not refused as stale for it.
+        self.assertEqual(a.client.store.room(ROOM)['processing_receipts']['7']['steer_seen_through'], 197)
         event = a.handle_message.await_args.args[0]
         self.assertEqual(event.text, '/steer also check the logs')
         self.assertTrue(event.allow_gateway_control)

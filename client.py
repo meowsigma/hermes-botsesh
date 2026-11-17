@@ -133,8 +133,11 @@ class Client:
                 # Chunk 2+ of an accepted long reply (_later_chunk) never
                 # re-checks: chunk 1 already passed, and a person's message
                 # landing between chunks must not strand a half-posted reply.
-                frozen = binding.get('processing_receipts', {}).get(str(_input_target), {}).get('frozen') or {}
-                args.setdefault('seen_through', frozen.get('batch', {}).get('nextCheckpoint', 0))
+                row = binding.get('processing_receipts', {}).get(str(_input_target), {})
+                frozen = row.get('frozen') or {}
+                # A DM message steered into this running turn was seen by it as well.
+                args.setdefault('seen_through', max(frozen.get('batch', {}).get('nextCheckpoint', 0) or 0,
+                                                    row.get('steer_seen_through', 0) or 0))
         try:
             if binding.get('transport') == 'oauth':
                 from .oauth import OAuthClient
