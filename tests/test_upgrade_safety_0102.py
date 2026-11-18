@@ -259,6 +259,32 @@ class UpgradeSafety(unittest.TestCase):
         self.assertEqual(result['state'], 'waiting_for_allow')
         self.assertIsNone(tools._pasted_link(f'https://botsesh.com/a/{CODE}X and https://botsesh.com/a/{"B" * 43}x'))
 
+    def test_agents_page_invite_names_the_one_owner_dm_seat_even_with_other_rooms(self):
+        oauth = importlib.import_module('hermes_botsesh_test.oauth')
+        identity = importlib.import_module('hermes_botsesh_test.identity')
+        base = {'active': True, 'transport': 'oauth', 'origin': 'https://botsesh.com', 'profile': 'goonbot'}
+        self.store.update(lambda d: d['rooms'].update(
+            dm={**base, 'room_id': 'dm', 'participant_id': '11111111-1111-4111-8111-111111111111', 'room_type': 'dm'},
+            work={**base, 'room_id': 'work', 'participant_id': '22222222-2222-4222-8222-222222222222', 'room_type': 'room'}))
+        seen = {}
+
+        def login(**kw):
+            seen.update(kw)
+            raise RuntimeError('stop after the authorize request')
+        client = oauth.OAuthClient(self.store)
+        for room_hint, pair in ((None, 'bsp_' + CODE), ('work', None)):
+            seen.clear()
+            with patch.object(oauth, 'login', side_effect=login), patch.object(oauth, 'resolve_pair', return_value=None), \
+                    patch.object(identity, 'gateway_install_id', return_value='gw-1'):
+                with self.assertRaises(RuntimeError):
+                    client._connect(origin='https://botsesh.com', open_browser=False, timeout=5, room_hint=room_hint, name=None,
+                                    profile='goonbot', paste_redirect=False, pair_code=pair)
+            if room_hint is None:
+                self.assertEqual(seen['previous']['room_id'], 'dm', 'account invite: keep the existing owner DM seat')
+            else:
+                self.assertEqual(seen['previous']['room_id'], 'work')
+            self.assertEqual(seen['profile'], 'goonbot')
+
     def test_connect_cli_falls_back_to_one_restart_line_only_when_the_swap_cannot_finish(self):
         cli = importlib.import_module('hermes_botsesh_test.cli')
         args = types.SimpleNamespace(botsesh_action='connect', pair=None, pair_link=f'https://botsesh.com/a/{CODE}', dev_origin='https://botsesh.com',

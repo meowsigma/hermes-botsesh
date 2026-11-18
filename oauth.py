@@ -471,6 +471,11 @@ class OAuthClient:
         candidates = [b for b in self.store.read()['rooms'].values() if b.get('active') and b.get('transport') == 'oauth'
                       and not b.get('oauth_root') and b.get('origin') == origin and (not room_hint or b['room_id'] == room_hint)]
         previous = candidates[0] if len(candidates) == 1 else None
+        if previous is None and account_invite:
+            # 0.10.2: an Agents-page invite's home is the owner DM. A gateway with a DM plus rooms used to
+            # send no saved identity at all; name its one owner DM seat so the server can keep it.
+            dms = [b for b in candidates if b.get('room_type') == 'dm' and b.get('participant_id')]
+            previous = dms[0] if len(dms) == 1 else None
         fields = login(origin=origin, open_browser=open_browser, timeout=timeout, room_hint=room_hint,
                        gateway_id=gateway_install_id(), profile=profile, name=name, previous=previous,
                        **({'paste_redirect': True} if paste_redirect else {}),
