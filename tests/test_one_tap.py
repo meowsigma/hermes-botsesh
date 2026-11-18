@@ -85,20 +85,27 @@ class HotStartTests(unittest.TestCase):
 
 class HandoffTests(unittest.TestCase):
     def test_handoff_posts_only_the_authorize_url_with_the_api_header(self):
+        # t_c47adfa3 (0.10.1): the handoff also asks for the remote-safe relay and returns what
+        # BotSesh confirmed (carded / relay / ended) instead of a bare bool.
         oauth = importlib.import_module(PKG + '.oauth')
-        response = types.SimpleNamespace(status_code=201)
+        response = types.SimpleNamespace(status_code=201, json=lambda: {'relay': True})
         client = mock.MagicMock()
         client.__enter__.return_value.post.return_value = response
         with mock.patch('httpx.Client', return_value=client):
-            self.assertTrue(oauth._room_handoff('http://127.0.0.1:3897', 'R' * 32, 'bsp_' + 'A' * 43, 'http://127.0.0.1:3897/oauth/authorize?x=1', 'Fairy'))
+            result = oauth._room_handoff('http://127.0.0.1:3897', 'R' * 32, 'bsp_' + 'A' * 43, 'http://127.0.0.1:3897/oauth/authorize?x=1', 'Fairy')
+        self.assertTrue(result['carded'])
+        self.assertTrue(result['relay'])
         call = client.__enter__.return_value.post.call_args
         self.assertEqual(call.args[0], 'http://127.0.0.1:3897/api/agent/hermes-handoff')
-        self.assertEqual(set(call.kwargs['json']), {'pairCode', 'roomId', 'authorizeUrl', 'displayName'})
+        self.assertEqual(set(call.kwargs['json']), {'pairCode', 'roomId', 'authorizeUrl', 'displayName', 'relay'})
+        self.assertIs(call.kwargs['json']['relay'], True)
         self.assertEqual(call.kwargs['headers']['X-Board-Request'], '1')
         self.assertNotIn('Authorization', call.kwargs['headers'])
         response.status_code = 410
         with mock.patch('httpx.Client', return_value=client):
-            self.assertFalse(oauth._room_handoff('http://127.0.0.1:3897', 'R' * 32, 'bsp_' + 'A' * 43, 'u', 'Fairy'))
+            result = oauth._room_handoff('http://127.0.0.1:3897', 'R' * 32, 'bsp_' + 'A' * 43, 'u', 'Fairy')
+        self.assertFalse(result['carded'])
+        self.assertTrue(result['ended'])
 
     def test_no_module_opens_a_browser(self):
         for path in ROOT.glob('*.py'):

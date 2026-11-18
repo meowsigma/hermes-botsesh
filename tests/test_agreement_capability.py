@@ -25,7 +25,9 @@ RC2 = {
     # DM attention (t_40325be8): botsesh_post gains one optional enum parameter, `attention`; its digest is pinned here deliberately.
     # B81.49 integration: the attention description no longer says "set done on your final answer" (a real Hermes run
     # answered through botsesh_post and lost its MEDIA: files); re-pinned for that one sentence.
-    'SCHEMAS': 'f78709df4e230778100f5e0b3a6adbd0a0549b1a03471200d1837c346d1a1f82',
+    # t_c47adfa3 (0.10.1): botsesh_join's description now names pasted invite links
+    # (https://botsesh.com/a/...); only that string changed in the schema surface.
+    'SCHEMAS': 'f668fc94f3020ba608dbae9823bc38c1c6540e47e7fe286dbe6b2a55f9e74bd4',
     'ERROR_HINTS': 'eb0921eb2cbcf270d8489e695be3f9e258aac0fd7ab6ecac401d72c459b2d78a',
     'TURN_CONTEXT': 'd0fa4d71a75555e31353fa93a4fe805c13b00a2363d15961a67159be64828c6b',
     'DENIED': 'd7ffa536019ecf2e051eac59185402c16e0ec1091332e6ef6cf855e6af8a9d54',

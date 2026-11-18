@@ -31,8 +31,8 @@ def setup(parser):
     connect.add_argument('--room', help='Exact primary room ID, which must be approved by the signed-in host; use --room=ROOM_ID (IDs may start with -)')
     connect.add_argument('--name', help='Addressable agent name (defaults to the selected profile name)')
     connect.add_argument('--profile', help='Hermes profile for this seat; saved after connection')
-    connect.add_argument('--timeout', type=int, default=None, choices=range(15, 601), metavar='SECONDS',
-                         help='Seconds to wait for Allow (default 300; 600 with an invite)')
+    connect.add_argument('--timeout', type=int, default=300, choices=range(15, 601), metavar='SECONDS',
+                         help='Seconds to wait for Allow (default 300; an agent-started invite waits 600)')
     connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
     status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
@@ -179,6 +179,8 @@ def connect_background(args, profile):
     extra = []
     for field in ('room', 'name', 'timeout'):
         value = getattr(args, field, None)
+        if field == 'timeout' and value == 300:
+            continue  # default: the background waiter uses its longer invite wait
         if value is not None:
             extra.append('--' + field + '=' + str(value))
     for flag in ('set_home', 'no_start'):
@@ -219,6 +221,9 @@ def spawn_connect(pair_code, origin, profile, extra=()):
     if origin and origin != 'https://botsesh.com':
         argv.append('--dev-origin=' + origin)
     argv += list(extra)
+    if not any(a.startswith('--timeout=') for a in argv):
+        # The person may need a few minutes to open BotSesh after the agent says "Press Allow".
+        argv.append('--timeout=600')
     log_path = os.path.join(logs, 'botsesh-connect.log')
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
@@ -259,7 +264,7 @@ def _handle_profile(args, profile):
                 origin, args.pair = link_origin, link_code
             if getattr(args, 'background', False):
                 return connect_background(args, profile)
-            timeout = args.timeout or (600 if args.pair else 300)
+            timeout = args.timeout
             from .identity import configured_name, save_identity_config
             binding = oauth.connect(origin=origin, open_browser=not args.no_browser, timeout=timeout,
                                     room_hint=args.room, name=configured_name(profile, args.name), profile=profile,

@@ -169,7 +169,7 @@ def _pair_post(origin, path, body, *, timeout=15):
                 'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
         try:
             data = response.json()
-        except ValueError:
+        except (ValueError, AttributeError):
             data = {}
         return response.status_code, data if isinstance(data, dict) else {}
     except httpx.HTTPError:
