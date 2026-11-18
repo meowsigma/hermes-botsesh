@@ -197,7 +197,8 @@ def join(args, ctx):
         return {'state': 'waiting_for_allow', 'already_waiting': started == 'already',
                 'tell_your_person': 'Press Allow in BotSesh.',
                 'next': 'Say that one line and finish your turn. After Allow (any device) you connect by '
-                        'yourself and your DM with them opens. Progress: `hermes botsesh status`.'}
+                        'yourself: an Agents-page invite opens your DM with them, a room invite joins that room. '
+                        'Progress: `hermes botsesh status`.'}
     if platform not in LOCAL:
         raise BotSeshError('local_enrollment_only')
     client = Client()
