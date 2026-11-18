@@ -557,6 +557,47 @@ class OAuthClient:
             self.store.update(enroll)
         return {'rooms': accepted}
 
+    def _file_http(self, binding, send):
+        """One bearer file request with the same single serialized refresh as ``rpc``."""
+        bearer = self._access(binding)
+        try:
+            return send(bearer)
+        except BotSeshError as error:
+            if error.status != 401:
+                raise
+            return send(self._access(binding, rejected=bearer))
+
+    def download_file(self, binding, file_id):
+        """Exact attachment bytes from this DM (server route is owner-DM only). Verified by length
+        and the server's SHA-256 of the stored original; never a URL handed to the model."""
+        from .http_transport import get_file
+        if not isinstance(file_id, str) or not re.fullmatch(r'[0-9a-fA-F-]{36}', file_id):
+            raise BotSeshError('invalid_file_id', rejected=True)
+        data, digest = self._file_http(binding, lambda bearer: get_file(binding['origin'], f"/mcp/files/{binding['room_id']}/{file_id}", bearer=bearer))
+        if not re.fullmatch(r'[0-9a-f]{64}', digest or '') or hashlib.sha256(data).hexdigest() != digest:
+            raise BotSeshError('file_digest_mismatch')
+        return {'data': data, 'sha256': digest}
+
+    def upload_files(self, binding, *, client_id, files, text='', reply_to=None, voice=False):
+        """Post one DM message with up to five exact files. The UUID is the durable identity:
+        an uncertain attempt is retried with the same UUID and bytes, never re-minted."""
+        from .http_transport import post_files
+        require_client_id(client_id)
+        if not files or len(files) > 5 or voice and len(files) != 1:
+            raise BotSeshError('invalid_file_batch', rejected=True)
+        fields = {'clientId': client_id, 'text': text or ''}
+        if reply_to is not None:
+            fields['replyToNumber'] = str(int(reply_to))
+        if voice:
+            fields['voice'] = '1'
+        value = self._file_http(binding, lambda bearer: post_files(binding['origin'], f"/mcp/files/{binding['room_id']}", bearer=bearer, fields=fields, files=files))
+        message = value.get('message') or {}
+        sent = [(name, hashlib.sha256(data).hexdigest(), len(data)) for name, data in files]
+        stored = [(a.get('name'), a.get('sha256'), a.get('size')) for a in message.get('attachments') or []]
+        if not is_number(message.get('number')) or stored != sent or message.get('text_sha256') != hashlib.sha256((text or '').encode()).hexdigest():
+            raise BotSeshError('send_not_confirmed_retry_same_intent')
+        return {'client_id': client_id, 'number': message['number'], 'attachments': message['attachments'], 'read_effect': 'none'}
+
     def pending(self, room_id):
         room = self.store.room(room_id)
         for section in ('oauth_posts', 'oauth_turns'):
@@ -699,6 +740,10 @@ class OAuthClient:
             return self.rpc(binding, 'revoke_ownership_offer', {'room_id': room_id, 'offer_id': args['offer_id']})
         if op == 'discover':
             return self.discover(binding)
+        if op == 'download_file':
+            return self.download_file(binding, args.get('file_id'))
+        if op == 'upload_files':
+            return self.upload_files(binding, **{k: args[k] for k in ('client_id', 'files', 'text', 'reply_to', 'voice') if k in args})
         if op == 'dm_context':
             rows = self.rpc(binding, 'list_rooms').get('rooms', [])
             exact = [r for r in rows if r.get('room_id') == room_id

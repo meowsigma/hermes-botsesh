@@ -99,3 +99,73 @@ def post(origin, path, *, form=None, payload=None, bearer=None):
         code = value.get('error')
         raise BotSeshError(code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied', status, retry)
     return value
+
+
+# DM P2 media: exact file bytes travel beside /mcp on two bearer routes. Only these
+# exact path shapes, the checked origin, no redirects, no proxies from the environment.
+FILE_PATH = re.compile(r'/mcp/files/[A-Za-z0-9_-]{1,64}(?:/[0-9a-fA-F-]{36})?')
+FILE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _file_error(status, raw, retry):
+    try:
+        code = json.loads(raw).get('code') or json.loads(raw).get('error')
+    except (ValueError, TypeError, AttributeError):
+        code = None
+    code = code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_-]{1,80}', code) else 'request_denied'
+    return BotSeshError(code, status, retry, rejected=400 <= status < 500 and status not in (408, 429))
+
+
+def get_file(origin, path, *, bearer, max_bytes=FILE_MAX_BYTES):
+    """Download exact attachment bytes. Returns (bytes, sha256 header)."""
+    import httpx
+    from .oauth import checked_origin
+    checked_origin(origin)
+    if not FILE_PATH.fullmatch(path) or path.count('/') != 4:
+        raise BotSeshError('endpoint_denied')
+    try:
+        with httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as client:
+            with client.stream('GET', origin + path, headers={'Authorization': 'Bearer ' + bearer}) as response:
+                raw = bytearray()
+                declared = response.headers.get('content-length')
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise BotSeshError('file_too_large', 413, rejected=True)
+                for part in response.iter_bytes():
+                    raw.extend(part)
+                    if len(raw) > max_bytes:
+                        raise BotSeshError('file_too_large', 413, rejected=True)
+                status = response.status_code
+                digest = response.headers.get('x-botsesh-sha256', '')
+                retry = retry_after_ms(response.headers.get('retry-after', '0'))
+    except httpx.HTTPError:
+        raise BotSeshError('connection_failed_retry_same_intent') from None
+    if status != 200:
+        raise _file_error(status, bytes(raw), retry)
+    return bytes(raw), digest
+
+
+def post_files(origin, path, *, bearer, fields, files):
+    """Upload one message: ``fields`` (str values) + ``files`` [(name, bytes)]. Returns JSON."""
+    import httpx
+    from .oauth import checked_origin
+    checked_origin(origin)
+    if not FILE_PATH.fullmatch(path) or path.count('/') != 3:
+        raise BotSeshError('endpoint_denied')
+    try:
+        with httpx.Client(timeout=120, follow_redirects=False, trust_env=False) as client:
+            response = client.post(origin + path, headers={'Authorization': 'Bearer ' + bearer, 'Accept': 'application/json'},
+                                   data=fields, files=[('file', (name, data, 'application/octet-stream')) for name, data in files])
+            raw = response.content[:MAX_BYTES]
+            status = response.status_code
+            retry = retry_after_ms(response.headers.get('retry-after', '0'))
+    except httpx.HTTPError:
+        raise BotSeshError('connection_failed_retry_same_intent') from None
+    if not 200 <= status < 300:
+        raise _file_error(status, raw, retry)
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        raise BotSeshError('invalid_server_response', status) from None
+    if not isinstance(value, dict):
+        raise BotSeshError('invalid_server_response', status)
+    return value
