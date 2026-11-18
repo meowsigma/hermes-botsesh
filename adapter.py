@@ -742,7 +742,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 continue
             receipt(self.client.store, room_id, target, text=text)
             receipt(self.client.store, room_id, target, tool_policy=policy)
-            dm_through = max([m['number'] for m in batch['messages'] if type(m.get('number')) is int] or [target]) if chat_type == 'dm' else None
+            # Everything up to the newest pending input is now in this Hermes session (delivered as an input, its own earlier
+            # replies, control cards, or listed as missed); anything newer is not claimed.
+            dm_through = max(batch_targets) if chat_type == 'dm' and batch_targets else None
             if dm_through is not None:
                 receipt(self.client.store, room_id, target, dm_through=dm_through, lean_session=lean['session_id'] if lean else None)
             if media:

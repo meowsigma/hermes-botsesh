@@ -72,10 +72,12 @@ def plan(binding, session_id, messages, pending, human):
     if not numbers or min(numbers) > through + 1:
         return None  # the read window no longer reaches back to what this session last saw
     missed = []
+    newest = max(pending) if pending else through
     for message in messages:
         number = message.get('number')
-        if type(number) is not int or number <= through or number in pending or message.get('isOwn') or is_control(message):
-            continue
+        if (type(number) is not int or number <= through or number > newest or number in pending
+                or message.get('isOwn') or is_control(message)):
+            continue  # newer messages arrive later as inputs of their own
         if message.get('senderParticipantId') != human or message.get('attachments'):
             return None  # someone else spoke, or files this session never received: keep the full framing
         missed.append(message)
