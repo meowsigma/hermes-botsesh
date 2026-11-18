@@ -155,7 +155,7 @@ class Outbound(unittest.IsolatedAsyncioTestCase):
             adapter = BotSeshAdapter(PlatformConfig())
         return adapter, calls
 
-    async def test_dm_sends_exact_files_threaded_to_the_turn_and_voice_only_for_ogg(self):
+    async def test_dm_sends_exact_files_first_threaded_and_voice_only_for_ogg(self):
         adapter, calls = await self.adapter('dm')
         pdf, img, ogg, mp3 = (self.root / n for n in ('report.pdf', 'chart.png', 'reply.ogg', 'song.mp3'))
         pdf.write_bytes(PDF); img.write_bytes(PNG); ogg.write_bytes(OGG); mp3.write_bytes(b'ID3' + b'\0' * 20)
@@ -167,7 +167,8 @@ class Outbound(unittest.IsolatedAsyncioTestCase):
         ops = [c[1] for c in calls if c[0] == 'upload_files']
         self.assertEqual([o['files'] for o in ops], [[('report.pdf', PDF)], [('chart.png', PNG)], [('reply.ogg', OGG)], [('song.mp3', b'ID3' + b'\0' * 20)]])
         self.assertEqual([o['voice'] for o in ops], [False, False, True, False])
-        self.assertEqual({o['reply_to'] for o in ops}, {7})
+        # Only the answer's first message is threaded (it settles a media-only answer).
+        self.assertEqual([o['reply_to'] for o in ops], [7, None, None, None])
         self.assertEqual(ops[1]['text'], 'Chart')
         self.assertEqual(adapter._current['r']['media_sent'], [41, 42, 43, 44])
 
