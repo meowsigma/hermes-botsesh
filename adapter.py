@@ -555,6 +555,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             owner_context = owner_turn_context(self.client, binding, getattr(self, '_dm_contexts', {}).get(room_id), message)
             if owner_context:
                 text += '\n\n' + owner_context
+            if chat_type == 'dm' and binding.get('transport') == 'oauth':
+                text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
             # earlier imperative in replayed history rather than the addressed DM.
             text += '\n\nCURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n' + json.dumps([m for m in batch['messages'] if m.get('number') in batch_targets], ensure_ascii=False)
@@ -585,7 +587,6 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             media = None
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 from .media import inbound
-                text += '\n\n' + DM_MEDIA_HINT
                 media = await inbound(self.client, room_id, [m for m in batch['messages'] if m.get('number') in batch_targets])
                 if media:
                     packet['attachments'] = media['files']

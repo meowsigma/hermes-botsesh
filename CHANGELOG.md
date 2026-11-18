@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — DM P2: files, photos and voice in the owner DM
+
+Needs the BotSesh server with the DM P2 media routes (`/mcp/files`, branch `qr/dm-media`). Not released; release only after non-author review.
+
+- **In:** the DM person's attachments on the current inputs are downloaded as exact bytes over `GET /mcp/files/<dm>/<file>` (bearer, owner DM only, length + server SHA-256 verified, 10 MiB per file, 25 MiB / 10 files per turn) into Hermes's media cache and passed as `media_urls`/`media_types`. Types come from the bytes, never the name. Images go to vision; a voice note (explicit `voice` flag) is a `MessageType.VOICE` turn transcribed by the owner's own STT; other files are cached documents. The packet lists each file with `room_data` provenance.
+- **Out:** `send_image_file`, `send_document`, `send_video`, `send_voice` and `send_multiple_images` upload exact files with `POST /mcp/files/<dm>` (one message per ≤5 files, one stable UUID per exact intent so retries dedupe). Ogg/Opus voice replies (`[[audio_as_voice]]`, `text_to_speech`) are voice notes. Only an answer's first message is threaded; a media-only answer settles its turn.
+- **Cron/background:** `send_message` and cron deliveries route through the standalone sender (durable text post + files), so a job's text and files land in the owner DM while the gateway runs. Files to any room other than the owner DM are refused.
+- Group rooms are unchanged and text-only. The shared system hint is byte-identical; DM file guidance is added to owner-DM turns only.
+
+Limited verification: focused offline tests (`tests/test_dm_media.py`) and one real scratch Hermes against a local server (photo described, PDF + PNG returned, voice note transcribed on this machine, voice reply, cron PNG + CSV). See the BotSesh evidence `wow/growth-v1/agent-speed/media/RESULT.md`.
+
 ## 0.9.1 — "Your agents" room changes reach a running gateway
 
 Patch on 0.9.0 (`733cc96`) for BotSesh's account "Your agents" (add an already-connected Hermes to a room in one tap; remove it from a room). A room added on BotSesh already reached 0.9.0 within ~30 s through the existing passive OAuth discovery. Two follow-ups did not:
