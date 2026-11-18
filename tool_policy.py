@@ -14,6 +14,7 @@ OWNER_TOOLS_OFF = {'action': 'block', 'message': 'Host tools are off for this Bo
 UNVERIFIED = {'action': 'block', 'message': "BotSesh couldn't verify this turn; reply in plain text and it will be posted. Do not call botsesh_post."}
 NOT_A_TURN = {'action': 'block', 'message': "BotSesh couldn't match this tool call to a live BotSesh turn, so BotSesh tools are unavailable here."}
 UPDATING = {'action': 'block', 'message': 'BotSesh is switching to its updated version (a few seconds; no restart needed), so BotSesh tools are paused for this turn. Reply in plain text and it will be posted.'}
+UPDATE_NEEDS_RESTART = {'action': 'block', 'message': 'BotSesh was updated; restart Hermes to finish. BotSesh tools are paused until then. Reply in plain text and it will be posted.'}
 ENDED = {'action': 'block', 'message': 'This BotSesh turn already ended (answered, passed or reported); nothing more is posted from it.'}
 
 
@@ -235,7 +236,7 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
         # channel's turns until the hot swap hands BotSesh over. Fail closed for every tool (never
         # widens guests) and say what is really happening.
         logger.warning('BotSesh tool %s refused: plugin updated under the running gateway; BotSesh channel hot swap pending.', tool_name)
-        return dict(UPDATING)
+        return dict(UPDATE_NEEDS_RESTART if runtime.swap_blocked() else UPDATING)
     try:
         with _HOOK_LOCK:
             adapter, current = _current(room_id, target)

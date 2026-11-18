@@ -306,6 +306,170 @@ class UpgradeSafety(unittest.TestCase):
 
 
 class HotSwap(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.enterContext(patch.object(runtime, 'SWAP_BLOCKED', None))  # module state never leaks between tests
+        self.enterContext(patch.object(runtime, 'publish', return_value=False))
+
+    @staticmethod
+    def core(adapter):
+        """The GatewayRunner internals the swap relies on (bf0203a names)."""
+        from gateway.config import Platform
+        return types.SimpleNamespace(adapters={Platform('botsesh'): adapter} if adapter is not None else {}, _profile_adapters={},
+                                     _failed_platforms={}, config=types.SimpleNamespace(platforms={Platform('botsesh'): object()}),
+                                     _queue_retryable_fatal_platform=Mock(), _reconnect_failed_platform=Mock())
+
+    @staticmethod
+    def channel():
+        """An old (pre-reload) channel that really answers: its supervisor keeps one room loop alive."""
+        import asyncio
+        old = OldAdapter()
+        old._current, old._running, old._fatal_error_code = {}, True, None
+        old.inbox, old.answered = asyncio.Queue(), []
+        old._fatal_error_handler = Mock()
+        old.supervisors = 0
+
+        async def room_loop():
+            while old._running:
+                old.answered.append(await old.inbox.get())
+
+        async def supervise():  # like BotSeshAdapter._supervise -> _sync_rooms_loop
+            old.supervisors += 1
+            while old._running:
+                if 'room' not in old._rooms or old._rooms['room'].done():
+                    old._rooms['room'] = asyncio.ensure_future(room_loop())
+                await asyncio.sleep(0.05)
+
+        def set_fatal(code, message, *, retryable):  # base: _running=False first, then the fields
+            old._running = False
+            old._fatal_error_code = code
+
+        def mark_connected():
+            old._running, old._fatal_error_code = True, None
+        old._supervise, old._mark_connected = supervise, mark_connected
+        old._set_fatal_error = Mock(side_effect=set_fatal)
+        old._notify_fatal_error = Mock(side_effect=lambda: asyncio.sleep(0))
+        old._tasks, old._rooms = [asyncio.ensure_future(supervise())], {}
+        return old
+
+    async def answers(self, old, text):
+        import asyncio
+        await asyncio.sleep(0.15)
+        old.inbox.put_nowait(text)
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            if text in old.answered:
+                return True
+        return False
+
+    def assertRestartFallback(self, runner):
+        with patch.object(runtime, '_gateway_runner', return_value=runner):
+            self.assertEqual(runtime.gateway_state(), 'restart')
+            with patch.object(runtime.time, 'sleep', side_effect=AssertionError('no 90 s wait for a swap that cannot run')):
+                self.assertFalse(runtime.wait_until_current(timeout=90))
+            self.assertTrue(runtime.mixed_here())
+            with patch('gateway.session_context.get_session_env', side_effect=lambda k, default='': ENV.get(k, default)):
+                self.assertEqual(tool_policy.enforce_tools(tool_name='botsesh_post', session_id='s', turn_id='t'),
+                                 tool_policy.UPDATE_NEEDS_RESTART)
+
+    async def test_missing_hermes_internals_cancel_nothing_and_the_old_channel_keeps_answering(self):
+        import asyncio
+        gaps = {
+            'adapter _notify_fatal_error': lambda old, runner: delattr(old, '_notify_fatal_error'),
+            'adapter _set_fatal_error': lambda old, runner: setattr(old, '_set_fatal_error', None),
+            'no fatal handler wired by the runner': lambda old, runner: setattr(old, '_fatal_error_handler', None),
+            'runner reconnect step renamed': lambda old, runner: delattr(runner, '_reconnect_failed_platform'),
+            'runner reconnect queue renamed': lambda old, runner: delattr(runner, '_failed_platforms'),
+            'no gateway config entry for botsesh': lambda old, runner: runner.config.platforms.clear(),
+        }
+        for label, remove in gaps.items():
+            with self.subTest(label), patch.object(runtime, 'SWAP_BLOCKED', None):
+                old = self.channel()
+                runner = self.core(old)
+                set_fatal = old._set_fatal_error
+                remove(old, runner)
+                self.assertTrue(await self.answers(old, 'before'))
+                loops = [*old._tasks, *old._rooms.values()]
+                self.assertFalse(await asyncio.wait_for(runtime._hot_swap(runner, old, idle_wait=1), 5))
+                self.assertFalse(any(t.cancelled() or t.done() for t in loops), 'nothing is cancelled')
+                if set_fatal is not None:
+                    set_fatal.assert_not_called()
+                self.assertTrue(old._running)
+                self.assertIsNone(old._fatal_error_code)
+                self.assertIs(runner.adapters[next(iter(runner.adapters))], old, 'the old channel stays registered')
+                self.assertTrue(await self.answers(old, 'after ' + label), 'the old channel keeps answering')
+                self.assertEqual(old.supervisors, 1)
+                self.assertIn('lacks', runtime.SWAP_BLOCKED['reason'])
+                self.assertRestartFallback(runner)
+                for task in [*old._tasks, *old._rooms.values()]:
+                    task.cancel()
+
+    async def test_exception_while_retiring_revives_the_old_channel_with_no_half_state(self):
+        import asyncio
+        # 1) _set_fatal_error raises after it already flipped _running: nothing was cancelled yet.
+        old = self.channel()
+        runner = self.core(old)
+        self.assertTrue(await self.answers(old, 'one'))
+        loops = [*old._tasks, *old._rooms.values()]
+
+        def broken(code, message, *, retryable):
+            old._running = False
+            raise AttributeError('renamed status writer')
+        old._set_fatal_error = Mock(side_effect=broken)
+        self.assertFalse(await asyncio.wait_for(runtime._hot_swap(runner, old, idle_wait=1), 5))
+        self.assertFalse(any(t.cancelled() or t.done() for t in loops), 'loops never saw _running=False')
+        self.assertTrue(old._running)
+        old._fatal_error_handler.assert_not_called()
+        self.assertTrue(await self.answers(old, 'two'))
+        self.assertEqual(runtime.SWAP_BLOCKED['reason'], 'retire failed')
+        self.assertRestartFallback(runner)
+        for task in [*old._tasks, *old._rooms.values()]:
+            task.cancel()
+
+        # 2) _notify_fatal_error raises and the core never took the channel: loops were cancelled, so it is
+        #    revived (fatal cleared, supervisor restarted, room loop re-created) instead of staying silent.
+        with patch.object(runtime, 'SWAP_BLOCKED', None):
+            old = self.channel()
+            runner = self.core(old)
+            self.assertTrue(await self.answers(old, 'three'))
+            first_loops = [*old._tasks, *old._rooms.values()]
+            old._notify_fatal_error = Mock(side_effect=RuntimeError('handler moved'))
+            self.assertFalse(await asyncio.wait_for(runtime._hot_swap(runner, old, idle_wait=1), 5))
+            await asyncio.sleep(0)
+            self.assertTrue(all(t.cancelled() for t in first_loops))
+            self.assertTrue(old._running)
+            self.assertIsNone(old._fatal_error_code)
+            self.assertIs(runner.adapters[next(iter(runner.adapters))], old)
+            self.assertTrue(await self.answers(old, 'four'), 'revived channel answers again')
+            self.assertEqual(old.supervisors, 2)
+            self.assertEqual(runtime.SWAP_BLOCKED['reason'], 'handover failed')
+            self.assertRestartFallback(runner)
+            for task in [*old._tasks, *old._rooms.values()]:
+                task.cancel()
+
+        # 3) The fatal report raised AFTER the core popped and queued the channel: the core owns the handover.
+        with patch.object(runtime, 'SWAP_BLOCKED', None):
+            old = self.channel()
+            runner = self.core(old)
+            self.assertTrue(await self.answers(old, 'five'))
+
+            def popped():
+                runner._failed_platforms[next(iter(runner.adapters))] = {'predecessor': old}
+                runner.adapters.clear()
+                raise RuntimeError('disconnect hiccup')
+            old._notify_fatal_error = Mock(side_effect=popped)
+            self.assertTrue(await asyncio.wait_for(runtime._hot_swap(runner, old, idle_wait=1), 5))
+            self.assertFalse(old._running)
+            self.assertEqual(old.supervisors, 1, 'never revived behind the core')
+            self.assertIsNone(runtime.SWAP_BLOCKED)
+
+    async def test_unexpected_error_in_the_scheduled_swap_is_logged_and_leaves_the_restart_line(self):
+        old = self.channel()
+        with patch.object(runtime, '_hot_swap', side_effect=RuntimeError('boom')), self.assertLogs(runtime.logger, 'WARNING'):
+            self.assertFalse(await runtime._hot_swap_logged(self.core(old), old))
+        self.assertEqual(runtime.SWAP_BLOCKED['reason'], 'unexpected error')
+        for task in old._tasks:
+            task.cancel()
+
     async def test_old_channel_finishes_its_turn_then_retires_retryably(self):
         import asyncio
         from gateway.config import Platform
@@ -317,7 +481,8 @@ class HotSwap(unittest.IsolatedAsyncioTestCase):
         fatal = []
         old._set_fatal_error = lambda code, message, retryable: fatal.append((code, retryable, list(old._current)))
         old._notify_fatal_error = Mock(side_effect=lambda: asyncio.sleep(0))
-        runner = types.SimpleNamespace(adapters={Platform('botsesh'): old}, _profile_adapters={})
+        old._fatal_error_handler, old._supervise, old._mark_connected = Mock(), Mock(), Mock()
+        runner = self.core(old)
         swap = asyncio.ensure_future(runtime._hot_swap(runner, old, idle_wait=30))
         await asyncio.sleep(0.6)
         self.assertEqual(fatal, [], 'an in-flight turn is never cut off')
@@ -328,11 +493,14 @@ class HotSwap(unittest.IsolatedAsyncioTestCase):
         old._notify_fatal_error.assert_called_once()
         await asyncio.sleep(0)
         self.assertTrue(loop_task.cancelled() and room_task.cancelled())
+        self.assertIsNone(runtime.SWAP_BLOCKED)
         # Already replaced (e.g. a second update): never retire the healthy new channel.
         newer = OldAdapter(); newer._current = {}
         newer._set_fatal_error = Mock(); newer._notify_fatal_error = Mock()
-        self.assertFalse(await runtime._hot_swap(types.SimpleNamespace(adapters={}, _profile_adapters={}), newer, idle_wait=1))
+        newer._fatal_error_handler, newer._supervise, newer._mark_connected, newer._tasks, newer._rooms = Mock(), Mock(), Mock(), [], {}
+        self.assertFalse(await runtime._hot_swap(self.core(None), newer, idle_wait=1))
         newer._set_fatal_error.assert_not_called()
+        self.assertIsNone(runtime.SWAP_BLOCKED, 'an already-finished handover is not a blocked swap')
 
 
 if __name__ == '__main__':

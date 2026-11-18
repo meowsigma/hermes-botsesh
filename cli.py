@@ -263,7 +263,7 @@ def _handle_profile(args, profile):
                     raise BotSeshError('pair_link_origin_mismatch')
                 origin, args.pair = link_origin, link_code
             from . import runtime
-            if runtime.gateway_state(client.store) != 'current':
+            if runtime.gateway_state(client.store) in ('swapping', 'old'):
                 print('BotSesh was updated under the running Hermes; switching its BotSesh channel to the new code (no restart)...')
             if not runtime.wait_until_current(client.store, timeout=90):
                 # 0.10.2 fallback only: the running gateway still serves an older/mixed BotSesh copy

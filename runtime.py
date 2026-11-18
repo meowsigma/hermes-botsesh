@@ -135,12 +135,13 @@ def publish(*, serving=None, **extra):
             saved = {}
         if not isinstance(saved, dict) or saved.get('pid') != os.getpid():
             saved = {}
-        record = {**{k: v for k, v in saved.items() if k in ('swaps', 'last_swap')},
+        record = {**{k: v for k, v in saved.items() if k in ('swaps', 'last_swap', 'swap_blocked')},
                   'pid': os.getpid(), 'version': saved.get('version') or LOADED_VERSION,
                   'loaded_version': LOADED_VERSION, 'mixed': mixed_here(),
                   'serving': bool(serving if serving is not None else saved.get('serving')), 'at': time.time(), **extra}
         if serving:
             record['version'] = LOADED_VERSION
+            record.pop('swap_blocked', None)  # this copy's own channel serves now
         tmp = path.with_name(path.name + '.%d.tmp' % os.getpid())
         tmp.write_text(json.dumps(record))
         os.chmod(tmp, 0o600)
@@ -158,11 +159,76 @@ def read_marker():
     return value if isinstance(value, dict) else None
 
 
+# Set in THIS process when the hot swap could not (or must not) run: the old channel keeps serving and
+# only a gateway restart loads the update. Other processes read it from the marker (`swap_blocked`).
+SWAP_BLOCKED = None
+
+
+def swap_blocked(foreign=False):
+    """True when this gateway's hot swap could not run (only a restart finishes the update)."""
+    if SWAP_BLOCKED is not None:
+        return True
+    foreign = foreign_adapter() if foreign is False else foreign
+    return bool(getattr(foreign, '_botsesh_swap_blocked', None))
+
+
+def swap_missing(runner, old, platform):
+    """Hermes internals the hot swap relies on that this gateway lacks (empty = safe to swap).
+
+    Checked BEFORE anything is cancelled: a Hermes that renamed one of these must leave the old
+    channel fully running and fall back to the restart line, never a registered-but-silent channel."""
+    missing = [name for name in ('_set_fatal_error', '_notify_fatal_error', '_fatal_error_handler', '_supervise', '_mark_connected')
+               if not callable(getattr(old, name, None))]
+    missing += [name for name in ('_tasks', '_rooms') if not isinstance(getattr(old, name, None), (list, dict))]
+    missing += ['runner.' + name for name in ('_queue_retryable_fatal_platform', '_reconnect_failed_platform')
+                if not callable(getattr(runner, name, None))]
+    if not isinstance(getattr(runner, '_failed_platforms', None), dict):
+        missing.append('runner._failed_platforms')
+    try:  # the reconnect queue only takes a platform that has a gateway config entry
+        configured = runner.config.platforms.get(platform)
+    except Exception:
+        configured = None
+    if not configured:
+        missing.append('runner.config.platforms[botsesh]')
+    return missing
+
+
+def _block_swap(old, reason):
+    global SWAP_BLOCKED
+    SWAP_BLOCKED = {'reason': reason, 'at': time.time()}
+    try:  # on the old channel too, so a later reloaded copy knows without trying again
+        old._botsesh_swap_blocked = SWAP_BLOCKED
+    except Exception:
+        pass
+    publish(swap_blocked=SWAP_BLOCKED)
+    logger.warning('BotSesh hot swap not done (%s); the old BotSesh channel keeps serving. %s', reason, RESTART_MESSAGE)
+
+
+def _revive(old, *, restart_loops):
+    """Undo a failed retire on the same loop tick: the old channel serves again (no half-state)."""
+    try:
+        old._mark_connected()  # base: _running = True, fatal fields cleared, status 'connected'
+    except Exception:
+        old._running = True
+        old._fatal_error_code = old._fatal_error_message = None
+        old._fatal_error_retryable = True
+    if restart_loops:  # its supervisor re-creates every active room loop (BotSesh adapters >= 0.8)
+        old._tasks.append(asyncio.ensure_future(old._supervise()))
+
+
 async def _hot_swap(runner, old, idle_wait=SWAP_IDLE_WAIT):
     """On the gateway loop: let the old channel finish its in-flight turn, then retire it through
-    the core's retryable-fatal path so the reconnect watcher builds the new copy's adapter."""
+    the core's retryable-fatal path so the reconnect watcher builds the new copy's adapter.
+
+    Fail-safe: if this Hermes lacks an internal the swap needs, nothing is cancelled and the old
+    channel keeps answering; if retiring raises, the old channel is revived. Both leave the one
+    restart line as the only fallback."""
     from gateway.config import Platform
     platform = Platform('botsesh')
+    missing = swap_missing(runner, old, platform)
+    if missing:
+        _block_swap(old, 'this Hermes lacks ' + ', '.join(missing))
+        return False
     started = time.monotonic()
     while getattr(old, '_current', None) and time.monotonic() - started < idle_wait:
         await asyncio.sleep(0.25)
@@ -174,14 +240,45 @@ async def _hot_swap(runner, old, idle_wait=SWAP_IDLE_WAIT):
                        '(its durable receipt is recovered by the new channel).', idle_wait)
     # Same loop tick from here to the fatal report: no await, so the old channel cannot admit a new
     # turn in between. Cancelled room loops stop before admission; their queued input stays durable.
-    for task in [*list(getattr(old, '_tasks', []) or []), *list((getattr(old, '_rooms', {}) or {}).values())]:
-        task.cancel()
+    cancelled = []
+    try:
+        old._set_fatal_error(SWAP_CODE, 'BotSesh plugin updated; reloading only the BotSesh channel with the new code.', retryable=True)
+        for task in [*list(old._tasks), *list(old._rooms.values())]:
+            task.cancel()
+            cancelled.append(task)
+    except Exception:
+        logger.warning('BotSesh hot swap: retiring the old channel raised; reviving it.', exc_info=True)
+        _revive(old, restart_loops=bool(cancelled))
+        _block_swap(old, 'retire failed')
+        return False
     retired_at = time.time()
-    old._set_fatal_error(SWAP_CODE, 'BotSesh plugin updated; reloading only the BotSesh channel with the new code.', retryable=True)
     logger.info('BotSesh hot swap: old channel idle after %.1fs; handing over to the new plugin code.', time.monotonic() - started)
     publish(last_swap={'retired_at': retired_at, 'waited_s': round(time.monotonic() - started, 2), 'to': LOADED_VERSION})
-    await old._notify_fatal_error()
+    try:
+        await old._notify_fatal_error()
+    except Exception:
+        if runner.adapters.get(platform) is old and platform not in runner._failed_platforms:
+            # The core never took the old channel: its loops are cancelled, so bring it back up.
+            logger.warning('BotSesh hot swap: the gateway did not take the old channel; reviving it.', exc_info=True)
+            _revive(old, restart_loops=True)
+            _block_swap(old, 'handover failed')
+            return False
+        logger.warning('BotSesh hot swap: the fatal report raised after the gateway took the old channel; '
+                       'its reconnect watcher builds the new one.', exc_info=True)
     return True
+
+
+async def _hot_swap_logged(runner, old):
+    """The scheduled task body: an unexpected error is logged and leaves the restart line, never silence."""
+    try:
+        return await _hot_swap(runner, old)
+    except Exception:
+        logger.warning('BotSesh hot swap failed unexpectedly.', exc_info=True)
+        try:
+            _block_swap(old, 'unexpected error')
+        except Exception:
+            pass
+        return False
 
 
 def schedule_hot_swap():
@@ -201,7 +298,7 @@ def schedule_hot_swap():
         logger.info('BotSesh plugin files changed under the running gateway; hot-swapping the BotSesh channel (no gateway restart).')
 
         def start():
-            task = asyncio.ensure_future(_hot_swap(runner, old))
+            task = asyncio.ensure_future(_hot_swap_logged(runner, old))
             keep = getattr(runner, '_background_tasks', None)
             if isinstance(keep, set):
                 keep.add(task)
@@ -222,11 +319,15 @@ def _running_gateway_pid():
 
 
 def gateway_state(store=None):
-    """'current' | 'swapping' | 'old' for the gateway that would serve a seat created now.
+    """'current' | 'swapping' | 'old' | 'restart' for the gateway that would serve a seat created now.
 
-    No running gateway: current (it starts with the files on disk). A fresh install whose gateway
-    never ran BotSesh: current (the in-gateway hot start loads these files)."""
-    if foreign_adapter() is not None:
+    'restart': the hot swap could not run here, so the old channel keeps serving and only a gateway
+    restart loads the update. No running gateway: current (it starts with the files on disk). A fresh
+    install whose gateway never ran BotSesh: current (the in-gateway hot start loads these files)."""
+    foreign = foreign_adapter()
+    if swap_blocked(foreign):
+        return 'restart'
+    if foreign is not None:
         return 'swapping'
     if LOADED_VERSION is not None and disk_version() not in (None, LOADED_VERSION):
         return 'old'
@@ -235,6 +336,8 @@ def gateway_state(store=None):
         return 'current'
     marker = read_marker()
     if marker and marker.get('pid') == pid:
+        if marker.get('swap_blocked'):
+            return 'restart'
         if marker.get('mixed'):
             return 'swapping'
         if marker.get('serving') and marker.get('version') != disk_version():
@@ -260,8 +363,8 @@ def wait_until_current(store=None, timeout=90, nudge=True):
     this copy and hot-swaps the BotSesh channel; then wait for the fresh channel. True when current,
     False when only a restart can finish (old Hermes without reload-plugins, or a stuck swap)."""
     state = gateway_state(store)
-    if state == 'current':
-        return True
+    if state in ('current', 'restart'):
+        return state == 'current'  # 'restart': the swap cannot run here; say the restart line now
     if state == 'old' and nudge and not _gateway_process():
         try:
             from .hot_start import nudge_running_gateway
@@ -271,6 +374,7 @@ def wait_until_current(store=None, timeout=90, nudge=True):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         time.sleep(1.0)
-        if gateway_state(store) == 'current':
-            return True
+        state = gateway_state(store)
+        if state in ('current', 'restart'):
+            return state == 'current'
     return False
