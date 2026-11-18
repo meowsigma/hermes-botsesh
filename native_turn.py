@@ -159,13 +159,14 @@ class NativeTurnMixin:
                     self._mark_handled(room_id, target, state='replied' if row.get('posted_reply') else 'passed')
         elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
-        elif current.get('delivered') or row.get('read_attested'):
+        elif current.get('delivered') or row.get('read_attested') or (current.get('media_sent') and current.get('model_processed')):
             # A confirmed processed:true post/ack is its own explicit read
             # attestation, even if the runtime fails after that useful answer.
             # Keep the native failure ledger, not a failed/unanswered room ask.
+            # DM P2: a media-only answer (files/voice threaded to this input) answers it too.
             await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
             for target in current.get('batch_targets', [current['target']]):
-                self._mark_handled(room_id, target, state='replied' if target == current['target'] and current.get('delivered') else 'passed')
+                self._mark_handled(room_id, target, state='replied' if target == current['target'] and (current.get('delivered') or current.get('media_sent')) else 'passed')
         elif (row.get('explicit_post_calls') or row.get('explicit_agreement')) and current.get('model_processed'):
             # An authored no-read post is not implicit read permission. Retain
             # local completion separately; no read checkpoint is advanced.
@@ -206,8 +207,11 @@ class NativeTurnMixin:
         source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id),
             chat_type='dm' if binding.get('room_type') == 'dm' else 'group',
             user_id=service_sender or message['senderParticipantId'], message_id=str(row['target']))
+        media = row.get('media') or {}
         event = MessageEvent(text=row['text'], source=source, message_id=row.get('event_id', str(row['target'])),
-            user_id=service_sender or message['senderParticipantId'], message_type=MessageType.TEXT,
+            user_id=service_sender or message['senderParticipantId'],
+            message_type=MessageType[media['message_type']] if media.get('message_type') in MessageType.__members__ else MessageType.TEXT,
+            media_urls=list(media.get('media_urls') or []), media_types=list(media.get('media_types') or []),
             raw_message=message, allow_gateway_control=False,
             reply_expected=bool(service_sender) or binding.get('room_type') == 'dm' or bool(row.get('takeover_offer')), auto_skill='botsesh:botsesh')
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
