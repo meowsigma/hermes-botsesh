@@ -169,38 +169,56 @@ def connect_background(args, profile):
     """0.10.1: an agent pasting an invite runs this from its own chat. Return at once; a detached
     child does the normal connect (waits for Allow on any device, then starts the channel).
     One waiter per invite: a repeated call while it waits only says so."""
-    import hashlib
-    import os
     import sys
-    from hermes_cli.config import get_hermes_home
     if not args.pair:
         raise BotSeshError('background_needs_an_invite')
+    origin = None
+    if args.dev_origin != 'https://botsesh.com' or getattr(args, 'pair_link', None):
+        from .oauth import parse_pair_link
+        origin = parse_pair_link(args.pair_link)[0] if getattr(args, 'pair_link', None) else args.dev_origin
+    extra = []
+    for field in ('room', 'name', 'timeout'):
+        value = getattr(args, field, None)
+        if value is not None:
+            extra.append('--' + field + '=' + str(value))
+    for flag in ('set_home', 'no_start'):
+        if getattr(args, flag, False):
+            extra.append('--' + flag.replace('_', '-'))
+    if spawn_connect(args.pair, origin, profile, extra) == 'already':
+        print('Already waiting for Allow in BotSesh for this invite. Nothing else to do.')
+        return
+    print('Waiting for Allow in BotSesh. Tell your person: "Press Allow in BotSesh" (any device works).')
+    print('It finishes by itself and your DM opens. Check: hermes botsesh status')
+    sys.stdout.flush()
+
+
+def spawn_connect(pair_code, origin, profile, extra=()):
+    """Start one detached `hermes botsesh connect --pair=…` waiter for this invite.
+    Returns 'started' or 'already' (a live waiter for the same invite exists)."""
+    import hashlib
+    import os
+    import threading
+    from hermes_cli.config import get_hermes_home
     binary = shutil.which('hermes')
     if not binary:
         raise BotSeshError('hermes_cli_unavailable')
     logs = os.path.join(str(get_hermes_home()), 'logs')
     os.makedirs(logs, mode=0o700, exist_ok=True)
-    tag = hashlib.sha256(args.pair.encode()).hexdigest()[:16]
+    tag = hashlib.sha256(pair_code.encode()).hexdigest()[:16]
     pidfile = os.path.join(logs, f'botsesh-connect-{tag}.pid')
     try:
         with open(pidfile) as handle:
             pid = int(handle.read().strip())
         os.kill(pid, 0)
-        print('Already waiting for Allow in BotSesh for this invite. Nothing else to do.')
-        return
+        with open(f'/proc/{pid}/cmdline', 'rb') as handle:
+            if b'botsesh' in handle.read():
+                return 'already'
     except (OSError, ValueError):
         pass
-    argv = [binary, '-p', profile, 'botsesh', 'connect', '--pair=' + args.pair]
-    if args.dev_origin != 'https://botsesh.com' or getattr(args, 'pair_link', None):
-        from .oauth import parse_pair_link
-        argv.append('--dev-origin=' + (parse_pair_link(args.pair_link)[0] if getattr(args, 'pair_link', None) else args.dev_origin))
-    for field in ('room', 'name', 'timeout'):
-        value = getattr(args, field, None)
-        if value is not None:
-            argv.append('--' + field + '=' + str(value))
-    for flag in ('set_home', 'no_start'):
-        if getattr(args, flag, False):
-            argv.append('--' + flag.replace('_', '-'))
+    argv = [binary, '-p', profile, 'botsesh', 'connect', '--pair=' + pair_code]
+    if origin and origin != 'https://botsesh.com':
+        argv.append('--dev-origin=' + origin)
+    argv += list(extra)
     log_path = os.path.join(logs, 'botsesh-connect.log')
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
@@ -208,11 +226,11 @@ def connect_background(args, profile):
                                  start_new_session=True, close_fds=True)
     finally:
         os.close(fd)
+    # Reap it when it ends (a long-lived gateway/chat process must not keep a zombie).
+    threading.Thread(target=child.wait, daemon=True).start()
     with open(os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as handle:
         handle.write(str(child.pid))
-    print('Waiting for Allow in BotSesh. Tell your person: "Press Allow in BotSesh" (any device works).')
-    print('It finishes by itself and your DM opens. Check: hermes botsesh status')
-    sys.stdout.flush()
+    return 'started'
 
 
 def _handle_profile(args, profile):
