@@ -2,7 +2,7 @@
 
 ## 0.10.3 — lean owner-DM turns (UNPUBLISHED branch `qr/plugin-0.10.3`; not tagged)
 
-Patch on 0.10.2 (`8636473`). An owner-DM turn used to deliver the room's whole catch-up JSON on every message and Hermes saved each of those blobs into the DM session, so every later turn replayed all earlier ones. A single "Yoo wsp big dawg" in a DM with 10 earlier messages arrived as ~72 000 characters (about 18 000 tokens) against a few tokens on Telegram.
+Patch on 0.10.2 (`8636473`). An owner-DM turn used to deliver the room's whole catch-up JSON on every message and Hermes saved each of those blobs into the DM session, so every later turn replayed all earlier ones. A single "Yoo wsp big dawg" in a DM with 10 earlier messages arrived as 72 209 characters (24 599 prompt tokens counted by the model provider, for that one message) against 5 net tokens on Telegram; with 50 earlier messages the session prompt exceeded 380 000 estimated tokens.
 
 - **Only the new message when the session already has the conversation.** In a verified owner DM whose Hermes session already holds the conversation, the delivered text is a one-line binding header, one sentence ("plain text reply is posted; no botsesh_read/post/pass for a normal message") and the new message(s). Owner messages the session never saw are listed compactly above them.
 - **Catch-up only when needed.** A fresh session, `/new`, `/resume`, a suspended session, a gap the read window cannot cover, a second speaker, or any non-owner/guest/group/scheduled/takeover turn still gets the full catch-up and its safety framing. If Hermes turns out to have started a fresh session after the delivery was built, a `pre_llm_call` hook adds a compact (under 9 000 characters) catch-up to that turn.
