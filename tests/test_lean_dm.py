@@ -5,7 +5,8 @@ import re
 import time
 import unittest
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from test_solid import SolidTests
 from hermes_botsesh_test import adapter as adapter_module, lean_dm
@@ -37,12 +38,16 @@ class Entry:
 class FakeSessionStore:
     def __init__(self, session_id):
         self.entry = Entry(session_id) if session_id else None
+        self.held = {}  # session id -> how many messages Hermes holds for it (default: a few, i.e. a session with history)
 
     def lookup_by_session_key(self, key):
         return self.entry
 
     def _route_reset_reason(self, entry):
         return 'suspended' if entry.suspended else None
+
+    def load_transcript(self, session_id):
+        return [{'role': 'user', 'content': 'x'}] * self.held.get(session_id, 4)
 
 
 @contextmanager
@@ -146,7 +151,7 @@ class LeanDmTests(SolidTests):
         self.assertNotIn('#1 ', second.text)
         self.assertNotIn('BOTSESH DM FILES', second.text)
         self.assertNotIn('BOTSESH RUNTIME TOOL POLICY', second.text, 'owner with host tools allowed needs no per-turn policy block')
-        self.assertEqual(self.client.store.room('a')['dm_session'], {'session_id': 's1', 'through': 3, 'brief': lean_dm.brief_digest(frozen)})
+        self.assertEqual(self.client.store.room('a')['dm_session'], {'session_id': 's1', 'through': 3, 'brief': lean_dm.brief_digest(frozen), 'messages': 4})
         # the receipt is the same exact frozen read as before: nothing about attestation changed
         row = self.client.store.room('a')['processing_receipts']['5']
         self.assertEqual(row['frozen']['receipt_id'], 'receipt-5')
@@ -388,8 +393,7 @@ class LeanDmTests(SolidTests):
         self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
         context = await self.hermes_turn(event, 's9', 't1', first=True)
         self.assertIsNone(context)
-        self.assertEqual(self.ledger()['session_id'], 's1', 'the session that never received the history is not recorded as holding it')
-        self.assertEqual(self.ledger()['through'], 3)
+        self.assertIsNone(self.ledger(), 'the session that never received the history is not recorded as holding it, and the ledger it was built from is gone')
         # Hermes now routes the DM to s9: the next delivery cannot be lean
         self.store.entry = Entry('s9')
         self.thread += [agent(6, 'a reply'), human(7, 'and now?')]
@@ -415,7 +419,7 @@ class LeanDmTests(SolidTests):
         context = await self.hermes_turn(event, 's9', 't1', first=True)
         self.assertIn('older messages omitted', context['context'], 'what fits is still attached for this turn')
         self.assertLess(len(context['context']), 9500)
-        self.assertEqual(self.ledger()['session_id'], 's1', 'but a clipped recovery is not evidence that the session holds the DM')
+        self.assertIsNone(self.ledger(), 'but a clipped recovery is not evidence that the session holds the DM')
         self.store.entry = Entry('s9')
         self.thread += [agent(44, 'a'), human(45, 'next')]
         self.assertIn('Complete BotSesh collaboration data', (await self.deliver(45, complete=False)).text)
@@ -426,7 +430,7 @@ class LeanDmTests(SolidTests):
         event = await self.deliver(5, complete=False)
         context = await self.hermes_turn(event, 's9', 't1', first=True)
         self.assertIn('…', context['context'])
-        self.assertEqual(self.ledger()['session_id'], 's1')
+        self.assertIsNone(self.ledger())
         self.assertFalse(lean_dm.catchup([human(1, 'see this', attachments=[{'id': 'f'}])], {9})[1])
         self.assertTrue(lean_dm.catchup([human(1, 'plain'), agent(2, 'reply')], {9})[1])
 
@@ -452,14 +456,14 @@ class LeanDmTests(SolidTests):
             ended_turn(platform='botsesh', session_id='s9', turn_id='t1', completed=True, failed=False, interrupted=False)
         self.adapter._current['a']['delivered'] = True
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.assertEqual(self.ledger()['session_id'], 's1')
+        self.assertIsNone(self.ledger(), 'the unknown session is not recorded, and the ledger of the session the lean text was built for is gone')
 
     async def test_a_fresh_empty_history_in_the_same_session_id_still_needs_the_recovery_to_be_complete(self):
         event = await self.lean_five()
         self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
         # Hermes says first turn although the session id is the one the lean text was built for (history was cleared)
         await self.hermes_turn(event, 's1', 't1', first=True)
-        self.assertEqual(self.ledger()['through'], 3, 'the failed recovery in an emptied session does not advance the ledger')
+        self.assertIsNone(self.ledger(), 'the failed recovery in an emptied session leaves no ledger for the same session id to reuse')
 
     async def test_a_changed_brief_sends_the_full_catch_up_and_a_lean_turn_never_records_one_it_did_not_carry(self):
         self.context['a'] = {'enabled': True, 'revision': 1, 'markdown': 'House rules: answer in French.', 'decisions': []}
@@ -468,7 +472,7 @@ class LeanDmTests(SolidTests):
         lean = await self.deliver(5, complete=False)
         self.assertNotIn('House rules', lean.text, 'unchanged Brief: the session already got it with the first full delivery')
         context = await self.hermes_turn(lean, 's9', 't1', first=True)
-        self.assertEqual(self.ledger()['session_id'], 's1', 'the recovery text cannot carry a Brief, so it is not complete')
+        self.assertIsNone(self.ledger(), 'the recovery text cannot carry a Brief, so it is not complete')
         self.assertNotIn('House rules', context['context'])
         self.store.entry = Entry('s1')
         self.context['a'] = {'enabled': True, 'revision': 2, 'markdown': 'House rules: answer in German.', 'decisions': []}
@@ -507,6 +511,287 @@ class LeanDmTests(SolidTests):
         self.assertIn('Complete BotSesh collaboration data', event.text)
         self.assertIn('sent while you were thinking', event.text, 'the reply will attest #6, so the model gets it')
         self.assertIsNone(self.adapter._current['a']['lean_session'])
+
+    # --- r2 (t_138d06f8): no full-batch attestation after an incomplete recovery; no stale continuity -------------------------
+
+    def real_wire(self):
+        """Posts, deliveries and quiet passes go through the REAL Client and OAuth journals; only the MCP wire is doubled. The
+        assertions below therefore see what would actually leave the machine (and what the journals keep), not an adapter call."""
+        import hashlib
+        from hermes_botsesh_test.client import Client
+        from hermes_botsesh_test.oauth import OAuthClient
+        self.requests, self.messages = [], {}
+
+        def rpc(client, binding, name, args=None, **kwargs):
+            room = binding['room_id']
+            self.requests.append((room, name, copy.deepcopy(args)))
+            if name == 'list_rooms':
+                return {'rooms': [{'room_id': room, 'participant_id': binding['participant_id']}]}
+            if name in ('send_message', 'hermes_authored'):
+                value = self.messages.setdefault((room, args['client_id']), {'number': 100 + len(self.messages), 'text': args['text'],
+                    'text_sha256': hashlib.sha256(args['text'].encode()).hexdigest(), 'authorParticipant': {'id': binding['participant_id']}})
+                return {'message': value}
+            if name == 'finish_room_turn':
+                return {'read_checkpoint': 99}
+            if name == 'hermes_delivery':
+                return {'read_effect': 'none'}
+            self.fail('Unexpected MCP operation: ' + name)
+        patcher = patch.object(OAuthClient, 'rpc', rpc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        mocked = self.client.enrolled.side_effect
+
+        def enrolled(room, op, **args):
+            if op in ('post', 'delivery', 'verify', 'retry', 'finish'):
+                return Client.enrolled(self.client, room, op, **args)
+            return mocked(room, op, **args)
+        self.client.enrolled.side_effect = enrolled
+
+    def sends(self):
+        return [(name, args) for _, name, args in self.requests if name in ('send_message', 'hermes_authored')]
+
+    def states(self, target):
+        return [args['state'] for _, name, args in self.requests if name == 'hermes_delivery' and args['number'] == target and args.get('state') in ('completed', 'completed_unread')]
+
+    def model_turn(self, event, session, turn, room='a', first=True, identity=True):
+        """The hooks of one native turn that COMPLETED in Hermes session `session` (the adapter's own completion is the caller's)."""
+        target = self.adapter._current[room]['target']
+
+        def hooks():
+            context = started_turn(user_message=event.text, platform='botsesh', session_id=session, turn_id=turn, is_first_turn=first)
+            processed_turn(user_message=event.text, platform='botsesh', session_id=session, turn_id=turn)
+            ended_turn(platform='botsesh', session_id=session, turn_id=turn, completed=True, failed=False, interrupted=False)
+            return context
+        if not identity:
+            return hooks()
+        with turn_env(room, target):
+            return hooks()
+
+    async def unproven_lean_turn(self, how):
+        """A lean owner-DM turn (built for s1, input #5, receipt-5) whose model completed in Hermes session s9 with the late recovery
+        `how`: 'failed', 'clipped' or 'absent'. Returns its event; nothing was sent yet."""
+        self.real_wire()
+        if how == 'clipped':
+            await self.deliver(3)
+            self.thread += [human(n, 'long message %d ' % n + 'x' * 700) if n % 2 else agent(n, 'long reply %d ' % n + 'y' * 700) for n in range(4, 40)]
+            self.thread += [human(41, 'one more')]
+            await self.deliver(41)
+            self.thread += [agent(42, 'z'), human(43, 'Yoo wsp big dawg')]
+            event = await self.deliver(43, complete=False)
+        else:
+            event = await self.lean_five()
+        self.assertEqual(self.adapter._current['a']['lean_session'], 's1')
+        if how == 'failed':
+            self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
+        context = self.model_turn(event, 's9', 't1', identity=how != 'absent')
+        if how == 'failed':
+            self.assertIsNone(context)
+        elif how == 'clipped':
+            self.assertIn('older messages omitted', context['context'])
+            self.assertIsNot(self.adapter._current['a'].get('lean_recovered'), True)
+        else:
+            self.assertIsNone(context, 'no gateway identity: nothing could be attached')
+        self.assertFalse(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        return event
+
+    async def assert_authored_final(self, event, target):
+        """The final of the unproven lean turn: the actual wire request, the journals, the settlement and the ledger."""
+        current = self.adapter._current['a']
+        client_id, receipt = current['client_id'], current['receipt_id']
+        cursor = self.client.store.room('a').get('processed_cursor')
+        sent = await self.adapter.send('a', 'a plain reply', metadata={'notify': True})
+        self.assertTrue(sent.success, sent)
+        # the wire: one authored send that names the input it answers and claims no read of the frozen batch
+        ((name, wire),) = self.sends()
+        self.assertEqual(name, 'hermes_authored', 'not send_message with the batch id, which would attest the whole frozen read')
+        self.assertEqual({k: wire[k] for k in ('text', 'reply_to', 'client_id', 'allow_stale')},
+                         {'text': 'a plain reply', 'reply_to': target, 'client_id': client_id, 'allow_stale': True})
+        self.assertEqual(wire['seen_through'], target)
+        self.assertEqual(set(wire) & {'batch_id', 'receipt_id', 'processed'}, set())
+        # the journals: the final's pending record, the gateway replay record and the transport row carry the same claim-free payload
+        room = self.client.store.room('a')
+        expected = {'text': 'a plain reply', 'reply_to': target, 'client_id': client_id, 'allow_stale': True}
+        self.assertEqual(room['pending_final'], {'payload': expected, 'target': target})
+        self.assertEqual(room['gateway_deliveries'][client_id], {'payload': expected, 'target': target})
+        exact = room['oauth_posts'][client_id]['exact']
+        self.assertEqual(set(exact) & {'receipt_id', 'processed'}, set())
+        self.assertEqual(exact['reply_to'], target)
+        row = room['processing_receipts'][str(target)]
+        self.assertNotIn('read_attested', row)
+        self.assertNotIn('posted_reply', row)
+        self.assertEqual(row['receipt_id'], receipt, 'the immutable receipt itself is untouched')
+        self.assertTrue(current['delivered'] and current['reply_unattested'] == 100)
+        # settlement: complete locally, no read checkpoint advances, nothing replies a second time
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        room = self.client.store.room('a')
+        self.assertEqual(room['processing_receipts'][str(target)]['state'], 'completed_unread')
+        self.assertNotIn(target, room.get('handled', []))
+        self.assertEqual(room.get('processed_cursor'), cursor)
+        self.assertNotIn('pending_final', room)
+        self.assertEqual(self.states(target), ['completed_unread'], 'a plain completed delivery would be the read claim')
+        self.assertFalse(any(n == 'finish_room_turn' for _, n, _ in self.requests))
+        self.assertEqual(len(self.sends()), 1)
+        self.assertNotIn('a', self.adapter._current)
+        self.assertIsNone(self.ledger(), 'the session that did not receive the whole read is not recorded as holding it')
+
+    async def assert_next_turn_is_full_and_attests(self, session):
+        """After an unattested final the next turn gets the full catch-up and its reply attests that whole read."""
+        self.store.entry = Entry(session)
+        self.thread += [agent(6, 'ok'), human(7, 'and now?')]
+        full = await self.deliver(7, complete=False)
+        self.assertIn('Complete BotSesh collaboration data', full.text)
+        self.assertIn('a-private-reply', full.text, 'the history the unproven turn could not deliver arrives in full')
+        self.assertIsNone(self.adapter._current['a']['lean_session'])
+        self.model_turn(full, session, 't2', first=True)
+        before = len(self.sends())
+        self.assertTrue((await self.adapter.send('a', 'second reply', metadata={'notify': True})).success)
+        name, wire = self.sends()[before]
+        self.assertEqual(name, 'send_message')
+        self.assertEqual((wire['batch_id'], wire['reply_to']), ('receipt-7', 7))
+        journal = self.client.store.room('a')['pending_final']['payload']
+        self.assertEqual({k: journal[k] for k in ('receipt_id', 'processed', 'reply_to')}, {'receipt_id': 'receipt-7', 'processed': True, 'reply_to': 7})
+        await self.adapter.on_processing_complete(self.adapter._admit_event.call_args.args[0], ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['7']['state'], 'replied')
+        self.assertEqual(self.ledger()['session_id'], session)
+
+    async def test_failed_late_recovery_sends_an_authored_reply_and_journals_no_full_batch_attestation(self):
+        event = await self.unproven_lean_turn('failed')
+        await self.assert_authored_final(event, 5)
+        await self.assert_next_turn_is_full_and_attests('s9')
+
+    async def test_clipped_late_recovery_sends_an_authored_reply_and_journals_no_full_batch_attestation(self):
+        event = await self.unproven_lean_turn('clipped')
+        await self.assert_authored_final(event, 43)
+
+    async def test_absent_late_recovery_sends_an_authored_reply_and_journals_no_full_batch_attestation(self):
+        event = await self.unproven_lean_turn('absent')
+        await self.assert_authored_final(event, 5)
+
+    async def test_a_proven_lean_turn_still_sends_the_receipt_backed_final(self):
+        self.real_wire()
+        event = await self.lean_five()
+        self.model_turn(event, 's1', 't1', first=False)
+        self.assertTrue(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        self.assertTrue((await self.adapter.send('a', 'a plain reply', metadata={'notify': True})).success)
+        ((name, wire),) = self.sends()
+        self.assertEqual((name, wire['batch_id'], wire['reply_to']), ('send_message', 'receipt-5', 5))
+        journal = self.client.store.room('a')['pending_final']['payload']
+        self.assertEqual({k: journal[k] for k in ('receipt_id', 'processed', 'reply_to')}, {'receipt_id': 'receipt-5', 'processed': True, 'reply_to': 5})
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'replied')
+        self.assertEqual(self.states(5), ['completed'])
+        self.assertEqual(self.ledger(), {'session_id': 's1', 'through': 5, 'brief': self.ledger()['brief'], 'messages': 4})
+
+    async def test_the_production_final_journals_the_same_authored_payload_it_later_sends_and_replays_it_after_a_restart(self):
+        event = await self.unproven_lean_turn('failed')
+        current = self.adapter._current['a']
+        client_id = current['client_id']
+        parent = next(cls for cls in type(self.adapter).__mro__[1:] if 'send_final_ledgered' in cls.__dict__)
+        with patch.object(parent, 'send_final_ledgered', new_callable=AsyncMock, return_value=('sent', self.adapter)):
+            await self.adapter.send_final_ledgered(event, 'session', 'a plain reply', {}, reply_to='5')
+        expected = {'text': 'a plain reply', 'reply_to': 5, 'client_id': client_id, 'allow_stale': True}
+        # journaled BEFORE anything is sent, already without a receipt or a processed claim
+        self.assertEqual(self.client.store.room('a')['pending_final'], {'payload': expected, 'target': 5})
+        self.assertEqual(self.sends(), [])
+        # the gateway's own send of the same final builds the identical payload (a mismatch would raise pending_send_mismatch)
+        self.assertTrue((await self.adapter.send('a', 'a plain reply', metadata={'notify': True})).success)
+        ((name, wire),) = self.sends()
+        self.assertEqual((name, wire['reply_to'], set(wire) & {'batch_id', 'receipt_id', 'processed'}), ('hermes_authored', 5, set()))
+        self.assertEqual(self.client.store.room('a')['pending_final'], {'payload': expected, 'target': 5})
+        # the process dies before the turn settles: a restarted adapter retries the journaled final under the same identity
+        restarted = self.make_adapter()
+        restarted._publish_dm_manifest = AsyncMock()
+        restarted._session_store = self.store
+        self.targets['a'] = []
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['5'].update(state='started', instance='old-process'))
+        await restarted._check_room('a')
+        self.assertEqual(len(self.sends()), 1, 'the same saved send, never a second message')
+        self.assertEqual(len(self.messages), 1)
+        room = self.client.store.room('a')
+        self.assertNotIn('pending_final', room)
+        self.assertEqual(room['processing_receipts']['5']['state'], 'completed_unread')
+        self.assertNotIn(5, room.get('handled', []))
+        self.assertNotIn('read_attested', room['processing_receipts']['5'])
+        self.assertFalse(any(n == 'finish_room_turn' for _, n, _ in self.requests))
+
+    async def test_a_quiet_pass_after_an_unproven_delivery_attests_nothing(self):
+        event = await self.unproven_lean_turn('failed')
+        self.assertTrue((await self.adapter.send('a', 'NO_REPLY', metadata={'notify': True})).success)
+        self.assertTrue(self.adapter._current['a']['intentional_silence'])
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertFalse(any(n in ('finish_room_turn', 'send_message', 'hermes_authored') for _, n, _ in self.requests),
+                         'a pass is a processed:true on the immutable receipt: it would claim the whole frozen read')
+        row = self.client.store.room('a')['processing_receipts']['5']
+        self.assertEqual(row['state'], 'completed_unread')
+        self.assertNotIn('explicit_pass', row)
+        self.assertEqual(self.states(5), ['completed_unread'])
+        self.assertIsNone(self.ledger())
+
+    async def test_a_quiet_pass_after_a_proven_delivery_still_passes_the_receipt(self):
+        self.real_wire()
+        event = await self.lean_five()
+        self.model_turn(event, 's1', 't1', first=False)
+        self.assertTrue((await self.adapter.send('a', 'NO_REPLY', metadata={'notify': True})).success)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        passes = [args for _, n, args in self.requests if n == 'finish_room_turn']
+        self.assertEqual([(a['batch_id'], a['output']) for a in passes], [('receipt-5', {'nothing_to_add': True})])
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'passed')
+
+    async def test_an_emptied_session_under_the_same_id_never_reuses_the_stale_ledger(self):
+        event = await self.lean_five()
+        self.real_wire()
+        self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
+        # Hermes reports an EMPTY history although the session id is unchanged, and the recovery cannot be attached
+        self.assertIsNone(self.model_turn(event, 's1', 't1', first=True))
+        self.assertFalse(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        await self.assert_authored_final(event, 5)
+        self.assertEqual(self.store.entry.session_id, 's1', 'the session id never changed')
+        self.thread += [agent(6, 'ok'), human(7, 'next')]
+        nxt = await self.deliver(7, complete=False)
+        self.assertIn('Complete BotSesh collaboration data', nxt.text, 'the packet is full even though the session id still matches')
+        self.assertIn('a-private-reply', nxt.text)
+
+    async def test_a_complete_recovery_in_an_emptied_session_is_recorded_with_what_the_session_holds_now(self):
+        event = await self.lean_five()
+        self.store.held['s1'] = 2
+        context = self.model_turn(event, 's1', 't1', first=True)
+        self.assertIn('a-private-reply', context['context'])
+        self.assertTrue(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        self.adapter._current['a']['delivered'] = True
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.ledger()['messages'], 2)
+        self.assertEqual(self.ledger()['through'], 5)
+        self.thread += [agent(6, 'ok'), human(7, 'next')]
+        self.assertNotIn('Complete BotSesh collaboration data', (await self.deliver(7, complete=False)).text)
+
+    async def test_a_session_emptied_or_rewound_under_the_same_id_is_caught_when_the_next_delivery_is_planned(self):
+        await self.deliver(3)
+        self.assertEqual(self.ledger()['messages'], 4)
+        self.thread += [agent(4, 'yo'), human(5, 'again')]
+        cases = {'emptied': 0, 'rewound below what it held when recorded': 3, 'transcript unreadable': None}
+        for name, held in cases.items():
+            with self.subTest(name):
+                self.adapter._current.pop('a', None)
+                self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+                if held is None:
+                    self.store.load_transcript = Mock(side_effect=RuntimeError('state.db unavailable'))
+                else:
+                    self.store.held['s1'] = held
+                event = await self.deliver(5, complete=False)
+                self.assertIn('Complete BotSesh collaboration data', event.text)
+                self.assertIsNone(self.adapter._current['a']['lean_session'])
+                self.assertIn('Yoo wsp big dawg', event.text)
+                self.assertIn('hi', event.text, 'the whole history rides the full catch-up')
+        with self.subTest('a session that holds at least what it held is still lean'):
+            self.adapter._current.pop('a', None)
+            self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+            self.store.load_transcript = lambda session_id: [{}] * 9
+            self.assertNotIn('Complete BotSesh collaboration data', (await self.deliver(5, complete=False)).text)
+        with self.subTest('a store that cannot read transcripts at all never goes lean'):
+            self.adapter._current.pop('a', None)
+            self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+            self.adapter._session_store = SimpleNamespace(lookup_by_session_key=self.store.lookup_by_session_key, _route_reset_reason=self.store._route_reset_reason)
+            self.assertIn('Complete BotSesh collaboration data', (await self.deliver(5, complete=False)).text)
 
     # --- finding 3: only the owner DM projection changed ------------------------------------------------------------------------
 
@@ -593,6 +878,19 @@ class LeanPieceTests(unittest.TestCase):
         self.assertIsNone(lean_dm.plan({'dm_session': {'session_id': 's1', 'through': -5}}, 's1', thread[2:], {3}, OWNER) and None)
         far = {'dm_session': {'session_id': 's1', 'through': 0}}
         self.assertIsNone(lean_dm.plan(far, 's1', [human(5, 'x')], {5}, OWNER))
+
+    def test_plan_refuses_a_session_that_holds_nothing_or_less_than_when_it_was_recorded(self):
+        thread = [MANIFEST, human(1, 'a'), agent(2, 'b'), human(3, 'c')]
+        binding = {'dm_session': {'session_id': 's1', 'through': 1, 'messages': 6}}
+        ok = {'session_id': 's1', 'missed': []}
+        self.assertEqual(lean_dm.plan(binding, 's1', thread, {3}, OWNER, history=6), ok)
+        self.assertEqual(lean_dm.plan(binding, 's1', thread, {3}, OWNER, history=40), ok)
+        self.assertIsNone(lean_dm.plan(binding, 's1', thread, {3}, OWNER, history=5), 'rewound below what it held')
+        self.assertIsNone(lean_dm.plan(binding, 's1', thread, {3}, OWNER, history=0), 'emptied under the same id')
+        self.assertEqual(lean_dm.plan(binding, 's1', thread, {3}, OWNER), ok, 'no history reading: the caller decides')
+        unrecorded = {'dm_session': {'session_id': 's1', 'through': 1}}
+        self.assertEqual(lean_dm.plan(unrecorded, 's1', thread, {3}, OWNER, history=1), ok)
+        self.assertIsNone(lean_dm.plan(unrecorded, 's1', thread, {3}, OWNER, history=0))
 
     def test_missed_is_bounded_and_skips_controls_and_own(self):
         thread = [MANIFEST] + [human(n, 'm%d' % n) for n in range(2, 20)]

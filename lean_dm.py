@@ -74,12 +74,16 @@ def brief_is_empty(result):
     return True
 
 
-def plan(binding, session_id, messages, pending, human, brief=None):
+def plan(binding, session_id, messages, pending, human, brief=None, history=None):
     """Decide whether the session already holds this DM. Returns {'session_id', 'missed'} or None (send the catch-up).
 
     The ledger (`dm_session`) is written only when a model turn COMPLETED in that Hermes session, so an interrupted or
     failed delivery is simply seen again as a missed message.  Our own earlier replies are never listed: the session
     produced them.
+
+    `history` is how many messages Hermes holds for that session right now. A session emptied, rewound or reset under the
+    SAME id still matches the ledger by id, so the ledger also remembers how many messages the session held when it was
+    recorded: fewer now (or none) means the continuity is stale and only the full catch-up may go out.
 
     The reply of a lean turn still attests the WHOLE frozen read (`processed: true` on the immutable receipt), so a lean
     delivery is only planned when everything in that read is accounted for: already in this session (at or below the
@@ -95,6 +99,8 @@ def plan(binding, session_id, messages, pending, human, brief=None):
         return None
     if ledger.get('brief') != brief:
         return None  # the Brief changed (or was never recorded): only the full catch-up carries it
+    if history is not None and (history <= 0 or (type(ledger.get('messages')) is int and history < ledger['messages'])):
+        return None  # emptied, rewound or reset under the same session id: the ledger describes a session that is gone
     numbers = [m['number'] for m in messages if type(m.get('number')) is int]
     if not numbers or min(numbers) > through + 1:
         return None  # the read window no longer reaches back to what this session last saw

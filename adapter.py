@@ -482,15 +482,85 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         except Exception:
             return None
 
-    def _lean_plan(self, room_id, binding, result, batch_targets, source, human):
+    def _session_history(self, session_id):
+        """How many messages Hermes holds for this session right now (its own transcript read); None when it cannot be told.
+        A blocking read: call it off the event loop. None is treated as unproven, never as 'fine'."""
+        load = getattr(getattr(self, '_session_store', None), 'load_transcript', None)
+        if not session_id or not callable(load):
+            return None
+        try:
+            rows = load(session_id)
+        except Exception:
+            return None
+        return len(rows) if isinstance(rows, (list, tuple)) else None
+
+    def _lean_plan(self, room_id, binding, result, batch_targets, session_id, human, history):
         """0.10.3: None (send the full catch-up) or {'session_id', 'missed'} for a lean owner-DM delivery."""
         from . import lean_dm
         batch = result['batch']
         pending = set(batch_targets)
         rows = [m for m in batch['messages'] if m.get('number') in pending]
-        if not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
-            return None
-        return lean_dm.plan(binding, self._hermes_session_id(source), batch['messages'], pending, human, brief=lean_dm.brief_digest(result))
+        if history is None or not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
+            return None  # an unreadable session transcript cannot prove the session still holds the conversation
+        return lean_dm.plan(binding, session_id, batch['messages'], pending, human, brief=lean_dm.brief_digest(result), history=history)
+
+    @staticmethod
+    def _delivery_proves_read(current):
+        """True when the model of this turn was given everything the immutable receipt's `processed: true` would attest.
+
+        A full delivery put the whole frozen read in front of the model.  A lean one did so only through the session that holds
+        the conversation: the session it was built for ran it and the hook did not find that session fresh, or the hook attached
+        a COMPLETE recovery.  An absent, failed, clipped or unprovable recovery (or a turn whose session is unknown) proves
+        nothing, so the reply must not claim the full batch and the session must not be recorded.  Used for the final, its
+        journal, a quiet pass and the session ledger alike, so they can never disagree."""
+        if not current.get('lean_session'):
+            return True
+        if current.get('lean_recovered') is True:
+            return True
+        return bool(current.get('hermes_session_id') and current['hermes_session_id'] == current['lean_session']
+                    and not current.get('lean_needs_recovery'))
+
+    @staticmethod
+    def _unattested_final(payload):
+        """An authored reply to one input that claims no read of the frozen batch (see `_final_options`)."""
+        return (isinstance(payload, dict) and payload.get('processed') is not True and 'receipt_id' not in payload
+                and payload.get('reply_to') is not None)
+
+    def _final_attests(self, chat_id, current):
+        """Frozen once per turn, like the draft binding: the journaled final and every retry carry the same decision. A final that
+        was journaled before a restart keeps its saved decision."""
+        if 'final_attests' not in current:
+            room = self.client.store.room(chat_id)
+            saved = [r['payload'] for r in [room.get('pending_final') or {}, *room.get('gateway_deliveries', {}).values()]
+                     if (r.get('payload') or {}).get('client_id') == current['client_id']]
+            current['final_attests'] = saved[0].get('processed') is True if saved else self._delivery_proves_read(current)
+        return current['final_attests']
+
+    def _final_options(self, chat_id, current):
+        """The send fields of this turn's final reply (transport payload and journal are built from this one place).
+
+        Normally the original receipt with `processed: true`, exactly as before.  When this turn's delivery does not prove the
+        model received the whole frozen read (`_delivery_proves_read`), the reply is an authored one: it names the input it
+        answers (`reply_to`) and claims nothing about the rest of the batch (no receipt, no `processed`).  The immutable receipt is
+        untouched, the next turn gets a full catch-up, and an over-attestation is never recorded."""
+        extras = self._final_draft_binding(chat_id, current)
+        if self._final_attests(chat_id, current):
+            return {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id'], **extras}
+        return {'reply_to': current['target'], 'client_id': current['client_id'], **{k: v for k, v in extras.items() if k == 'allow_stale'}}
+
+    def _mark_unread_reply(self, room_id, target):
+        """The answer to this input went out as an authored reply that claimed no read: locally complete, no read checkpoint advances
+        (the same terminal state an authored no-read tool post gets)."""
+        def mark(data):
+            room = data['rooms'].get(room_id)
+            if not room:
+                return
+            saved = room.get('processing_receipts', {}).get(str(target))
+            if saved:
+                saved.update(state='completed_unread', replied_at=time.time(), updated_at=time.time())
+            if room.get('pending_final', {}).get('target') == target:
+                room.pop('pending_final', None)
+        self.client.store.update(mark)
 
     def _recovery_frozen(self, room_id, current):
         """The frozen read of exactly this native input, or None unless the event, its receipt and its participant all check
@@ -532,16 +602,32 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     def _remember_dm_session(self, room_id, current):
         """A model turn completed in a Hermes session: that session now holds this DM up to the delivered input.
 
-        A full delivery put the whole read into the session.  A lean one only counts when the session that ran it is the one it
-        was built for and the hook did not find it fresh, or when the hook attached a COMPLETE recovery.  Anything else (a
-        recovery that failed, was clipped, or could not be tied to this event) is not recorded, so the next turn gets the
-        full catch-up instead of building on history this session never received."""
+        A full delivery put the whole read into the session.  A lean one only counts when `_delivery_proves_read` (the session
+        that ran it is the one it was built for and the hook did not find it fresh, or the hook attached a COMPLETE recovery).
+        Anything else (a recovery that failed, was clipped, or could not be tied to this event) is not recorded, so the next turn
+        gets the full catch-up instead of building on history this session never received.
+
+        When the hook found the session fresh (or Hermes ran the turn in another session) and no complete recovery arrived, the
+        ledger entry the lean text was built from is also dropped: under the SAME session id (an emptied or reset session) it
+        would otherwise still match and let the next turn be lean on continuity that is gone.  The ledger also records how many
+        messages the session holds, so a session emptied or rewound later is caught at planning time (`lean_dm.plan`)."""
+        lean = current.get('lean_session')
+        if lean and current.get('lean_recovered') is not True and (current.get('lean_needs_recovery') or (
+                current.get('hermes_session_id') and current['hermes_session_id'] != lean)):
+            def drop(data):
+                room = data['rooms'].get(room_id)
+                if room is not None and (room.get('dm_session') or {}).get('session_id') == lean:
+                    room.pop('dm_session', None)
+            self.client.store.update(drop)
+            return
         session_id, through = current.get('hermes_session_id'), current.get('dm_through')
         if not session_id or type(through) is not int or not current.get('model_processed'):
             return
-        if current.get('lean_session') and not (current.get('lean_recovered') is True
-                                                or (session_id == current['lean_session'] and not current.get('lean_needs_recovery'))):
+        if lean and not self._delivery_proves_read(current):
             return
+        held = self._session_history(session_id)
+        if held is None:
+            return  # cannot tell what the session holds: record nothing, the next turn is the full catch-up
         brief = current.get('dm_brief')
         def save(data):
             room = data['rooms'].get(room_id)
@@ -550,7 +636,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             prior = room.get('dm_session') or {}
             if prior.get('session_id') == session_id and type(prior.get('through')) is int and prior['through'] >= through:
                 return
-            room['dm_session'] = {'session_id': session_id, 'through': through, 'brief': brief}
+            room['dm_session'] = {'session_id': session_id, 'through': through, 'brief': brief, 'messages': held}
         self.client.store.update(save)
 
     async def _check_room(self, room_id):
@@ -582,6 +668,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             result = await self._post_final(room_id, pending['payload'], pending['target'])
             if result.get('read_effect') != 'none':
                 self._mark_handled(room_id, pending['target'])
+            elif self._unattested_final(pending['payload']) and 'number' in result:
+                self._mark_unread_reply(room_id, pending['target'])  # an authored reply: confirmed, but it advanced no read checkpoint
         await self._flush_failures(room_id)
         for saved in list(self.client.store.room(room_id).get('processing_receipts', {}).values()):
             if saved['state'] in ('admitting', 'admitted', 'started') and saved.get('instance') != self._instance:
@@ -741,7 +829,13 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # the control-card projection below; every other DM turn keeps the original full renderer unchanged.
             owner_dm = bool(chat_type == 'dm' and binding.get('transport') == 'oauth' and owner_context and not service_policy
                             and not (saved and saved.get('takeover_offer')) and target not in takeover_targets)
-            lean = self._lean_plan(room_id, binding, result, batch_targets, source, author) if owner_dm else None
+            lean = None
+            if owner_dm:
+                hermes_session = self._hermes_session_id(source)
+                # What Hermes actually holds for that session now: an id that still matches the ledger proves nothing about a
+                # transcript that was emptied or rewound under it (blocking read, off the event loop).
+                history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
+                lean = self._lean_plan(room_id, binding, result, batch_targets, hermes_session, author, history)
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -1365,6 +1459,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                             current['delivered'] = True
                 else:
                     result = await self._post_payload(chat_id, replay['payload'], replay['target'])
+                    if self._unattested_final(replay['payload']) and replay['target'] is not None and 'number' in result:
+                        # A retried authored final (a lean turn whose delivery did not prove the whole frozen read): confirmed, no read effect.
+                        if current and current['target'] == replay['target'] and current['client_id'] == replay['payload']['client_id']:
+                            current['delivered'], current['reply_unattested'] = True, result['number']
+                        else:
+                            pending = self.client.store.room(chat_id).get('pending_final')
+                            if pending and pending['payload'] == replay['payload']:
+                                self._mark_unread_reply(chat_id, replay['target'])
                 return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
             if not (metadata or {}).get('notify'):
                 # Core setup/progress/runtime notices are not authored room
@@ -1427,9 +1529,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 return SendResult(success=False, error=pending_notice(pending), raw_response={'pending': pending})
             options = {}
             # Gateway marks only final notifications. Interim/progress/control output cannot attest.
-            if final and not current['delivered']:
-                options = {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id'],
-                           **self._final_draft_binding(chat_id, current)}
+            first_final = bool(final and not current['delivered'])
+            if first_final:
+                # The original receipt with processed:true, unless this turn's delivery did not prove the whole frozen read
+                # (a lean turn with absent/failed/clipped recovery): then an authored reply that claims no batch read.
+                options = self._final_options(chat_id, current)
             else:
                 options = {'client_id': self.client.logical_id('gateway-notice', {'chat_id': chat_id, 'target': current.get('target') if current else reply_to, 'text': content})}
             if (metadata or {}).get('notify'):
@@ -1438,6 +1542,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             result = await self._post_final(chat_id, payload, current['target']) if final else await self._post_payload(chat_id, payload)
             if final and result.get('read_effect') != 'none':
                 current['delivered'] = True
+            elif first_final and self._unattested_final(payload) and 'number' in result:
+                current['delivered'], current['reply_unattested'] = True, result['number']  # confirmed authored reply, no read effect
             return SendResult(success=True, message_id=str(result['number']) if 'number' in result else None)
         except (BotSeshError, Exception) as e:
             return SendResult(success=False, error=str(e) if isinstance(e, BotSeshError) else 'BotSesh delivery unconfirmed; retry the same saved operation.', raw_response={'pending': e.pending} if isinstance(e, BotSeshError) and e.pending else None)
@@ -1659,9 +1765,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # put raw provider prose in a second, unrelated core replay ledger.
             return await self.send(event.source.chat_id, text_content, reply_to=reply_to, metadata={**metadata, 'notify': True}), self
         if current and current.get('model_processed') is True:
-            payload = {'text': text_content, 'receipt_id': current['receipt_id'], 'processed': True,
-                       'reply_to': current['target'], 'client_id': current['client_id'],
-                       **self._final_draft_binding(event.source.chat_id, current)}
+            payload = {'text': text_content, **self._final_options(event.source.chat_id, current)}
             self._journal_gateway_delivery(event.source.chat_id, payload, current['target'], pending_final=True)
         return await super().send_final_ledgered(event, session_key, text_content, metadata, reply_to=reply_to, is_ephemeral_response=is_ephemeral_response)
 

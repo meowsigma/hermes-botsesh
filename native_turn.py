@@ -137,11 +137,14 @@ class NativeTurnMixin:
         room = self.client.store.room(room_id)
         row = room.get('processing_receipts', {}).get(str(current['target']), {})
         rejected_posts = row.get('explicit_post_calls') and all(call.get('rejected') for call in row['explicit_post_calls'].values())
+        # 0.10.3: a lean owner-DM turn whose delivery did not prove the model received the whole frozen read (absent, failed or
+        # clipped late recovery) must not claim that read: no quiet pass, and its final went out as an authored reply.
+        proven = self._delivery_proves_read(current)
         if rejected_posts and not current.get('delivered') and not row.get('read_attested'):
             self._queue_failure(room_id, current['target'], 'runtime_error')
             await self._flush_failures(room_id)
         elif row.get('explicit_pass') or (current.get('model_processed') and current.get('intentional_silence')
-                                       and not row.get('explicit_post_calls')):
+                                       and not row.get('explicit_post_calls') and proven):
             from .room_pass import pass_frozen
             try:
                 await asyncio.to_thread(pass_frozen, self.client, room_id, current['receipt_id'], True, target=current['target'])
@@ -161,6 +164,13 @@ class NativeTurnMixin:
                     self._mark_handled(room_id, target, state='replied' if row.get('posted_reply') else 'passed')
         elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
+        elif (current.get('reply_unattested') or (current.get('model_processed') and current.get('intentional_silence')
+                                                  and not row.get('explicit_post_calls') and not proven)) and not row.get('read_attested'):
+            # No read checkpoint advances: local completion only (the state an authored no-read post gets). The next turn's
+            # full catch-up carries whatever this one did not receive.
+            await self._delivery(room_id, current['target'], 'completed_unread', batch_id=current['receipt_id'])
+            for target in current.get('batch_targets', [current['target']]):
+                self._mark_unread_reply(room_id, target)
         elif current.get('delivered') or row.get('read_attested') or (current.get('media_sent') and current.get('model_processed')):
             # A confirmed processed:true post/ack is its own explicit read
             # attestation, even if the runtime fails after that useful answer.
