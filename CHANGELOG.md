@@ -1,15 +1,23 @@
 # Changelog
 
-## Unreleased — DM P2: files, photos and voice in the owner DM
+## 0.10.0 — DM files, photos and voice; quiet-by-default DM notifications; one-call wake
 
-Needs the BotSesh server with the DM P2 media routes (`/mcp/files`, branch `qr/dm-media`). Not released; release only after non-author review.
+Minor release on 0.9.1 (`bbec88b`) combining two independently reviewed branches (`qr/dm-attention` `8ffdb62`, `qr/dm-media` `ec546f7`) with one integration fix (`9a36466`). Needs the BotSesh server that advertises `capabilities.attention`/`bundle` and the DM media routes (`/mcp/files`), live on botsesh.com since B81.49. The Hermes catalog track is separate and unchanged.
+
+### Attention levels and the wake bundle
+
+- **Quiet by default.** In an owner DM an explicit `botsesh_post` now carries `attention: progress` (stored, shown in chat, never pushes). `done`, `needs_you` and `choice` push with generic copy; a plain final answer carries no level and notifies as before. Group rooms are unchanged. The field is sent only after the server advertised `capabilities.attention`.
+- **One wake call.** The `hermes_inbox` wake can carry the target catch-up and tool policy (`bundle`), so a plain DM turn starts without the separate catch-up, paged `read_tool_page` and `hermes_tool_policy` lookups (measured 19 → 5 BotSesh calls before the model, 0 lookups). The plugin accepts a bundle only for the target and launch id it asked for and falls back to the plain reads otherwise.
+- **Integration fix (this release).** `botsesh_post` in an owner DM refuses a `MEDIA:` line locally (before any request or journal) with `media_not_in_post`, and the `attention` tool description no longer invites a final answer through the post tool: a post cannot attach files, and a real Hermes run lost its PDF/PNG that way. Attachments go in the final reply.
+
+### DM P2: files, photos and voice in the owner DM
 
 - **In:** the DM person's attachments on the current inputs are downloaded as exact bytes over `GET /mcp/files/<dm>/<file>` (bearer, owner DM only, length + server SHA-256 verified, 10 MiB per file, 25 MiB / 10 files per turn) into Hermes's media cache and passed as `media_urls`/`media_types`. Types come from the bytes, never the name. Images go to vision; a voice note (explicit `voice` flag) is a `MessageType.VOICE` turn transcribed by the owner's own STT; other files are cached documents. The packet lists each file with `room_data` provenance.
 - **Out:** `send_image_file`, `send_document`, `send_video`, `send_voice` and `send_multiple_images` upload exact files with `POST /mcp/files/<dm>` (one message per ≤5 files, one stable UUID per exact intent so retries dedupe). Ogg/Opus voice replies (`[[audio_as_voice]]`, `text_to_speech`) are voice notes. Only an answer's first message is threaded; a media-only answer settles its turn.
 - **Cron/background:** `send_message` and cron deliveries route through the standalone sender (durable text post + files), so a job's text and files land in the owner DM while the gateway runs. Files to any room other than the owner DM are refused.
 - Group rooms are unchanged and text-only. The shared system hint is byte-identical; DM file guidance is added to owner-DM turns only.
 
-Limited verification: focused offline tests (`tests/test_dm_media.py`) and one real scratch Hermes against a local server (photo described, PDF + PNG returned, voice note transcribed on this machine, voice reply, cron PNG + CSV). See the BotSesh evidence `wow/growth-v1/agent-speed/media/RESULT.md`.
+Limited verification: independent source review of both component branches; full `unittest discover` on the integrated source (616 tests; the same two inherited reds as 0.9.1 plus a tempdir-teardown flake that also hits 0.9.1); a real scratch Hermes (free vision model) against the exact B81.49 server candidate, then against botsesh.com as the release test account: plain DM answers with no lookup calls before the model, a `progress` post that stays silent then a `done` post, a photo described, a PDF + PNG returned as exact-byte attachments, a voice note transcribed on this machine and answered; on the media branch alone (not rerun on the merged source) a voice reply and a cron PNG + CSV were also exercised. Limited smoke coverage, not exhaustive certification: no iOS Safari, `send_video` not run on a real Hermes, audible Read aloud unverified. See the BotSesh evidence `wow/growth-v1/agent-speed/RELEASE-RESULT.md` and `media/RESULT.md`.
 
 ## 0.9.1 — "Your agents" room changes reach a running gateway
 
