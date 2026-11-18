@@ -732,8 +732,10 @@ class OAuthClient:
             require_client_id(args['client_id'])
             if not is_number(args.get('target')) or args.get('receipt_id') not in self.store.room(room_id).get('oauth_receipts', {}):
                 raise BotSeshError('receipt_scope')
-            value = self.rpc(binding, 'hermes_tool_policy', {'room_id': room_id, 'number': args['target'],
-                'batch_id': args['receipt_id'], 'launch_id': args['client_id']})
+            value = args.get('prefetched') if isinstance(args.get('prefetched'), dict) else None
+            if value is None:
+                value = self.rpc(binding, 'hermes_tool_policy', {'room_id': room_id, 'number': args['target'],
+                    'batch_id': args['receipt_id'], 'launch_id': args['client_id']})
             return validate_policy(value, binding, args['target'], args['receipt_id'])
         if op == 'working':
             return self.rpc(binding, 'working', {'room_id': room_id, 'status': 'Hermes is working…', **({'mention_number': args['target']} if args.get('target') is not None else {})})
@@ -775,8 +777,32 @@ class OAuthClient:
             if pending:
                 self.call(binding, 'verify')
                 return {'pending': pending, 'hasMore': False, 'mentions': [], 'replies': []}
-            inbox = self.rpc(binding, 'hermes_inbox', {'room_id': room_id})
+            params = {'room_id': room_id}
+            bundle = args.get('bundle')
+            # Optional wake bundle, only once this room's server advertised it (an older server's strict
+            # schema would refuse the field).
+            if isinstance(bundle, dict) and self.store.room(room_id).get('server_caps', {}).get('bundle'):
+                params['bundle'] = {'launch_id': bundle['launch_id'], 'skip': list(bundle.get('skip', []))[:100]}
+            try:
+                inbox = self.rpc(binding, 'hermes_inbox', params)
+            except BotSeshError as error:
+                if 'bundle' not in params or error.terminal or not error.definitive:
+                    raise
+                # A server rolled back past the bundle: forget the capability and ask plainly.
+                self.store.update(lambda d: d['rooms'][room_id].pop('server_caps', None))
+                params = {'room_id': room_id}
+                inbox = self.rpc(binding, 'hermes_inbox', params)
+            caps = inbox.get('capabilities') if isinstance(inbox.get('capabilities'), dict) else None
+            if caps != self.store.room(room_id).get('server_caps'):
+                def remember_caps(data):
+                    room = data['rooms'][room_id]
+                    if caps:
+                        room['server_caps'] = {key: caps[key] for key in ('attention', 'bundle') if caps.get(key)}
+                    else:
+                        room.pop('server_caps', None)
+                self.store.update(remember_caps)
             return {'pending': None, 'hasMore': inbox['has_more'], 'mentions': [target['number'] for target in inbox['targets'] if not target.get('takeover')], 'takeover_targets': [target for target in inbox['targets'] if target.get('takeover')], 'offers': inbox.get('offers', []), 'replies': [], 'backlog': inbox['backlog'],
+                    **({'bundle': inbox['bundle']} if 'bundle' in params and isinstance(inbox.get('bundle'), dict) else {}),
                     # DM queue action (protocol v1 §2): the human asked to hand this queued input
                     # to the running turn. A request only; the DM owner check happens locally.
                     'steer': [target['number'] for target in inbox['targets'] if target.get('steer') is True and is_number(target.get('number'))]}
@@ -799,9 +825,13 @@ class OAuthClient:
             # accept already reserved the canonical takeover fence. Ordinary
             # living_chat would try to reopen the source's completed ambient
             # delivery and is correctly refused by the unchanged server.
-            value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100,
-                **({'target_number': args['target_number'], **({} if takeover is not None else {'turn_mode': 'living_chat'})}
-                   if args.get('target_number') is not None else {})})
+            # Wake bundle: the inbox call already returned this exact target read (same server function,
+            # same admission). Only the adapter's own bundle for this very target is accepted.
+            value = args.get('prefetched') if takeover is None and isinstance(args.get('prefetched'), dict) else None
+            if value is None:
+                value = self.rpc(binding, 'catchup', {'room_id': room_id, 'max_chars': 150000, 'max_pages': 100,
+                    **({'target_number': args['target_number'], **({} if takeover is not None else {'turn_mode': 'living_chat'})}
+                       if args.get('target_number') is not None else {})})
             if value.get('has_more') or value.get('truncated') or value.get('ack_eligible') is not True:
                 raise BotSeshError('context_limit')
             messages = []
@@ -897,7 +927,7 @@ class OAuthClient:
                 # seen_through. Host/cron delivery, runtime notices and direct
                 # Client.enrolled posts send none, so the server keeps its
                 # legacy no-freshness behaviour for them.
-                exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number', 'seen_through', 'allow_stale') if k in args}
+                exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_number', 'seen_through', 'allow_stale', 'attention') if k in args}
                 saved = self.store.room(room_id).get('oauth_posts', {}).get(client_id)
                 if saved and saved['exact'] != exact:
                     raise BotSeshError('pending_send_mismatch')
@@ -909,7 +939,7 @@ class OAuthClient:
                 if not saved:
                     saved = self._journal(room_id, 'oauth_posts', client_id, exact)
                 result = self._journal_rpc(binding, 'oauth_posts', client_id, 'hermes_authored', {'room_id': room_id, 'text': text,
-                    'client_id': client_id, **{k: args[k] for k in ('reply_to', 'seen_number', 'seen_through', 'allow_stale') if args.get(k) is not None}})
+                    'client_id': client_id, **{k: args[k] for k in ('reply_to', 'seen_number', 'seen_through', 'allow_stale', 'attention') if args.get(k) is not None}})
                 message = result.get('message') or {}
                 if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                     raise BotSeshError('send_not_confirmed_retry_same_intent')
@@ -924,7 +954,7 @@ class OAuthClient:
                 # old unresolved entries), not an uncertain transport send.
                 # Keep its bytes/UUID intact.
                 raise BotSeshError('processed_receipt_required', rejected=unsent)
-            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_through', 'allow_stale', 'draft_id') if k in args}
+            exact = {k: args[k] for k in ('text', 'client_id', 'receipt_id', 'processed', 'reply_to', 'seen_through', 'allow_stale', 'draft_id', 'attention') if k in args}
             current = self.store.room(room_id)
             saved = current.get('oauth_posts', {}).get(client_id)
             if saved and saved['exact'] != exact:
@@ -947,7 +977,7 @@ class OAuthClient:
                 **({'reply_to': reply_to} if reply_to is not None else {}),
                 # Optional live-draft binding (protocol v1 §1.2). Present only when this exact
                 # turn's draft was accepted, so an older server never receives the new field.
-                **{k: args[k] for k in ('seen_through', 'allow_stale', 'draft_id') if k in args}})
+                **{k: args[k] for k in ('seen_through', 'allow_stale', 'draft_id', 'attention') if k in args}})
             message = result.get('message') or {}
             if message.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest() or message.get('authorParticipant', {}).get('id') != binding['participant_id']:
                 raise BotSeshError('send_not_confirmed_retry_same_intent')

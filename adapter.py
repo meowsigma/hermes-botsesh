@@ -375,6 +375,20 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 if self.client.store.room(room_id).get('transport') == 'oauth':
                     await asyncio.to_thread(self.client.enrolled, room_id, 'listener', state='stopped')
 
+    def _bundle_request(self, room_id):
+        """Ask the inbox call to carry the next DM turn's target read and tool policy (one round trip instead of a
+        chain of reads and eight-KiB pages).  Only when nothing local could be resumed first, so the server never
+        admits an input this loop would not use."""
+        room = self.client.store.room(room_id)
+        if room.get('room_type') != 'dm' or room.get('transport') != 'oauth' or not (room.get('server_caps') or {}).get('bundle'):
+            return None
+        receipts = room.get('processing_receipts', {})
+        if (room.get('pending_final') or room.get('pending_completion') or room.get('failure_outbox')
+                or any(row.get('state') not in TERMINAL and row.get('state') != 'withdrawn' for row in receipts.values())):
+            return None
+        skip = set(room.get('handled', [])) | {n for rid, n in self._skipped_targets if rid == room_id} | {int(k) for k in receipts if k.isdecimal()}
+        return {'launch_id': str(uuid.uuid4()), 'skip': sorted(skip)[-100:]}
+
     async def _check_room(self, room_id):
         await self._refresh_dm_controls(room_id)
         await self._control_sweep()
@@ -426,7 +440,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         for saved in list(self.client.store.room(room_id).get('processing_receipts', {}).values()):
             if saved.get('takeover_offer'):
                 await asyncio.to_thread(settle_takeover, self.client, room_id, saved['target'])
-        check = await asyncio.to_thread(self.client.enrolled, room_id, 'check')
+        bundle_request = self._bundle_request(room_id)
+        check = await asyncio.to_thread(self.client.enrolled, room_id, 'check', **({'bundle': bundle_request} if bundle_request else {}))
         health(self.client.store, room_id, backlog=check.get('backlog', len(_input_numbers(check))))
         if check.get('pending'):
             return  # Visible local status; no new model final or later read acknowledgment.
@@ -469,11 +484,18 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if target not in takeover_targets and (target in handled or (room_id, target) in self._skipped_targets):
                 continue
             result = saved.get('frozen') if saved else None
+            bundled = False
             if not result:
                 try:
                     offer = saved.get('takeover_offer') if saved else None
                     pickup = await asyncio.to_thread(self.client.enrolled, room_id, 'takeover_pickup', event_id=offer['event_id']) if offer else None
+                    # Wake bundle: the inbox call already carried this very target's read (and tool policy), so a
+                    # normal DM turn starts with zero lookup calls. Any other shape reads the plain way.
+                    wake = check.get('bundle') if bundle_request and not saved and not offer else None
+                    bundled = bool(wake and wake.get('target') == target and wake.get('launch_id') == bundle_request['launch_id']
+                                   and isinstance(wake.get('catchup'), dict))
                     result = await asyncio.to_thread(self.client.enrolled, room_id, 'read', target_number=target,
+                        **({'prefetched': wake['catchup']} if bundled else {}),
                         **({'takeover_event_id': offer['event_id']} if offer else {}))
                     if pickup:
                         result['takeover_offer'] = {'event_id': offer['event_id'], 'task': pickup['task'], 'instructions': 'This is an offered replacement, NOT your claim. Consume the complete supplied context, then call botsesh_takeover_claim(processed=true, reason=your own reason) before work, reply or cant_do. Continue this same native turn only if granted. No tool or outside authority is implied by partial notes.'}
@@ -552,13 +574,19 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # earlier imperative in replayed history rather than the addressed DM.
             text += '\n\nCURRENT BOTSESH INPUTS (exact text; these pending inputs share this frozen turn):\n' + json.dumps([m for m in batch['messages'] if m.get('number') in batch_targets], ensure_ascii=False)
             client_id = service_client_id or (saved.get('client_id') if saved else None)
+            policy_prefetch = None
+            if bundled and not client_id:
+                # The bundled tool policy was derived for this launch id; use it as the turn's id.
+                client_id = bundle_request['launch_id']
+                policy_prefetch = check['bundle'].get('tool_policy')
             client_id = client_id or str(uuid.uuid4())
             policy = None
             if binding.get('transport') == 'oauth':
                 from .tool_policy import validate_policy
                 try:
                     policy = await asyncio.to_thread(self.client.enrolled, room_id, 'tool_policy', target=target,
-                                                    _input_target=target, receipt_id=result['receipt_id'], client_id=client_id)
+                                                    _input_target=target, receipt_id=result['receipt_id'], client_id=client_id,
+                                                    **({'prefetched': policy_prefetch} if policy_prefetch else {}))
                     validate_policy(policy, binding, target, result['receipt_id'], author)
                 except BotSeshError as error:
                     if error.terminal:
