@@ -116,7 +116,8 @@ async def inbound(client, room_id, messages):
                 row['reason'] = 'over this turn\u2019s file limit'
                 continue
             try:
-                data, digest = await asyncio.to_thread(client.enrolled, room_id, 'download_file', file_id=attachment.get('id'))
+                got = await asyncio.to_thread(client.enrolled, room_id, 'download_file', file_id=attachment.get('id'))
+                data, digest = got['data'], got['sha256']
             except BotSeshError as error:
                 if error.terminal:
                     raise

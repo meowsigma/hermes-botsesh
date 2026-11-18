@@ -576,7 +576,7 @@ class OAuthClient:
         data, digest = self._file_http(binding, lambda bearer: get_file(binding['origin'], f"/mcp/files/{binding['room_id']}/{file_id}", bearer=bearer))
         if not re.fullmatch(r'[0-9a-f]{64}', digest or '') or hashlib.sha256(data).hexdigest() != digest:
             raise BotSeshError('file_digest_mismatch')
-        return data, digest
+        return {'data': data, 'sha256': digest}
 
     def upload_files(self, binding, *, client_id, files, text='', reply_to=None, voice=False):
         """Post one DM message with up to five exact files. The UUID is the durable identity:

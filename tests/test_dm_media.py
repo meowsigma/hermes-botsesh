@@ -45,7 +45,7 @@ class Inbound(unittest.IsolatedAsyncioTestCase):
         def enrolled(room_id, op, **args):
             self.assertEqual((room_id, op), ('dm', 'download_file'))
             data = payloads[args['file_id']]
-            return data, hashlib.sha256(data).hexdigest()
+            return {'data': data, 'sha256': hashlib.sha256(data).hexdigest()}
         client.enrolled = Mock(side_effect=enrolled)
         return client
 
@@ -92,6 +92,21 @@ class Inbound(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_attachments_means_no_media(self):
         self.assertIsNone(await media.inbound(Mock(), 'dm', [{'number': 1, 'text': 'hi'}]))
+
+    async def test_real_client_wrapper_carries_download_and_upload_results(self):
+        # Through Client.enrolled (its post-op bookkeeping reads dict results), not a mock of it.
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Client(Store(Path(tmp) / 'store'))
+            client.store.update(lambda d: d['rooms'].update({'dm': {'active': True, 'room_id': 'dm', 'room_type': 'dm', 'transport': 'oauth', 'url': 'https://botsesh.com/b/dm'}}))
+            def call(_self, binding, op, **args):
+                if op == 'download_file':
+                    return {'data': PNG, 'sha256': hashlib.sha256(PNG).hexdigest()}
+                return {'client_id': args['client_id'], 'number': 12, 'attachments': [], 'read_effect': 'none'}
+            with patch('hermes_botsesh_test.oauth.OAuthClient.call', call), patch.object(media, '_cache', side_effect=lambda d, n, m: '/tmp/x.png'):
+                got = await media.inbound(client, 'dm', [{'number': 3, 'attachments': [{'id': '6f1c1a8e-0000-4000-8000-000000000001', 'name': 'a.png', 'size': len(PNG)}]}])
+                sent = media.upload(client, 'dm', [('a.png', PNG)], scope='s')
+        self.assertEqual(got['media_types'], ['image/png'])
+        self.assertEqual(sent['number'], 12)
 
 
 class Outbound(unittest.IsolatedAsyncioTestCase):
