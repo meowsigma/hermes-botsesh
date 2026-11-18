@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -61,6 +62,20 @@ def disk_version():
 def _gateway_runner():
     from .hot_start import _runner
     return _runner()
+
+
+def _gateway_process():
+    """True only inside the process that constructed a GatewayRunner (also while it is starting).
+
+    A child spawned by the gateway (the background `hermes botsesh connect`) inherits
+    `_HERMES_GATEWAY=1` but never builds a runner, so it is not the gateway."""
+    if os.environ.get('_HERMES_GATEWAY') != '1':
+        return False
+    run = sys.modules.get('gateway.run')
+    try:
+        return run is not None and run._gateway_runner_ref() is not None
+    except Exception:
+        return False
 
 
 def _live_adapters(runner):
@@ -104,8 +119,12 @@ def _marker_path():
 
 
 def publish(*, serving=None, **extra):
-    """Gateway only: record which copy serves BotSesh here (pid, version, mixed). Never raises."""
-    if os.environ.get('_HERMES_GATEWAY') != '1':
+    """Gateway only: record which copy serves BotSesh here (pid, version, mixed). Never raises.
+
+    Only the process that actually hosts the running GatewayRunner writes. A child process spawned by
+    the gateway (the background `hermes botsesh connect`) inherits `_HERMES_GATEWAY=1` and loads this
+    plugin too; it must never overwrite the gateway's record with its own pid."""
+    if not _gateway_process():
         return False
     try:
         path = _marker_path()
@@ -243,7 +262,7 @@ def wait_until_current(store=None, timeout=90, nudge=True):
     state = gateway_state(store)
     if state == 'current':
         return True
-    if state == 'old' and nudge and os.environ.get('_HERMES_GATEWAY') != '1':
+    if state == 'old' and nudge and not _gateway_process():
         try:
             from .hot_start import nudge_running_gateway
             nudge_running_gateway()

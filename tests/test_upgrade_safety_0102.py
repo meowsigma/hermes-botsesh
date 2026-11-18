@@ -193,11 +193,19 @@ class UpgradeSafety(unittest.TestCase):
     def test_gateway_marker_and_seat_creation_decision(self):
         marker = self.home / 'plugin-data' / 'botsesh' / 'runtime.json'
         with patch.dict('os.environ', {'_HERMES_GATEWAY': '1'}), patch('os.getpid', return_value=4242), \
+                patch.object(runtime, '_gateway_process', return_value=True), \
                 patch.object(runtime, '_gateway_runner', return_value=self.runner(OldAdapter())):
             self.assertTrue(runtime.publish())
         saved = json.loads(marker.read_text())
         self.assertEqual((saved['pid'], saved['mixed']), (4242, True))
         self.assertEqual(oct(marker.stat().st_mode & 0o777), '0o600')
+        # The background `hermes botsesh connect` the gateway spawns inherits _HERMES_GATEWAY=1 but builds no
+        # GatewayRunner: it must never overwrite the gateway's record with its own pid (seen live in swap1).
+        with patch.dict('os.environ', {'_HERMES_GATEWAY': '1'}), patch('os.getpid', return_value=5151), \
+                patch.dict('sys.modules', {'gateway.run': types.SimpleNamespace(_gateway_runner_ref=lambda: None)}):
+            self.assertFalse(runtime._gateway_process())
+            self.assertFalse(runtime.publish())
+        self.assertEqual(json.loads(marker.read_text())['pid'], 4242)
         with patch.object(runtime, '_gateway_runner', return_value=None):
             with patch.object(runtime, '_running_gateway_pid', return_value=4242):
                 self.assertEqual(runtime.gateway_state(self.store), 'swapping')
