@@ -88,7 +88,8 @@ class NativeTurnMixin:
         if (current.get('model_processed') and value.get('final_response')
                 and not current.get('intentional_silence') and not saved.get('explicit_pass')
                 and not saved.get('explicit_post_calls') and not saved.get('explicit_agreement')
-                and not current.get('delivered') and not current.get('failure_delivered')):
+                and not current.get('delivered') and not current.get('failure_delivered')
+                and not current.get('media_sent')):  # DM P2: a media-only answer (voice/file) was delivered
             if not await self._posted_reply(room_id, current['target'], current['receipt_id']):
                 return
         outcome = row.get('outcome')

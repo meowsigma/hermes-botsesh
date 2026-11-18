@@ -1286,13 +1286,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     async def _send_files(self, chat_id, paths, *, caption=None, voice=False, names=None):
         from .media import read_local, upload, MAX_FILES_PER_MESSAGE
         current = self._current.get(chat_id)
-        reply_to = current['target'] if current else None
         # Inside a turn the identity is that turn's (a retry of the same answer dedupes);
         # outside one (send_message, background) every send is its own new intent.
         scope = current['client_id'] if current else str(uuid.uuid4())
         last = None
         try:
             for start in range(0, len(paths), MAX_FILES_PER_MESSAGE):
+                # Thread only an answer's FIRST message (it settles a media-only answer); files
+                # after a delivered reply are plain follow-ups, like Telegram (no repeated quote).
+                reply_to = current['target'] if current and not current.get('delivered') and not current.get('media_sent') else None
                 files = await asyncio.to_thread(read_local, paths[start:start + MAX_FILES_PER_MESSAGE],
                                                 names[start:start + MAX_FILES_PER_MESSAGE] if names else None)
                 text = (caption or '') if start == 0 else ''
