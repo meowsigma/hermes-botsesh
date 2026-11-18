@@ -52,6 +52,31 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
                         and current.get('target') is not None
                         and re.search(r'"addressed_message_number"\s*:\s*' + re.escape(str(current['target'])) + r'\s*[,}]', user_message)):
                     current['hook_turn'] = (session_id, turn_id)
+                    # 0.10.3: the Hermes session that actually runs this turn (lean DM deliveries are keyed to it).
+                    current['hermes_session_id'] = session_id
+
+def _dm_catchup_context(session_id, turn_id, is_first_turn):
+    """pre_llm_call safety net for a lean DM delivery: if Hermes ended up in a session other than the one the delivery
+    was built for (a reset between the check and the turn, a restored turn, a new session), return the history catch-up
+    as ephemeral context instead of leaving the model without the conversation."""
+    with _HOOK_LOCK:
+        found = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
+                 for room_id, current in list(adapter._current.items())
+                 if current.get('hook_turn') == (session_id, turn_id) and current.get('lean_session')
+                 and not current.get('lean_catchup_sent') and not current.get('hook_terminal')]
+    for adapter, room_id, current in found:
+        if is_first_turn is not True and session_id == current['lean_session']:
+            continue
+        try:
+            context = adapter._dm_catchup_text(room_id, current)
+        except Exception as error:  # never break the turn: the lean message alone is still answerable
+            logger.warning('BotSesh DM catch-up not attached (%s).', getattr(error, 'code', None) or type(error).__name__)
+            continue
+        if context:
+            with _HOOK_LOCK:
+                current['lean_catchup_sent'] = True
+            return {'context': context}
+    return None
 
 def started_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """Direct producer ingress skips base processing/typing hooks.
@@ -63,6 +88,7 @@ def started_turn(*, user_message='', platform='', session_id=None, turn_id=None,
     processed_turn(user_message=user_message, platform=platform, session_id=session_id, turn_id=turn_id)
     if platform != 'botsesh' or not session_id or not turn_id:
         return
+    context = _dm_catchup_context(session_id, turn_id, kwargs.get('is_first_turn'))
     with _HOOK_LOCK:
         turns = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
                  for room_id, current in list(adapter._current.items())
@@ -95,6 +121,7 @@ def started_turn(*, user_message='', platform='', session_id=None, turn_id=None,
                     and not latest.get('explicit_failure') and not latest.get('explicit_pass')):
                 current['start_reported'] = True
                 receipt(adapter.client.store, room_id, current['target'], state='started', started_at=started / 1000)
+    return context
 
 
 def ended_turn(*, platform='', session_id=None, turn_id=None, completed=False, failed=True, interrupted=True, **kwargs):
@@ -399,6 +426,54 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         skip = set(room.get('handled', [])) | {n for rid, n in self._skipped_targets if rid == room_id} | {int(k) for k in receipts if k.isdecimal()}
         return {'launch_id': str(uuid.uuid4()), 'skip': sorted(skip)[-100:]}
 
+    def _hermes_session_id(self, source):
+        """The Hermes session this DM routes to right now; None when the core cannot tell or the next turn starts fresh."""
+        store = getattr(self, '_session_store', None)
+        lookup = getattr(store, 'lookup_by_session_key', None)
+        if not callable(lookup):
+            return None
+        try:
+            entry = lookup(self._source_session_key(source))
+            if entry is None or getattr(entry, 'suspended', False):
+                return None  # not created yet, or suspended by /stop: the next turn is a fresh session
+            reason = getattr(store, '_route_reset_reason', None)
+            if callable(reason) and reason(entry):
+                return None
+            return getattr(entry, 'session_id', None) or None
+        except Exception:
+            return None
+
+    def _lean_plan(self, room_id, binding, batch, batch_targets, source, human):
+        """0.10.3: None (send the full catch-up) or {'session_id', 'missed'} for a lean owner-DM delivery."""
+        from . import lean_dm
+        pending = set(batch_targets)
+        rows = [m for m in batch['messages'] if m.get('number') in pending]
+        if not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
+            return None
+        return lean_dm.plan(binding, self._hermes_session_id(source), batch['messages'], pending, human)
+
+    def _dm_catchup_text(self, room_id, current):
+        """Compact history for the pre_llm_call safety net, from the frozen read (the receipt keeps every message)."""
+        from . import lean_dm
+        row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
+        frozen = row.get('frozen') or {}
+        return lean_dm.catchup_text((frozen.get('batch') or {}).get('messages') or [], set(current.get('batch_targets') or [current['target']]))
+
+    def _remember_dm_session(self, room_id, current):
+        """A model turn completed in a Hermes session: that session now holds this DM up to the delivered input."""
+        session_id, through = current.get('hermes_session_id'), current.get('dm_through')
+        if not session_id or type(through) is not int or not current.get('model_processed'):
+            return
+        def save(data):
+            room = data['rooms'].get(room_id)
+            if room is None or room.get('room_type') != 'dm' or room.get('transport') != 'oauth':
+                return
+            prior = room.get('dm_session') or {}
+            if prior.get('session_id') == session_id and type(prior.get('through')) is int and prior['through'] >= through:
+                return
+            room['dm_session'] = {'session_id': session_id, 'through': through}
+        self.client.store.update(save)
+
     async def _check_room(self, room_id):
         await self._refresh_dm_controls(room_id)
         await self._control_sweep()
@@ -580,6 +655,13 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             owner_context = owner_turn_context(self.client, binding, getattr(self, '_dm_contexts', {}).get(room_id), message)
             if owner_context:
                 text += '\n\n' + owner_context
+            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
+            # 0.10.3: a verified owner DM whose Hermes session already holds the conversation gets only the new
+            # input(s) (see lean_dm.py); everything else keeps the full catch-up and its safety framing.
+            lean = None
+            if (chat_type == 'dm' and binding.get('transport') == 'oauth' and owner_context and not service_policy
+                    and not (saved and saved.get('takeover_offer')) and target not in takeover_targets):
+                lean = self._lean_plan(room_id, binding, batch, batch_targets, source, author)
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -631,7 +713,28 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 dm=chat_type == 'dm')
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id)
             from .receipt_handles import project
-            text = json.dumps({**packet, **project(self.client, room_id, result, str(target))}, ensure_ascii=False) + text
+            if lean is not None:
+                from .tool_policy import host_tools_allowed
+                from . import lean_dm
+                handle = project(self.client, room_id, result, str(target))['receipt_id']
+                # Host tools allowed for the verified owner: the header says all that is needed. A tools-off owner turn keeps
+                # the full runtime-policy statement.
+                runtime_policy = None if host_tools_allowed(policy, self._guest_tools_override) else turn_context(
+                    policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=True)
+                text = lean_dm.render(room_id=room_id, label=handle, target=target, batch_targets=batch_targets,
+                                      name=participant.get('name'), inputs=[m for m in batch['messages'] if m.get('number') in batch_targets],
+                                      missed=lean['missed'], recent_room='\n'.join(owner_context.split('\n')[1:]) or None,
+                                      media=media, runtime_policy=runtime_policy)
+            else:
+                view = result
+                if chat_type == 'dm' and binding.get('transport') == 'oauth':
+                    from . import lean_dm
+                    # The slash-command manifest card alone is ~21 KB, twice: UI plumbing, never conversation.
+                    view, omitted = lean_dm.without_controls(result, keep=batch_targets)
+                    if omitted:
+                        packet['dm_control_cards_omitted'] = omitted
+                        packet['your_earlier_message_numbers'] = [m['number'] for m in view['batch']['messages'] if m.get('isOwn')]
+                text = json.dumps({**packet, **project(self.client, room_id, view, str(target))}, ensure_ascii=False) + text
             # Refuse rather than silently truncate any supplied context.
             if len(text) > 160000:
                 self._queue_failure(room_id, target, 'context_limit')
@@ -639,6 +742,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 continue
             receipt(self.client.store, room_id, target, text=text)
             receipt(self.client.store, room_id, target, tool_policy=policy)
+            dm_through = max([m['number'] for m in batch['messages'] if type(m.get('number')) is int] or [target]) if chat_type == 'dm' else None
+            if dm_through is not None:
+                receipt(self.client.store, room_id, target, dm_through=dm_through, lean_session=lean['session_id'] if lean else None)
             if media:
                 receipt(self.client.store, room_id, target, media={k: media[k] for k in ('media_urls', 'media_types', 'message_type')})
             from .owner_operator import pin_operator_binding
@@ -647,9 +753,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # number for native tool scope/reply anchors, but not ingress identity.
             event_id = 'takeover:' + saved['takeover_offer']['event_id'] if saved and saved.get('takeover_offer') else str(target)
             receipt(self.client.store, room_id, target, event_id=event_id)
-            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy}
+            self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
+                                      'dm_through': dm_through, 'lean_session': lean['session_id'] if lean else None}
             self.live.begin_turn(room_id, target)
-            source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.
             event = MessageEvent(text=text, source=source, message_id=event_id, user_id=author, message_type=MessageType[media['message_type']] if media else MessageType.TEXT, raw_message=message, allow_gateway_control=False, reply_expected=bool(service_policy) or chat_type == 'dm' or bool(saved and saved.get('takeover_offer')), auto_skill='botsesh:botsesh',

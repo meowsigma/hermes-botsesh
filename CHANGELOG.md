@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.3 — lean owner-DM turns (UNPUBLISHED branch `qr/plugin-0.10.3`; not tagged)
+
+Patch on 0.10.2 (`8636473`). An owner-DM turn used to deliver the room's whole catch-up JSON on every message and Hermes saved each of those blobs into the DM session, so every later turn replayed all earlier ones. A single "Yoo wsp big dawg" in a DM with 10 earlier messages arrived as ~72 000 characters (about 18 000 tokens) against a few tokens on Telegram.
+
+- **Only the new message when the session already has the conversation.** In a verified owner DM whose Hermes session already holds the conversation, the delivered text is a one-line binding header, one sentence ("plain text reply is posted; no botsesh_read/post/pass for a normal message") and the new message(s). Owner messages the session never saw are listed compactly above them.
+- **Catch-up only when needed.** A fresh session, `/new`, `/resume`, a suspended session, a gap the read window cannot cover, a second speaker, or any non-owner/guest/group/scheduled/takeover turn still gets the full catch-up and its safety framing. If Hermes turns out to have started a fresh session after the delivery was built, a `pre_llm_call` hook adds a compact (under 9 000 characters) catch-up to that turn.
+- **No slash-command manifest in model context.** The full DM catch-up (fresh/reset session) omits DM control cards (the command manifest alone was ~21 KB, twice). The frozen receipt, read attestation, tool policy and every exact-input check are unchanged.
+- **DM skill note.** The bundled skill now says an owner DM message is answered in plain text, without reading or posting through room tools first.
+
 ## 0.10.2 — updates apply in place, no Hermes restart
 
 Patch release on 0.10.1 (`eac0941`). Updating the plugin under a running gateway now switches only the BotSesh channel to the new code; Hermes, Telegram and other platforms stay connected. It also fixes the false "Tools are off for guests" refusals an in-place 0.10.0 → 0.10.1 update caused, and keeps raw failure JSON out of chat. No server change is required.

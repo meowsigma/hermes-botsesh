@@ -5,6 +5,7 @@ runtime must refuse admission, not guess that a successful callback ran a model.
 """
 from __future__ import annotations
 import asyncio
+import contextlib
 import logging
 from dataclasses import asdict
 
@@ -181,6 +182,8 @@ class NativeTurnMixin:
             await self._flush_failures(room_id)
         from .task_failure import settle_takeover
         await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
+        with contextlib.suppress(Exception):  # 0.10.3: bookkeeping for lean DM deliveries must never break settlement
+            await asyncio.to_thread(self._remember_dm_session, room_id, current)
         if self._current.get(room_id) is current:
             self._current.pop(room_id)
         # The durable final/failure is settled: end the owner-only live view, publish status.
@@ -218,5 +221,6 @@ class NativeTurnMixin:
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
         current['batch_targets'] = row.get('batch_targets', [row['target']])
         current['event_id'] = row.get('event_id', str(row['target']))
-        current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'))
+        current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'),
+                       dm_through=row.get('dm_through'), lean_session=row.get('lean_session'))
         self._current[room_id] = current
