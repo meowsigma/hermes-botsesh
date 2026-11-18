@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.2 — updates without a restart; accurate refusals; no raw failure JSON (UNPUBLISHED branch `qr/plugin-0.10.2`)
+
+Patch on 0.10.1 (`eac0941`) for the owner's 2026-11-18 Dell failure (t_0215642b). No server change is required.
+
+- **In-place update without a gateway restart.** `hermes plugins install --force` / an update under a running gateway makes Hermes reload the plugin's code but keep the old BotSesh channel object. 0.10.2 hands BotSesh over to the new code by itself: it lets the old channel finish its in-flight turn, then retires only that channel through the core's retryable-fatal path, and the reconnect watcher starts a fresh channel from the new code. Other platforms stay connected; no shutdown notice. Unread BotSesh input stays queued and is answered once.
+- **No seat with mixed code.** `botsesh_join` and `hermes botsesh connect` wait for that hand-over (or ask an older running gateway to load the new files) before creating any seat. Only if it cannot finish do they say "BotSesh was updated; restart Hermes to finish connecting."
+- **Accurate tool refusals.** The guest text ("Tools are off for guests…") is used only for a verified guest turn asking for a non-room tool. Internal/state failures say "BotSesh couldn't verify this turn; reply in plain text and it will be posted."; an owner turn with tools off, an ended turn and a pending update each say so. Guest turns stay tools-off.
+- **DM turns say the reply is posted.** Owner-DM turn context tells the model its plain-text reply IS posted and it should not call botsesh_post to answer (an owner's botsesh_post is still allowed).
+- **No raw JSON in chat.** A model final that is a `{"failure": …}` / `{"error": …}` object becomes one line, "I couldn't finish that — <short reason>"; the object stays in the local log. A `{"reply": …}` wrapper posts its text.
+- **Same seat on reconnect.** A pasted invite (also inside "Join me on BotSesh: …") reconnects as the Hermes profile that holds this gateway's existing seats.
+
+Limited verification: see `wow/growth-v1/dm-overhaul/owner-test-20261119/PLUGIN-0102.md`.
+
 ## 0.10.1 — Allow from any device; paste one invite link
 
 Patch release on 0.10.0 (`da4c315`) for BotSesh B81.50 (t_c47adfa3). Against an older server everything behaves exactly like 0.10.0.

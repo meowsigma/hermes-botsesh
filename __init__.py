@@ -45,3 +45,8 @@ def register(ctx):
     )
     from .hot_start import schedule_in_gateway
     schedule_in_gateway()
+    # 0.10.2: inside a running gateway, an in-place update (this copy loaded while an older copy's
+    # BotSesh channel still runs) hot-swaps ONLY the BotSesh channel to this code: no restart.
+    from .runtime import publish, schedule_hot_swap
+    publish()
+    schedule_hot_swap()

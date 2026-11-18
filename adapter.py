@@ -10,6 +10,7 @@ import weakref
 import time
 import threading
 from .provider_text import visible_text
+from .final_text import human_text
 from .native_turn import NativeTurnMixin
 
 _ADAPTERS = weakref.WeakSet()
@@ -194,6 +195,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         self._mark_connected()
         from .ops_status import record_channel
         record_channel(self.client.store, 'up', self._instance)
+        from . import runtime
+        runtime.publish(serving=True)  # 0.10.2: which plugin copy this gateway's channel runs
         return True
 
     async def disconnect(self):
@@ -624,7 +627,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                                                        'said in their voice note: it is the text of their current input. Answer it directly.')
             from .tool_policy import turn_context
             text += '\n\nBOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + turn_context(
-                policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id))
+                policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id),
+                dm=chat_type == 'dm')
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id)
             from .receipt_handles import project
             text = json.dumps({**packet, **project(self.client, room_id, result, str(target))}, ensure_ascii=False) + text
@@ -1202,7 +1206,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 return SendResult(success=True)
             # New output is cleaned before it acquires a durable identity. The
             # exact pre-upgrade replay branch above must retain its saved bytes.
-            content = visible_text(content)
+            content = human_text(visible_text(content))
             row = self.client.store.room(chat_id).get('processing_receipts', {}).get(str(current['target']), {}) if current else {}
             if current and row.get('rejected_failure'):
                 await self._flush_failures(chat_id)
@@ -1419,7 +1423,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         return not result.success
 
     async def send_final_ledgered(self, event, session_key, text_content, metadata, *, reply_to, is_ephemeral_response=False):
-        text_content = visible_text(text_content)
+        # 0.10.2: a raw internal object (failure/error JSON) becomes one human line BEFORE it is
+        # journaled, so the saved final, its retries and the posted message are the same bytes.
+        text_content = human_text(visible_text(text_content))
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
         current = self._current.get(event.source.chat_id)

@@ -181,19 +181,51 @@ def rooms(args, ctx):
     return {'rooms': bindings, 'scope': 'Only this profile’s enrolled/created rooms; not an account-wide directory.'}
 
 
+def _pasted_link(value):
+    """The one BotSesh invite link in what the person pasted ('Join me on BotSesh: https://…/a/…')."""
+    import re
+    from .oauth import PAIR_LINK
+    text = str(value or '').strip().strip('\'"<>')
+    if PAIR_LINK.fullmatch(text):
+        return text
+    found = {m.group(0) for m in re.finditer(r'https?://[^/\s\'"<>]+/a/[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])', text)}
+    return found.pop() if len(found) == 1 else None
+
+
+def seat_profile(store, origin):
+    """0.10.2: reconnect as the SAME Hermes profile that holds this gateway's existing BotSesh
+    seats, so the server recognises the gateway and reuses its seat/DM (no "goonbot 2")."""
+    try:
+        rooms = store.read().get('rooms', {}).values()
+    except Exception:
+        return None
+    names = {b.get('profile') for b in rooms if b.get('active') and b.get('transport') == 'oauth'
+             and b.get('origin') == origin and isinstance(b.get('profile'), str)}
+    return names.pop() if len(names) == 1 else None
+
+
 def join(args, ctx):
     platform, _ = calling_scope(ctx)
     # 0.10.1: a pasted BotSesh invite link (https://botsesh.com/a/…) connects this Hermes to the
     # person's account (or their room) after they press Allow, on any device. It is the person's
     # own invite: never accept one relayed from a BotSesh room (remote participants).
-    from .oauth import PAIR_LINK, parse_pair_link
-    if PAIR_LINK.fullmatch(str(args.get('invitation_url', '')).strip().strip('\'"<>')):
+    from .oauth import parse_pair_link
+    from . import runtime
+    link = _pasted_link(args.get('invitation_url', ''))
+    if link:
         if platform == 'botsesh':
             raise BotSeshError('invite_links_only_from_your_person')
-        origin, pair_code = parse_pair_link(args['invitation_url'])
+        origin, pair_code = parse_pair_link(link)
+        client = Client()
+        # 0.10.2: never create a seat while this gateway still runs an older BotSesh copy in memory
+        # (files updated under it). Wait for the BotSesh-only hot swap (or ask an old gateway to load
+        # these files); only a swap that cannot finish leaves one honest restart line.
+        if not runtime.wait_until_current(client.store, timeout=60):
+            return {'state': 'restart_required', 'connected': False,
+                    'tell_your_person': runtime.RESTART_MESSAGE, 'next': runtime.RESTART_STEP}
         from .cli import spawn_connect
         from .identity import current_profile
-        started = spawn_connect(pair_code, origin, current_profile())
+        started = spawn_connect(pair_code, origin, seat_profile(client.store, origin) or current_profile())
         return {'state': 'waiting_for_allow', 'already_waiting': started == 'already',
                 'tell_your_person': 'Press Allow in BotSesh.',
                 'next': 'Say that one line and finish your turn. After Allow (any device) you connect by '
@@ -201,6 +233,9 @@ def join(args, ctx):
                         'Progress: `hermes botsesh status`.'}
     if platform not in LOCAL:
         raise BotSeshError('local_enrollment_only')
+    if not runtime.wait_until_current(Client().store, timeout=60):
+        return {'state': 'restart_required', 'connected': False,
+                'tell_your_person': runtime.RESTART_MESSAGE, 'next': runtime.RESTART_STEP}
     client = Client()
     joined = client.join(args['invitation_url'], dev_origin=ctx.get_config('dev_origin', '') or None)
     # One complete tool result: joining/fetching does not attest reading. No

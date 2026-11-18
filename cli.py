@@ -262,6 +262,15 @@ def _handle_profile(args, profile):
                 if origin != 'https://botsesh.com' and origin != link_origin:
                     raise BotSeshError('pair_link_origin_mismatch')
                 origin, args.pair = link_origin, link_code
+            from . import runtime
+            if runtime.gateway_state(client.store) != 'current':
+                print('BotSesh was updated under the running Hermes; switching its BotSesh channel to the new code (no restart)...')
+            if not runtime.wait_until_current(client.store, timeout=90):
+                # 0.10.2 fallback only: the running gateway still serves an older/mixed BotSesh copy
+                # and could not hand over. A seat created now would be run by that code.
+                print(runtime.RESTART_MESSAGE)
+                print('Nothing was connected. After the restart, run this same command again (or paste the invite to Hermes again).')
+                raise SystemExit(3)
             if getattr(args, 'background', False):
                 return connect_background(args, profile)
             timeout = args.timeout
