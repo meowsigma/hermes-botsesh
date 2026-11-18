@@ -23,13 +23,16 @@ def setup(parser):
     connect = sub.add_parser('connect', help='Approve room access in the browser where you use BotSesh')
     connect.add_argument('--no-browser', action='store_true', help='Kept for compatibility: BotSesh never opens a browser; it prints the link')
     connect.add_argument('--pair', help='Pair code from the BotSesh room you copied this command in: approve with the card in that room')
+    connect.add_argument('--pair-link', help='Invite link your person pasted (https://botsesh.com/a/...): they press Allow on any device')
+    connect.add_argument('--background', action='store_true', help='Return at once; finish connecting in the background (log: HERMES_HOME/logs/botsesh-connect.log)')
     connect.add_argument('--paste-redirect', action='store_true', help='Phone fallback: paste the redirect URL in a hidden terminal prompt; type url to re-print')
     connect.add_argument('--set-home', action='store_true', help='Set home_channel to this newly connected, verified room')
     connect.add_argument('--no-start', action='store_true', help='Connect without ensuring a local gateway runtime')
     connect.add_argument('--room', help='Exact primary room ID, which must be approved by the signed-in host; use --room=ROOM_ID (IDs may start with -)')
     connect.add_argument('--name', help='Addressable agent name (defaults to the selected profile name)')
     connect.add_argument('--profile', help='Hermes profile for this seat; saved after connection')
-    connect.add_argument('--timeout', type=int, default=300, choices=range(15, 601), metavar='SECONDS')
+    connect.add_argument('--timeout', type=int, default=None, choices=range(15, 601), metavar='SECONDS',
+                         help='Seconds to wait for Allow (default 300; 600 with an invite)')
     connect.add_argument('--dev-origin', default='https://botsesh.com', help=argparse.SUPPRESS)
     status = sub.add_parser('status', help='Check access, live gateway/channel, home_channel, replies and backlog')
     status.add_argument('--json', action='store_true', help='Content-free room health for monitoring')
@@ -123,10 +126,10 @@ def connect_in_profile(args, profile, home):
     if not binary:
         raise BotSeshError('hermes_cli_unavailable')
     argv = [binary, '-p', profile, 'botsesh', 'connect']
-    for flag in ('no_browser', 'paste_redirect', 'set_home', 'no_start'):
+    for flag in ('no_browser', 'paste_redirect', 'set_home', 'no_start', 'background'):
         if getattr(args, flag, False):
             argv.append('--' + flag.replace('_', '-'))
-    for field in ('room', 'name', 'timeout', 'dev_origin', 'pair'):
+    for field in ('room', 'name', 'timeout', 'dev_origin', 'pair', 'pair_link'):
         value = getattr(args, field, None)
         if value is not None:
             argv.append('--' + field.replace('_', '-') + '=' + str(value))
@@ -162,6 +165,56 @@ def handle(args):
         raise SystemExit(f'BotSesh: {error.code}.') from None
 
 
+def connect_background(args, profile):
+    """0.10.1: an agent pasting an invite runs this from its own chat. Return at once; a detached
+    child does the normal connect (waits for Allow on any device, then starts the channel).
+    One waiter per invite: a repeated call while it waits only says so."""
+    import hashlib
+    import os
+    import sys
+    from hermes_cli.config import get_hermes_home
+    if not args.pair:
+        raise BotSeshError('background_needs_an_invite')
+    binary = shutil.which('hermes')
+    if not binary:
+        raise BotSeshError('hermes_cli_unavailable')
+    logs = os.path.join(str(get_hermes_home()), 'logs')
+    os.makedirs(logs, mode=0o700, exist_ok=True)
+    tag = hashlib.sha256(args.pair.encode()).hexdigest()[:16]
+    pidfile = os.path.join(logs, f'botsesh-connect-{tag}.pid')
+    try:
+        with open(pidfile) as handle:
+            pid = int(handle.read().strip())
+        os.kill(pid, 0)
+        print('Already waiting for Allow in BotSesh for this invite. Nothing else to do.')
+        return
+    except (OSError, ValueError):
+        pass
+    argv = [binary, '-p', profile, 'botsesh', 'connect', '--pair=' + args.pair]
+    if args.dev_origin != 'https://botsesh.com' or getattr(args, 'pair_link', None):
+        from .oauth import parse_pair_link
+        argv.append('--dev-origin=' + (parse_pair_link(args.pair_link)[0] if getattr(args, 'pair_link', None) else args.dev_origin))
+    for field in ('room', 'name', 'timeout'):
+        value = getattr(args, field, None)
+        if value is not None:
+            argv.append('--' + field + '=' + str(value))
+    for flag in ('set_home', 'no_start'):
+        if getattr(args, flag, False):
+            argv.append('--' + flag.replace('_', '-'))
+    log_path = os.path.join(logs, 'botsesh-connect.log')
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT,
+                                 start_new_session=True, close_fds=True)
+    finally:
+        os.close(fd)
+    with open(os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as handle:
+        handle.write(str(child.pid))
+    print('Waiting for Allow in BotSesh. Tell your person: "Press Allow in BotSesh" (any device works).')
+    print('It finishes by itself and your DM opens. Check: hermes botsesh status')
+    sys.stdout.flush()
+
+
 def _handle_profile(args, profile):
     from hermes_cli.auth_constants import AuthError
     try:
@@ -177,8 +230,20 @@ def _handle_profile(args, profile):
             import re
             if getattr(args, 'pair', None) is not None and not re.fullmatch(r'bsp_[A-Za-z0-9_-]{43}', args.pair):
                 raise BotSeshError('invalid_pair_code')
+            origin = args.dev_origin
+            if getattr(args, 'pair_link', None):
+                from .oauth import parse_pair_link
+                link_origin, link_code = parse_pair_link(args.pair_link)
+                if args.pair and args.pair != link_code:
+                    raise BotSeshError('pair_link_and_pair_differ')
+                if origin != 'https://botsesh.com' and origin != link_origin:
+                    raise BotSeshError('pair_link_origin_mismatch')
+                origin, args.pair = link_origin, link_code
+            if getattr(args, 'background', False):
+                return connect_background(args, profile)
+            timeout = args.timeout or (600 if args.pair else 300)
             from .identity import configured_name, save_identity_config
-            binding = oauth.connect(origin=args.dev_origin, open_browser=not args.no_browser, timeout=args.timeout,
+            binding = oauth.connect(origin=origin, open_browser=not args.no_browser, timeout=timeout,
                                     room_hint=args.room, name=configured_name(profile, args.name), profile=profile,
                                     preserve_name=args.name is None,
                                     **({'paste_redirect': True} if getattr(args, 'paste_redirect', False) else {}),

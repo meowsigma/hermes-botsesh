@@ -48,6 +48,20 @@ The fresh check is a preflight, not an atomic cross-room transaction: a remote
 revocation after preflight cannot retroactively cancel an independently committed
 guest creation. Target membership/manager checks remain authoritative at mutation.
 
+## Remote-safe Allow (0.10.1)
+
+An invite-started connect (`--pair`, `--pair-link`) keeps the normal S256 PKCE flow
+with a loopback `redirect_uri`, and additionally lets BotSesh hold the one-use code
+for this exact attempt (challenge + state) so Allow works from any device. The
+plugin polls with the invite code + its OAuth `state` and exchanges the code with
+its PKCE verifier, which never leaves this process; a leaked invite or code alone
+cannot obtain a token. The loopback callback is still served; whichever arrives
+first is used once. A different attempt on the same waiting invite ends it for
+both (contest). On timeout or Ctrl+C the plugin cancels its waiting handoff. The
+`--background` waiter runs the same command detached, logs to
+`HERMES_HOME/logs/botsesh-connect.log` (0600) and never prints codes or tokens.
+Server-side review: BotSesh `docs/SECURITY-REMOTE-CONNECT.md`.
+
 ## Unchanged limits
 
 Account-mode creation through a separately consented MCP connector and

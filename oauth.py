@@ -146,20 +146,115 @@ def _native_loopback_helpers():
     return {name: function for name, (function, _, _) in calls.items()}
 
 
-def _room_handoff(origin, room_id, pair_code, authorize_url, name):
-    """0.8.2: hand the authorize URL to the person's own BotSesh room (in-room card) instead of
-    opening any browser here. True only when BotSesh confirms the card; never raises."""
+PAIR_LINK = re.compile(r'(https?://[^/\s]+)/a/([A-Za-z0-9_-]{43})/?')
+
+
+def parse_pair_link(value):
+    """0.10.1: a pasted invite link https://botsesh.com/a/<code> -> (origin, pair code).
+
+    Only BotSesh's own origin (or explicit 127.0.0.1 development) is accepted."""
+    match = PAIR_LINK.fullmatch(str(value or '').strip().strip('\'"<>'))
+    if not match:
+        raise BotSeshError('invalid_pair_link')
+    return checked_origin(match.group(1)), 'bsp_' + match.group(2)
+
+
+def _pair_post(origin, path, body, *, timeout=15):
+    """Public pair-code endpoints: JSON in/out, never a bearer, never logged."""
     import httpx
     try:
-        with httpx.Client(timeout=15, follow_redirects=False, trust_env=False) as client:
-            response = client.post(origin + '/api/agent/hermes-handoff', json={
-                'pairCode': pair_code, 'roomId': room_id, 'authorizeUrl': authorize_url,
-                'displayName': (name or 'Hermes')[:40]},
-                headers={'Accept': 'application/json', 'X-Board-Request': '1',
-                         'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
-        return response.status_code == 201
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            response = client.post(origin + path, json=body, headers={
+                'Accept': 'application/json', 'X-Board-Request': '1',
+                'User-Agent': 'BotSesh-Hermes-Plugin (+https://botsesh.com)'})
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        return response.status_code, data if isinstance(data, dict) else {}
     except httpx.HTTPError:
-        return False
+        return 0, {}
+
+
+def resolve_pair(origin, pair_code):
+    """Which invite is this? A room invite names its public room; an Agents-page invite has none."""
+    status, data = _pair_post(origin, '/api/agent/pair-links/resolve', {'pairCode': pair_code})
+    if status == 200 and data.get('kind') == 'account':
+        return None
+    if status == 200 and data.get('kind') == 'room' and re.fullmatch(r'[A-Za-z0-9_-]{32}', str(data.get('roomId', ''))):
+        return data['roomId']
+    if status == 410:
+        raise BotSeshError('invite_ended_ask_for_a_new_invite')
+    if status == 404:
+        raise BotSeshError('botsesh_server_too_old_for_invite_links')
+    raise BotSeshError('invite_check_failed_try_again')
+
+
+def _room_handoff(origin, room_id, pair_code, authorize_url, name):
+    """Hand the authorize URL to the person's own BotSesh room card or Agents page instead of
+    opening any browser here. 0.10.1 asks for the remote-safe relay. Never raises."""
+    body = {'pairCode': pair_code, 'authorizeUrl': authorize_url, 'displayName': (name or 'Hermes')[:40], 'relay': True}
+    if room_id:
+        body['roomId'] = room_id
+    status, data = _pair_post(origin, '/api/agent/hermes-handoff', body)
+    if status == 400 and room_id:
+        # A BotSesh server older than the relay refuses the new field: keep its loopback card.
+        body.pop('relay')
+        status, data = _pair_post(origin, '/api/agent/hermes-handoff', body)
+    return {'carded': status == 201, 'relay': status == 201 and data.get('relay') is True,
+            'agents_page': status == 201 and data.get('onAgentsPage') is True,
+            'contested': status == 409, 'ended': status == 410}
+
+
+def _relay_wait(origin, pair_code, state, box, stop):
+    """Long-poll BotSesh for the code the person approved in ANY browser. The code alone is
+    useless: /oauth/token still needs this process's PKCE verifier and loopback redirect URI."""
+    while not stop.is_set():
+        status, data = _pair_post(origin, '/api/agent/hermes-handoff/poll',
+                                  {'pairCode': pair_code, 'state': state}, timeout=40)
+        if stop.is_set():
+            return
+        value = data.get('status') if status == 200 else None
+        if value == 'approved' and isinstance(data.get('code'), str) and re.fullmatch(r'[A-Za-z0-9_-]{20,200}', data['code']):
+            box['code'] = data['code']
+            return
+        if value == 'denied':
+            box['error'] = 'denied'
+            return
+        if value in ('ended', 'exchanged') or status in (404, 410):
+            box['error'] = 'ended'
+            return
+        if value != 'waiting':
+            stop.wait(10 if status == 429 else 3)
+
+
+def _wait_callback_or_relay(server, result, *, origin, pair_code, state, timeout, err):
+    """Whichever arrives first wins: the loopback callback (approval on this machine) or the
+    relayed code (approval on any other device). Both carry the same one-use code."""
+    import threading
+    serving = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True)
+    serving.start()
+    box, stop = {}, threading.Event()
+    poller = threading.Thread(target=_relay_wait, args=(origin, pair_code, state, box, stop), daemon=True)
+    poller.start()
+    deadline = time.monotonic() + max(5.0, timeout)
+    try:
+        while time.monotonic() < deadline:
+            if result['code'] or result['error']:
+                return dict(result), 'loopback'
+            if box.get('code'):
+                return {'code': box['code'], 'state': state, 'error': None}, 'relay'
+            if box.get('error') == 'denied':
+                return {'code': None, 'state': state, 'error': 'access_denied'}, 'relay'
+            if box.get('error') == 'ended':
+                raise err('the connection request ended before approval.', 'oauth_callback_timeout')
+            time.sleep(0.1)
+        raise err('Authorization timed out waiting for Allow.', 'oauth_callback_timeout')
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        serving.join(timeout=1.0)
 
 
 def login(*, origin='https://botsesh.com', open_browser=False, timeout=300, room_hint=None,
@@ -203,29 +298,50 @@ def login(*, origin='https://botsesh.com', open_browser=False, timeout=300, room
         authorize_url = cfg.authorize_url + '?' + urlencode(params)
         # As in native login, show the authorize URL for manual authorization.
         # Never print the received callback query, error prose, verifier or tokens.
-        carded = bool(pair_code and room_hint and _room_handoff(origin, room_hint, pair_code, authorize_url, name))
-        if carded:
-            print('\nA "Let Hermes in?" card is waiting in your BotSesh room. Press Allow there,'
-                  ' in the browser where you use BotSesh.\n')
+        handoff = (_room_handoff(origin, room_hint, pair_code, authorize_url, name) if pair_code
+                   else {'carded': False, 'relay': False, 'agents_page': False, 'contested': False, 'ended': False})
+        if pair_code and handoff['contested']:
+            raise err('another agent used this invite, so BotSesh ended it. Ask your person for a new invite.', 'invite_contested')
+        if pair_code and handoff['ended']:
+            raise err('this invite ended. Ask your person for a new invite.', 'invite_ended')
+        carded, relayed = handoff['carded'], handoff['relay']
+        if carded and handoff['agents_page']:
+            print('\nWaiting for Allow in BotSesh (Agents page). Your person can approve on any device.\n')
+        elif carded:
+            print('\nA "Let Hermes in?" card is waiting in your BotSesh room. Press Allow there'
+                  + (', on any device.\n' if relayed else ', in the browser where you use BotSesh.\n'))
         else:
             print(f'\nOpen this link in the browser where you use BotSesh (the one with your room open;'
                   f' a guest room can only be approved there):\n  {authorize_url}\n')
-        print(f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
+        print(f'Waiting for Allow (timeout {int(timeout)}s, Ctrl+C to cancel)...' if relayed else
+              f'Waiting for callback on {redirect_uri} (timeout {int(timeout)}s, Ctrl+C to cancel)...')
         if not paste_redirect and not carded:
             print('Phone cannot reach loopback? Re-run with --no-browser --paste-redirect for hidden URL paste and URL re-print.')
         if not carded:
             helpers['hint'](redirect_uri)
         from .oauth_callback import paste_callback, timeout_diagnostic
+        finished = False
         try:
-            callback = (paste_callback(redirect_uri=redirect_uri, authorize_url=authorize_url,
-                                       expected_state=state, timeout=timeout, err=err)
-                        if paste_redirect else
-                        helpers['serve'](server, result, timeout_seconds=timeout, err=err,
-                                         timeout_code='oauth_callback_timeout'))
+            if relayed and not paste_redirect:
+                callback, _source = _wait_callback_or_relay(server, result, origin=origin, pair_code=pair_code,
+                                                            state=state, timeout=timeout, err=err)
+            else:
+                callback = (paste_callback(redirect_uri=redirect_uri, authorize_url=authorize_url,
+                                           expected_state=state, timeout=timeout, err=err)
+                            if paste_redirect else
+                            helpers['serve'](server, result, timeout_seconds=timeout, err=err,
+                                             timeout_code='oauth_callback_timeout'))
+            finished = True
         except Exception as failure:
-            if getattr(failure, 'code', None) == 'oauth_callback_timeout':
+            if getattr(failure, 'code', None) == 'oauth_callback_timeout' and not relayed:
                 timeout_diagnostic(handler.observations)
+            elif getattr(failure, 'code', None) == 'oauth_callback_timeout':
+                print("Didn't finish: no Allow arrived in time. Run the same connect again, or ask your person for a new invite.")
             raise
+        finally:
+            if relayed and not finished:
+                # Free the invite so the same command can run again.
+                _pair_post(origin, '/api/agent/hermes-handoff/cancel', {'pairCode': pair_code, 'state': state})
         if callback.get('error'):
             # Do not reflect untrusted callback error prose into CLI logs.
             raise err('authorization failed.', 'oauth_authorization_denied')
@@ -345,6 +461,11 @@ class OAuthClient:
         from .identity import current_profile, gateway_install_id
         profile = profile or current_profile()
         name = preferred_name(name)  # Refuse invalid names before creating a grant.
+        # 0.10.1: a pasted invite names its room (room invite) or none (Agents page: account + DM).
+        account_invite = False
+        if pair_code and not room_hint:
+            room_hint = resolve_pair(origin, pair_code)
+            account_invite = room_hint is None
         if room_hint and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', room_hint):
             raise BotSeshError('invalid_room_hint')
         candidates = [b for b in self.store.read()['rooms'].values() if b.get('active') and b.get('transport') == 'oauth'
@@ -372,6 +493,10 @@ class OAuthClient:
                 if room_hint not in identities:
                     raise BotSeshError('requested_room_not_authorized')
                 room_id = room_hint
+            elif account_invite and len([r for r in rooms if r.get('room_type') == 'dm']) == 1:
+                # Agents page invite: the account connection's home is its owner DM, even when
+                # the same gateway's existing rooms were kept by the reconnect.
+                room_id = next(r['room_id'] for r in rooms if r.get('room_type') == 'dm')
             else:
                 # The account picker includes an owner DM alongside selected
                 # shared rooms. It is not a second shared-room choice.
