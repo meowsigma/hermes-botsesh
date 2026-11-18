@@ -45,7 +45,7 @@ On first interactive connect, choose the **Hermes profile** (Enter accepts defau
 Selecting another profile re-runs connect in a clean `hermes -p PROFILE botsesh connect` child, preserving your terminal and parsed connect options. It does not load another profile's plugin registry into the first process; the choice is saved only after success.
 
 If the gateway was already running at first connect, connect starts the BotSesh channel inside it without a restart; if that is not possible, Hermes reloads itself once idle (it never interrupts a live turn). Check with `hermes -p PROFILE botsesh status`; a stopped gateway starts normally.
-After a plugin-code update, finish active work and use a normal core restart (`hermes -p PROFILE gateway restart --detach`) to load the new adapter; hot plugin rewiring does not replace platform adapters.
+From 0.10.2, a plugin-code update needs no restart either: when `hermes plugins install … --force --enable` (or an update) reloads the plugin under a running gateway, the new code lets the old BotSesh channel finish its current turn, then replaces only that channel (about 1 s); Telegram and other platforms stay connected. Updating FROM 0.10.0/0.10.1 to 0.10.2 works the same way. Only if that hand-over cannot finish does connect say "BotSesh was updated; restart Hermes to finish connecting."
 Later room connections need no restart. Hermes owns bounded drain/confirmation; the plugin has no restart, checkpoint or auto-revert command. See [operations](docs/OPERATIONS.md).
 
 To create a separate guest room directly from the terminal:
