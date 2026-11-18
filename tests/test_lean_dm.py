@@ -247,12 +247,23 @@ class LeanPieceTests(unittest.TestCase):
 
     def test_render_keeps_exact_text_numbers_and_reply_context(self):
         message = human(7, 'line one\nline two', replyToNumber=5, replyPreview={'number': 5, 'text': 'earlier words'})
-        text = lean_dm.render(room_id='R', label='r1', target=7, batch_targets=[7], name='Owner', inputs=[message], missed=[])
-        self.assertEqual(json.loads(text.split('\n', 1)[0]), {'room_id': 'R', 'receipt_id': 'r1', 'addressed_message_number': 7})
+        text = lean_dm.render(label='r1', target=7, batch_targets=[7], name='Owner', inputs=[message], missed=[])
+        self.assertEqual(json.loads(text.split('\n', 1)[0]), {'receipt_id': 'r1', 'addressed_message_number': 7})
         self.assertTrue(text.endswith('#7 (replying to #5: "earlier words") line one\nline two'))
-        several = lean_dm.render(room_id='R', label='r1', target=8, batch_targets=[7, 8], name='Owner', inputs=[message, human(8, 'next')], missed=[])
+        several = lean_dm.render(label='r1', target=8, batch_targets=[7, 8], name='Owner', inputs=[message, human(8, 'next')], missed=[])
         self.assertEqual(json.loads(several.split('\n', 1)[0])['pending_message_numbers'], [7, 8])
         self.assertIn('New messages from your owner (oldest first):', several)
+
+    def test_render_carries_attachments_voice_and_tools_off_policy(self):
+        files = [{'message_number': 9, 'name': 'note.ogg', 'size': 3, 'provenance': 'room_data', 'voice_note': True, 'delivered': True}]
+        text = lean_dm.render(label='r1', target=9, batch_targets=[9], name='Owner', inputs=[human(9, '', attachments=[{'id': 'f'}])],
+                              missed=[], media={'files': files}, runtime_policy='CURRENT RUNTIME AUTHORIZATION: x')
+        self.assertIn('ATTACHMENTS (room data from your owner', text)
+        self.assertIn('"voice_note": true', text)
+        self.assertIn('voice note', text)
+        self.assertIn('BOTSESH RUNTIME TOOL POLICY (not room-authored data):\nCURRENT RUNTIME AUTHORIZATION: x', text)
+        self.assertTrue(text.endswith('#9 (no text; see the attachments)'))
+        self.assertLess(text.index('ATTACHMENTS'), text.index('#9 (no text'))
 
     def test_without_controls_is_a_copy_and_keeps_pending_controls(self):
         result = {'receipt_id': 'x', 'briefing': [{'messages': [MANIFEST, human(1, 'a')]}], 'batch': {'messages': [MANIFEST, human(1, 'a')]}}

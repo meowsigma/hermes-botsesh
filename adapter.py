@@ -721,7 +721,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 # the full runtime-policy statement.
                 runtime_policy = None if host_tools_allowed(policy, self._guest_tools_override) else turn_context(
                     policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=True)
-                text = lean_dm.render(room_id=room_id, label=handle, target=target, batch_targets=batch_targets,
+                text = lean_dm.render(label=handle, target=target, batch_targets=batch_targets,
                                       name=participant.get('name'), inputs=[m for m in batch['messages'] if m.get('number') in batch_targets],
                                       missed=lean['missed'], recent_room='\n'.join(owner_context.split('\n')[1:]) or None,
                                       media=media, runtime_policy=runtime_policy)
