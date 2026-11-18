@@ -222,5 +222,5 @@ class NativeTurnMixin:
         current['batch_targets'] = row.get('batch_targets', [row['target']])
         current['event_id'] = row.get('event_id', str(row['target']))
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'),
-                       dm_through=row.get('dm_through'), lean_session=row.get('lean_session'))
+                       dm_through=row.get('dm_through'), dm_brief=row.get('dm_brief'), lean_session=row.get('lean_session'))
         self._current[room_id] = current

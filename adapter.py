@@ -37,13 +37,31 @@ def _input_numbers(check):
     # OAuth's authoritative inbox. These are candidate inputs, not permissions.
     return set(check.get('mentions', []) + check.get('replies', []) + check.get('inputs', []))
 
+def _native_turn_identity():
+    """(chat_id, message_id) the Hermes gateway bound to THIS running turn, or None when it did not (outside a gateway turn).
+
+    These are the gateway's own session variables for the native event (the same ones the native tools trust), not anything
+    parsed out of model-visible text.  A lean DM delivery carries no room id, so it cannot be told apart by its text."""
+    try:
+        from gateway.session_context import get_session_env
+        if get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh':
+            return None
+        chat_id, message_id = get_session_env('HERMES_SESSION_CHAT_ID', ''), get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+    except Exception:
+        return None
+    return (chat_id, message_id) if chat_id and message_id else None
+
+
 def processed_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """A candidate output is not yet proof that the turn completed successfully."""
     if platform != 'botsesh':
         return
+    identity = _native_turn_identity()
     with _HOOK_LOCK:
         for adapter in list(_ADAPTERS):
-            for current in list(adapter._current.values()):
+            for room_id, current in list(adapter._current.items()):
+                if identity and current.get('lean_session') and identity != (room_id, str(current.get('target'))):
+                    continue  # 0.10.3: identical lean texts in two rooms: bind only the event the gateway says this turn runs
                 # Core may prefix sender context. Bind to both frozen receipt
                 # and addressed target, not byte equality with its prompt wrapper.
                 if (isinstance(user_message, str) and current.get('receipt_id')
@@ -55,28 +73,49 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
                     # 0.10.3: the Hermes session that actually runs this turn (lean DM deliveries are keyed to it).
                     current['hermes_session_id'] = session_id
 
-def _dm_catchup_context(session_id, turn_id, is_first_turn):
+def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
     """pre_llm_call safety net for a lean DM delivery: if Hermes ended up in a session other than the one the delivery
     was built for (a reset between the check and the turn, a restored turn, a new session), return the history catch-up
-    as ephemeral context instead of leaving the model without the conversation."""
+    as ephemeral context instead of leaving the model without the conversation.
+
+    The history is private room content, so it is attached only for the ONE native event this very Hermes turn runs, taken
+    from the gateway's session variables (room and input) and re-proved against that input's receipt, participant and owner
+    pin before any frozen content is read.  Matching by turn text is not identity: no match, an ambiguous match or any failed
+    check attaches nothing.  Whether the session may later be recorded as holding the DM is decided at completion
+    (`_remember_dm_session`): only a complete recovery counts, anything else sends the full catch-up on the next turn."""
+    identity = _native_turn_identity()
+    if identity is None:
+        return None
+    chat_id, message_id = identity
     with _HOOK_LOCK:
-        found = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
-                 for room_id, current in list(adapter._current.items())
-                 if current.get('hook_turn') == (session_id, turn_id) and current.get('lean_session')
-                 and not current.get('lean_catchup_sent') and not current.get('hook_terminal')]
-    for adapter, room_id, current in found:
+        found = [(adapter, current) for adapter in list(_ADAPTERS)
+                 for current in [adapter._current.get(chat_id)]
+                 if current is not None and str(current.get('target')) == message_id]
+        if len(found) != 1:
+            return None  # no event, or two adapters claim this very input: ambiguous, so nothing is disclosed
+        adapter, current = found[0]
+        if (not current.get('lean_session') or current.get('hook_terminal') or current.get('lean_catchup_sent')
+                or current.get('event_id') != message_id
+                or not isinstance(user_message, str) or not current.get('text') or current['text'] not in user_message):
+            return None
         if is_first_turn is not True and session_id == current['lean_session']:
-            continue
-        try:
-            context = adapter._dm_catchup_text(room_id, current)
-        except Exception as error:  # never break the turn: the lean message alone is still answerable
-            logger.warning('BotSesh DM catch-up not attached (%s).', getattr(error, 'code', None) or type(error).__name__)
-            continue
-        if context:
-            with _HOOK_LOCK:
-                current['lean_catchup_sent'] = True
-            return {'context': context}
-    return None
+            return None  # the session the delivery was built for runs it: nothing to recover
+        current['lean_needs_recovery'] = True  # from here on this session is not recorded unless a COMPLETE recovery is attached
+    try:
+        frozen = adapter._recovery_frozen(chat_id, current)
+        if frozen is None:
+            logger.warning('BotSesh DM catch-up not attached (event, receipt or participant did not check out).')
+            return None
+        context, complete = adapter._dm_catchup_text(frozen, current)
+    except Exception as error:  # never break the turn: the lean message alone is still answerable
+        logger.warning('BotSesh DM catch-up not attached (%s).', getattr(error, 'code', None) or type(error).__name__)
+        return None
+    if not context:
+        return None
+    with _HOOK_LOCK:
+        current['lean_catchup_sent'] = True
+        current['lean_recovered'] = complete
+    return {'context': context}
 
 def started_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """Direct producer ingress skips base processing/typing hooks.
@@ -88,7 +127,7 @@ def started_turn(*, user_message='', platform='', session_id=None, turn_id=None,
     processed_turn(user_message=user_message, platform=platform, session_id=session_id, turn_id=turn_id)
     if platform != 'botsesh' or not session_id or not turn_id:
         return
-    context = _dm_catchup_context(session_id, turn_id, kwargs.get('is_first_turn'))
+    context = _dm_catchup_context(session_id, turn_id, kwargs.get('is_first_turn'), user_message)
     with _HOOK_LOCK:
         turns = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
                  for room_id, current in list(adapter._current.items())
@@ -443,27 +482,67 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         except Exception:
             return None
 
-    def _lean_plan(self, room_id, binding, batch, batch_targets, source, human):
+    def _lean_plan(self, room_id, binding, result, batch_targets, source, human):
         """0.10.3: None (send the full catch-up) or {'session_id', 'missed'} for a lean owner-DM delivery."""
         from . import lean_dm
+        batch = result['batch']
         pending = set(batch_targets)
         rows = [m for m in batch['messages'] if m.get('number') in pending]
         if not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
             return None
-        return lean_dm.plan(binding, self._hermes_session_id(source), batch['messages'], pending, human)
+        return lean_dm.plan(binding, self._hermes_session_id(source), batch['messages'], pending, human, brief=lean_dm.brief_digest(result))
 
-    def _dm_catchup_text(self, room_id, current):
-        """Compact history for the pre_llm_call safety net, from the frozen read (the receipt keeps every message)."""
-        from . import lean_dm
-        row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
+    def _recovery_frozen(self, room_id, current):
+        """The frozen read of exactly this native input, or None unless the event, its receipt and its participant all check
+        out.  Nothing private is returned until every check has passed:
+
+        - the room is an active OAuth DM and the current event is that room's one open row for this input (`bound`);
+        - the row's frozen receipt is the event's receipt, belongs to this room's participant and has not expired;
+        - the owner pin taken when the event was admitted still matches the binding's identity (participant, grant, origin);
+        - the input itself is in the frozen read, is not ours, and was sent by that pinned owner;
+        - every part of the frozen read names this room (a part naming another room rejects the whole read)."""
+        import time as _time
+        from .receipt_handles import OPEN, bound
+        from .owner_operator import IDENTITY_KEYS
+        binding = self.client.store.room(room_id)
+        target, rid = current.get('target'), current.get('receipt_id')
+        row = binding.get('processing_receipts', {}).get(str(target), {})
         frozen = row.get('frozen') or {}
-        return lean_dm.catchup_text((frozen.get('batch') or {}).get('messages') or [], set(current.get('batch_targets') or [current['target']]))
+        pin = current.get('operator_binding') or {}
+        receipt = binding.get('oauth_receipts', {}).get(rid) or {}
+        message = next((m for m in (frozen.get('batch') or {}).get('messages') or [] if m.get('number') == target), None)
+        if not (binding.get('active') is True and binding.get('transport') == 'oauth' and binding.get('room_type') == 'dm'
+                and binding.get('participant_id') and rid and bound(binding, target, rid)
+                and row.get('state') in OPEN and not row.get('explicit_failure') and not row.get('explicit_pass')
+                and frozen.get('receipt_id') == rid
+                and receipt.get('participant_id') == binding['participant_id'] and receipt.get('expires', 0) > _time.time()
+                and pin.get('human_id') and all(pin.get(key) and binding.get(key) == pin.get(key) for key in IDENTITY_KEYS)
+                and message is not None and message.get('isOwn') is False and message.get('senderParticipantId') == pin['human_id']
+                and all(part.get('room_id') in (None, room_id) for part in frozen.get('briefing') or [] if isinstance(part, dict))):
+            return None
+        return frozen
+
+    def _dm_catchup_text(self, frozen, current):
+        """(text, complete): compact history for the pre_llm_call safety net, from the already verified frozen read (the
+        receipt keeps every message).  A Brief that a text-only recovery would have to carry makes it incomplete."""
+        from . import lean_dm
+        text, complete = lean_dm.catchup((frozen.get('batch') or {}).get('messages') or [], set(current.get('batch_targets') or [current['target']]))
+        return text, complete and lean_dm.brief_is_empty(frozen)
 
     def _remember_dm_session(self, room_id, current):
-        """A model turn completed in a Hermes session: that session now holds this DM up to the delivered input."""
+        """A model turn completed in a Hermes session: that session now holds this DM up to the delivered input.
+
+        A full delivery put the whole read into the session.  A lean one only counts when the session that ran it is the one it
+        was built for and the hook did not find it fresh, or when the hook attached a COMPLETE recovery.  Anything else (a
+        recovery that failed, was clipped, or could not be tied to this event) is not recorded, so the next turn gets the
+        full catch-up instead of building on history this session never received."""
         session_id, through = current.get('hermes_session_id'), current.get('dm_through')
         if not session_id or type(through) is not int or not current.get('model_processed'):
             return
+        if current.get('lean_session') and not (current.get('lean_recovered') is True
+                                                or (session_id == current['lean_session'] and not current.get('lean_needs_recovery'))):
+            return
+        brief = current.get('dm_brief')
         def save(data):
             room = data['rooms'].get(room_id)
             if room is None or room.get('room_type') != 'dm' or room.get('transport') != 'oauth':
@@ -471,7 +550,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             prior = room.get('dm_session') or {}
             if prior.get('session_id') == session_id and type(prior.get('through')) is int and prior['through'] >= through:
                 return
-            room['dm_session'] = {'session_id': session_id, 'through': through}
+            room['dm_session'] = {'session_id': session_id, 'through': through, 'brief': brief}
         self.client.store.update(save)
 
     async def _check_room(self, room_id):
@@ -658,10 +737,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             source = self.build_source(chat_id=room_id, chat_name=binding.get('name', room_id), chat_type=chat_type, user_id=author, user_name=participant.get('name') or 'Room participant', message_id=str(target))
             # 0.10.3: a verified owner DM whose Hermes session already holds the conversation gets only the new
             # input(s) (see lean_dm.py); everything else keeps the full catch-up and its safety framing.
-            lean = None
-            if (chat_type == 'dm' and binding.get('transport') == 'oauth' and owner_context and not service_policy
-                    and not (saved and saved.get('takeover_offer')) and target not in takeover_targets):
-                lean = self._lean_plan(room_id, binding, batch, batch_targets, source, author)
+            # The same gate (a server-verified owner DM, not a service/check-in or takeover turn) decides both the lean text and
+            # the control-card projection below; every other DM turn keeps the original full renderer unchanged.
+            owner_dm = bool(chat_type == 'dm' and binding.get('transport') == 'oauth' and owner_context and not service_policy
+                            and not (saved and saved.get('takeover_offer')) and target not in takeover_targets)
+            lean = self._lean_plan(room_id, binding, result, batch_targets, source, author) if owner_dm else None
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -727,7 +807,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                                       media=media, runtime_policy=runtime_policy)
             else:
                 view = result
-                if chat_type == 'dm' and binding.get('transport') == 'oauth':
+                if owner_dm:
                     from . import lean_dm
                     # The slash-command manifest card alone is ~21 KB, twice: UI plumbing, never conversation.
                     view, omitted = lean_dm.without_controls(result, keep=batch_targets)
@@ -746,7 +826,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # replies, control cards, or listed as missed); anything newer is not claimed.
             dm_through = max(batch_targets) if chat_type == 'dm' and batch_targets else None
             if dm_through is not None:
-                receipt(self.client.store, room_id, target, dm_through=dm_through, lean_session=lean['session_id'] if lean else None)
+                from . import lean_dm
+                dm_brief = lean_dm.brief_digest(result)
+                receipt(self.client.store, room_id, target, dm_through=dm_through, dm_brief=dm_brief, lean_session=lean['session_id'] if lean else None)
+            else:
+                dm_brief = None
             if media:
                 receipt(self.client.store, room_id, target, media={k: media[k] for k in ('media_urls', 'media_types', 'message_type')})
             from .owner_operator import pin_operator_binding
@@ -756,7 +840,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             event_id = 'takeover:' + saved['takeover_offer']['event_id'] if saved and saved.get('takeover_offer') else str(target)
             receipt(self.client.store, room_id, target, event_id=event_id)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
-                                      'dm_through': dm_through, 'lean_session': lean['session_id'] if lean else None}
+                                      'dm_through': dm_through, 'dm_brief': dm_brief, 'lean_session': lean['session_id'] if lean else None}
             self.live.begin_turn(room_id, target)
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.
