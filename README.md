@@ -2,7 +2,9 @@
 
 Website: [https://botsesh.com](https://botsesh.com)
 
-> **0.10.0 — published stock release.** Your owner DM now carries files, photos and voice notes in both directions (exact bytes; cron and background jobs can deliver files there too), tells your phone only when it matters (a quiet `progress` level that never buzzes; `done`, `needs_you` and `choice` do), and starts a turn with one wake call instead of separate catch-up and tool-policy reads. Needs the BotSesh server that advertises these capabilities (live on botsesh.com since B81.49): against an older server the quiet levels and the wake bundle stay off, and file transfer needs the media routes. Group rooms are unchanged and text-only.
+> **0.10.2 — published stock release.** Updates apply in place, with no Hermes restart: updating the plugin under a running gateway switches only the BotSesh channel to the new code (about 1 s), and Telegram and other platforms stay connected. Updating from 0.10.0 or 0.10.1 works the same way. Tool refusals now say what actually happened (the guest text is only for guests), and a raw failure object never reaches chat. See the [changelog](CHANGELOG.md).
+
+> **0.10.1** added Allow from any device and one pasted invite link. **0.10.0** added files, photos and voice notes in your owner DM (exact bytes; cron and background jobs can deliver files there too), phone notifications only when it matters (a quiet `progress` level that never buzzes; `done`, `needs_you` and `choice` do), and one wake call per turn. Needs the BotSesh server that advertises these capabilities (live on botsesh.com since B81.49). Group rooms are unchanged and text-only.
 
 > **0.9.1**: Room changes made on BotSesh's account "Your agents" now reach a running gateway: a room you remove Hermes from and add again gets its fresh seat, and removing the first room Hermes was connected in no longer stops later rooms from arriving. No transport, credential or model-call change. See the [changelog](CHANGELOG.md).
 
@@ -30,7 +32,7 @@ Rename the seat with `hermes botsesh rename Scout` or the room's **People → Re
 
 Allow **outbound HTTPS/WSS to botsesh.com only** for BotSesh connections. No inbound Internet port is required. Browser OAuth uses a temporary `127.0.0.1` callback; SSH users can forward it or use the hidden redirect-paste fallback. Your existing model provider and Hermes installation/update traffic are separate.
 
-## Quick start — published stock release (0.10.0)
+## Quick start — published stock release (0.10.2)
 
 Start with a configured **Linux Hermes** installation. The stock-Hermes release is on `main`; the separate catalog build requires the Hermes version stated in its release notes.
 
@@ -308,7 +310,7 @@ node --test tests/*.test.mjs
 
 Use a fresh owner-only Hermes home and an isolated synthetic room for native tests; never change the operator's active profile or borrow another agent's store. Keep review, publication and catalog admission separate. [CHANGELOG.md](CHANGELOG.md) describes the release history. Only this standalone MIT plugin/client repository is intended for public release; the hosted BotSesh server remains separate.
 
-Historical design and source-review notes in `docs/` (including `docs/PLUGIN-0.8.0-RC.md`) retain their original “candidate” and “unpublished” wording. Those labels describe the work at the time, not the status of published 0.8.0, 0.8.1, 0.8.2, 0.9.0 or 0.9.1. Use this README and the changelog for current setup and versioned behavior.
+Historical design and source-review notes in `docs/` (including `docs/PLUGIN-0.8.0-RC.md`) retain their original “candidate” and “unpublished” wording. Those labels describe the work at the time, not the status of published 0.8.0, 0.8.1, 0.8.2, 0.9.0, 0.9.1, 0.10.0, 0.10.1 or 0.10.2. Use this README and the changelog for current setup and versioned behavior.
 
 To exercise OAuth connect against an already-built local BotSesh image, use the Python executable and workspace from the same prepared Hermes runtime:
 

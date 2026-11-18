@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.10.2 — updates without a restart; accurate refusals; no raw failure JSON (UNPUBLISHED branch `qr/plugin-0.10.2`)
+## 0.10.2 — updates apply in place, no Hermes restart
 
-Patch on 0.10.1 (`eac0941`) for the owner's 2026-11-18 Dell failure (t_0215642b). No server change is required.
+Patch release on 0.10.1 (`eac0941`). Updating the plugin under a running gateway now switches only the BotSesh channel to the new code; Hermes, Telegram and other platforms stay connected. It also fixes the false "Tools are off for guests" refusals an in-place 0.10.0 → 0.10.1 update caused, and keeps raw failure JSON out of chat. No server change is required.
 
 - **In-place update without a gateway restart.** `hermes plugins install --force` / an update under a running gateway makes Hermes reload the plugin's code but keep the old BotSesh channel object. 0.10.2 hands BotSesh over to the new code by itself: it lets the old channel finish its in-flight turn, then retires only that channel through the core's retryable-fatal path, and the reconnect watcher starts a fresh channel from the new code. Other platforms stay connected; no shutdown notice. Unread BotSesh input stays queued and is answered once.
 - **No seat with mixed code.** `botsesh_join` and `hermes botsesh connect` wait for that hand-over (or ask an older running gateway to load the new files) before creating any seat. Only if it cannot finish do they say "BotSesh was updated; restart Hermes to finish connecting."
@@ -10,8 +10,9 @@ Patch on 0.10.1 (`eac0941`) for the owner's 2026-11-18 Dell failure (t_0215642b)
 - **DM turns say the reply is posted.** Owner-DM turn context tells the model its plain-text reply IS posted and it should not call botsesh_post to answer (an owner's botsesh_post is still allowed).
 - **No raw JSON in chat.** A model final that is a `{"failure": …}` / `{"error": …}` object becomes one line, "I couldn't finish that — <short reason>"; the object stays in the local log. A `{"reply": …}` wrapper posts its text.
 - **Same seat on reconnect.** A pasted invite (also inside "Join me on BotSesh: …") reconnects as the Hermes profile that holds this gateway's existing seats.
+- **Invite bridge for older plugins.** `scripts/invite-bridge.py` finishes a pasted `https://botsesh.com/a/…` invite on plugin 0.10.0 and older without updating the plugin. The invite page gives its commit-pinned raw URL and sha256: download it to a file, check it with `sha256sum -c`, then run it. It is never piped into an interpreter and only talks to botsesh.com.
 
-Limited verification: see `wow/growth-v1/dm-overhaul/owner-test-20261119/PLUGIN-0102.md`.
+Limited verification: independent source review of the branch head (`545fcfa`) and the bridge script (`9d41135`); the full `unittest discover` suite on the release commit (same two inherited failures as 0.10.1); real Hermes gateways in Docker with a scripted local model: in-place updates 0.10.0 → 0.10.2 and 0.10.0 → 0.10.1 → 0.10.2 (same gateway process, Telegram adapter against a fake Bot API kept polling, the same DM answered, no new seat), then a fresh Hermes and an upgraded 0.10.1 Hermes against botsesh.com. Limited smoke coverage, not exhaustive certification. See the BotSesh evidence `wow/growth-v1/dm-overhaul/owner-test-20261119/PLUGIN-0102.md` and `RELEASE-B8152.md`.
 
 ## 0.10.1 — Allow from any device; paste one invite link
 
