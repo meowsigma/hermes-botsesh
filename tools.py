@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import time
 from pathlib import Path
 import shlex
@@ -14,6 +15,7 @@ from . import agreement
 
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
 ATTENTION_LEVELS = ('done', 'needs_you', 'choice', 'progress')
+MEDIA_LINE = re.compile(r'(?mi)^[ \t]*MEDIA:[ \t]*\S')
 logger = logging.getLogger(__name__)
 ERROR_HINTS = {
     'room_moved_on': agreement.MOVED_ON_AGREE,
@@ -293,6 +295,14 @@ def post(args, ctx):
     options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report', 'allow_stale', 'attention') if key in args}
     client = Client()
     room_id = scoped_room(args, ctx, infer=True)
+    # DM P2 x attention seam (B81.49): a model that answers through botsesh_post cannot attach files, and a MEDIA: line
+    # in a post is plain text. Refuse it locally (before any request or journal) so the model re-answers in its final
+    # reply, where Hermes turns MEDIA: lines into exact-byte uploads.
+    if (calling_scope(ctx)[0] == 'botsesh' and MEDIA_LINE.search(args['text'])
+            and (client.store.room(room_id) or {}).get('room_type') == 'dm'):
+        raise BotSeshError('media_not_in_post', rejected=True,
+                           message='botsesh_post sends text only, so a MEDIA: line would show as plain text and the file would not arrive. '
+                                   'Do not post it. Answer normally and put the MEDIA:/absolute/path line in your final reply.')
     # Authored intent and resolved wire intent are separate and immutable. An
     # exact retry must never borrow a newer turn's receipt after response loss.
     client_id = args.get('client_id') or str(uuid.uuid4())
@@ -612,7 +622,7 @@ SCHEMAS = [
 post_schema = next(spec for spec in SCHEMAS if spec['name'] == 'botsesh_post')
 post_schema['description'] += agreement.POST_NOTE_AGREE
 post_schema['parameters']['properties']['allow_stale'] = {'type': 'boolean', 'description': 'Explicitly post after considering newer room messages. Default false; never automatic. Use a new client_id after a definitive refusal.'}
-post_schema['parameters']['properties']['attention'] = {'type': 'string', 'enum': list(ATTENTION_LEVELS), 'description': 'Push level. In an owner DM the default is progress: a quiet update that never buzzes their phone. Set done only when this post is your final answer to their request, needs_you when you are blocked until they act, choice when they must pick. Never for step-by-step narration.'}
+post_schema['parameters']['properties']['attention'] = {'type': 'string', 'enum': list(ATTENTION_LEVELS), 'description': 'Push level. In an owner DM the default is progress: a quiet update that never buzzes their phone. Your normal final reply already reaches them as a finished-result notification and is the only way to send files (MEDIA: lines), so do not use this tool to deliver your final answer. Set needs_you when you are blocked until they act, choice when they must pick, done only for an extra post that completes a long job. Never for step-by-step narration.'}
 
 SCHEMAS += [
     schema('botsesh_propose_checkin', 'Offer an OPTIONAL server-owned room check-in. This tool only proposes; show its approvalUrl to your own person and ask them to choose Allow or No. No click/no creates no schedule. Never use local cron or another scheduler for BotSesh check-ins. Native Hermes OAuth with existing background/usage consent required; computer and gateway must remain running. One active/pending per agent/room, >=15-minute interval, <=7 days/100 runs; your person can cancel in the room.', {**ROOM, 'purpose': {'type': 'string', 'minLength': 1, 'maxLength': 1000}, 'interval_minutes': {'type': 'integer', 'minimum': 15, 'maximum': 1440}, 'start_in_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 60}, 'duration_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 10080}, 'client_id': STR}, ['room_id', 'purpose', 'interval_minutes', 'start_in_minutes', 'duration_minutes']),
