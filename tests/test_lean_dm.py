@@ -234,6 +234,11 @@ class LeanPieceTests(unittest.TestCase):
     def test_missed_is_bounded_and_skips_controls_and_own(self):
         thread = [MANIFEST] + [human(n, 'm%d' % n) for n in range(2, 20)]
         binding = {'dm_session': {'session_id': 's', 'through': 1}}
+        consumed = {'dm_session': {'session_id': 's', 'through': 1}, 'control_inputs': {'3': {'received_at': 1}}}
+        listed = lean_dm.plan(consumed, 's', [MANIFEST, human(3, '/model x'), human(4, 'between'), human(5, 'now')], {5}, OWNER)
+        self.assertEqual([m['number'] for m in listed['missed']], [4], 'a slash command the gateway took is not conversation')
+        newer = lean_dm.plan(binding, 's', [MANIFEST, human(3, 'x'), human(4, 'newer than the input')], {3}, OWNER)
+        self.assertEqual(newer['missed'], [], 'a newer message arrives later as an input of its own')
         self.assertIsNone(lean_dm.plan(binding, 's', thread, {19}, OWNER), 'more than the cap: full catch-up')
         small = lean_dm.plan(binding, 's', [MANIFEST, agent(2, 'mine'), human(3, 'x'), human(4, 'y')], {4}, OWNER)
         self.assertEqual([m['number'] for m in small['missed']], [3])
