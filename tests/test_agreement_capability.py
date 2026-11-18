@@ -22,7 +22,8 @@ from hermes_botsesh_test.oauth import OAuthClient
 # agreement_unsupported (same dump); turn_context(GUEST); json.dumps(DENIED, sort_keys=True).
 RC2 = {
     'HINT': '4c3d0e47b10774742afd16f96371b0e9c478b8d65a069612a704d8ef5ad66b8e',
-    'SCHEMAS': '60cdc6b30b6ea96ea8d9f7049098d91a8df3ed2770576ad35b0f137df6877e94',
+    # DM attention (t_40325be8): botsesh_post gains one optional enum parameter, `attention`; its digest is pinned here deliberately.
+    'SCHEMAS': 'fd6402683579653b3d65e35373cb84e0b5500e85de82dc8fb14084c3ec49ddd9',
     'ERROR_HINTS': 'eb0921eb2cbcf270d8489e695be3f9e258aac0fd7ab6ecac401d72c459b2d78a',
     'TURN_CONTEXT': 'd0fa4d71a75555e31353fa93a4fe805c13b00a2363d15961a67159be64828c6b',
     'DENIED': 'd7ffa536019ecf2e051eac59185402c16e0ec1091332e6ef6cf855e6af8a9d54',

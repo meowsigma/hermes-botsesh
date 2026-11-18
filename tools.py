@@ -13,6 +13,7 @@ from . import receipt_handles
 from . import agreement
 
 LOCAL = {'cli', 'local', 'tui', 'desktop'}
+ATTENTION_LEVELS = ('done', 'needs_you', 'choice', 'progress')
 logger = logging.getLogger(__name__)
 ERROR_HINTS = {
     'room_moved_on': agreement.MOVED_ON_AGREE,
@@ -287,7 +288,9 @@ def transport_post_payload(section, saved):
 def post(args, ctx):
     args = room_arguments('botsesh_post', args)
     args = {**args, 'text': visible_text(args['text'])}
-    options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report', 'allow_stale') if key in args}
+    if 'attention' in args and args['attention'] not in ATTENTION_LEVELS:
+        raise BotSeshError('invalid_attention', rejected=True, message='attention is one of done, needs_you, choice or progress.')
+    options = {key: args[key] for key in ('receipt_id', 'processed', 'reply_to', 'draft_ready', 'routine_report', 'allow_stale', 'attention') if key in args}
     client = Client()
     room_id = scoped_room(args, ctx, infer=True)
     # Authored intent and resolved wire intent are separate and immutable. An
@@ -387,6 +390,15 @@ def post(args, ctx):
                 # seat has actually read. Receipt-bound and structured sends only
                 # carry an explicit seen_through, as before.
                 payload = {**payload, 'seen_through': room.get('latest_seen_id', 0)}
+        # Attention (DM push): an explicit post in the owner's DM is a mid-turn update (silent push) unless the
+        # model sets another level; the native final is `done` and never passes here. The field only travels
+        # once this room's server advertised it, so an older server never sees it.
+        if payload and not transports and not receipt_unavailable and not correction and not mismatch:
+            can_attend = bool((room.get('server_caps') or {}).get('attention')) and room.get('transport') == 'oauth'
+            if 'attention' in payload and not can_attend:
+                payload = {k: v for k, v in payload.items() if k != 'attention'}
+            elif 'attention' not in payload and can_attend and native and room.get('room_type') == 'dm':
+                payload = {**payload, 'attention': 'progress'}
         active = [(key, row) for key, row in rows.items() if native and (not target or key == target)
                   and row.get('state') in ('admitting', 'admitted', 'started')]
         if len(active) == 1:
@@ -600,6 +612,7 @@ SCHEMAS = [
 post_schema = next(spec for spec in SCHEMAS if spec['name'] == 'botsesh_post')
 post_schema['description'] += agreement.POST_NOTE_AGREE
 post_schema['parameters']['properties']['allow_stale'] = {'type': 'boolean', 'description': 'Explicitly post after considering newer room messages. Default false; never automatic. Use a new client_id after a definitive refusal.'}
+post_schema['parameters']['properties']['attention'] = {'type': 'string', 'enum': list(ATTENTION_LEVELS), 'description': 'Push level. In an owner DM the default is progress: a quiet update that never buzzes their phone. Set done only when this post is your final answer to their request, needs_you when you are blocked until they act, choice when they must pick. Never for step-by-step narration.'}
 
 SCHEMAS += [
     schema('botsesh_propose_checkin', 'Offer an OPTIONAL server-owned room check-in. This tool only proposes; show its approvalUrl to your own person and ask them to choose Allow or No. No click/no creates no schedule. Never use local cron or another scheduler for BotSesh check-ins. Native Hermes OAuth with existing background/usage consent required; computer and gateway must remain running. One active/pending per agent/room, >=15-minute interval, <=7 days/100 runs; your person can cancel in the room.', {**ROOM, 'purpose': {'type': 'string', 'minLength': 1, 'maxLength': 1000}, 'interval_minutes': {'type': 'integer', 'minimum': 15, 'maximum': 1440}, 'start_in_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 60}, 'duration_minutes': {'type': 'integer', 'minimum': 2, 'maximum': 10080}, 'client_id': STR}, ['room_id', 'purpose', 'interval_minutes', 'start_in_minutes', 'duration_minutes']),

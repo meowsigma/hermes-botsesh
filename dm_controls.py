@@ -238,6 +238,14 @@ class DmControlsMixin:
                            expiresAt=int(expires * 1000), buttons=[], choices=[])
             if preview is not None:
                 payload['preview'] = preview
+            # Push level (DM attention): only an approval or a clarifying question needs the person; the pickers and
+            # confirmations of their own slash commands are silent. Sent only once this server advertised it.
+            try:
+                attends = bool((self.client.store.room(chat_id).get('server_caps') or {}).get('attention'))
+            except Exception:
+                attends = False
+            if attends:
+                payload['attention'] = {'approval': 'needs_you', 'clarify': 'choice'}.get(kind, 'progress')
             values = {}
             for field_name, options in (('choices', rows), ('buttons', buttons)):
                 for label, value, style in options:
