@@ -1316,12 +1316,18 @@ class LeanDmTests(SolidTests):
         # the real wire (`real_wire`) records the start report as the server request `hermes_delivery` with state `started`
         return [args for r, name, args in self.requests if r == room and name == 'hermes_delivery' and args.get('number') == target and args.get('state') == 'started']
 
-    async def foreign_full_frame_event(self):
-        """A valid full-frame turn of ANOTHER room (a group room b, the original receipt-bound envelope) that carries the same words."""
-        self.client.store.update(lambda d: d['rooms']['b'].update(room_type='room'))
-        event = await self.deliver(3, room='b', complete=False)
+    async def foreign_full_frame_event(self, kind='group room'):
+        """A valid full-frame turn of ANOTHER room (the original receipt-bound envelope) that carries the same words: a group room
+        or a guest/non-owner DM."""
+        self.adapter._current.pop('b', None)
+        self.client.store.update(lambda d: d['rooms']['b'].update(processing_receipts={}, handled=[], room_type='room' if kind == 'group room' else 'dm'))
+        self.live['human_owns_grant'] = kind == 'group room'
+        try:
+            event = await self.deliver(3, room='b', complete=False)
+        finally:
+            self.live['human_owns_grant'] = True
         self.assertIn('Yoo wsp big dawg', event.text)
-        self.assertFalse(self.adapter._current['b']['bare'])
+        self.assertFalse(self.adapter._current['b']['bare'] or self.adapter._current['b'].get('dm_prompt'))
         return event
 
     def foreign_hooks(self, text, identity=None, session='sf', turn='tf'):
@@ -1347,16 +1353,17 @@ class LeanDmTests(SolidTests):
         event = await self.lean_five()
         a = self.adapter._current['a']
         ledger = copy.deepcopy(self.ledger())
-        foreign = await self.foreign_full_frame_event()
-        b = self.adapter._current['b']
-        for name, identity in (('no identity', None), ('its own identity', ('b', 3))):
-            with self.subTest(name):
-                b.pop('hook_turn', None); b.pop('hook_terminal', None); b['model_processed'] = False
-                self.foreign_hooks(foreign.text, identity, turn='tf-' + name)
-                self.assertEqual(b['hook_turn'], ('sf', 'tf-' + name), 'its own receipt-framed text binds the foreign turn, as before')
-                self.assertTrue(b['model_processed'])
-                self.assert_untouched_by_a_foreign_hook(a)
-                self.assertEqual(self.ledger(), ledger, 'a foreign completion covers no read of the compact row and moves no ledger')
+        for kind in ('group room', 'guest DM'):
+            foreign = await self.foreign_full_frame_event(kind)
+            b = self.adapter._current['b']
+            for name, identity in (('no identity', None), ('its own identity', ('b', 3))):
+                with self.subTest('%s, %s' % (kind, name)):
+                    b.pop('hook_turn', None); b.pop('hook_terminal', None); b['model_processed'] = False
+                    self.foreign_hooks(foreign.text, identity, turn='tf-%s-%s' % (kind, name))
+                    self.assertEqual(b['hook_turn'], ('sf', 'tf-%s-%s' % (kind, name)), 'its own receipt-framed text binds the foreign turn, as before')
+                    self.assertTrue(b['model_processed'])
+                    self.assert_untouched_by_a_foreign_hook(a)
+                    self.assertEqual(self.ledger(), ledger, 'a foreign completion covers no read of the compact row and moves no ledger')
         # the intended native match: the same hooks of ITS OWN room and input
         with self.subTest('the native match'):
             self.model_turn(event, 's1', 't1', first=False)
