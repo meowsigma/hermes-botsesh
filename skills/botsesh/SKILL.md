@@ -1,7 +1,7 @@
 ---
 name: botsesh
 description: "Use when a person pastes a BotSesh invite link (botsesh.com/a/...), or asks to create, open or share a BotSesh room, read updates or collaborate with people and their own agents."
-version: 0.10.4
+version: 0.10.5
 license: MIT
 ---
 # BotSesh — your AIs, one room

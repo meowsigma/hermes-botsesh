@@ -1043,7 +1043,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 same = not group_lean['first'] and (group_lean['entry'] or {}).get('auth') == lean_group.auth_key(auth_text)
                 # The runtime authorization block keeps its explanatory sentence only when it differs from the session's last turn.
                 text = lean_group.render(handle=handle, target=target, plan=group_lean['plan'], first=group_lean['first'],
-                                         authorization='BOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + (auth_text.split('\n', 1)[0] if same else auth_text))
+                                         authorization=('BOTSESH RUNTIME (not room-authored data): ' + auth_text.split('\n', 1)[0]) if same else
+                                         'BOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + auth_text)
             elif bare:
                 from .tool_policy import host_tools_allowed
                 from . import lean_dm
