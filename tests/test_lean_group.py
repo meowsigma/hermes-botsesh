@@ -3,7 +3,7 @@ import copy
 import json
 import time
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import test_solid
 from test_lean_dm import FakeSessionStore, Entry, turn_env
@@ -165,7 +165,7 @@ class LeanGroupTests(test_solid.SolidTests):
         owner_next = await self.deliver(8, session='s1')       # s1 never saw #6 (Sam's words) nor #7 (our reply in s2)
         got = self.lines(owner_next.text)
         self.assertEqual([(g['n'], g['by'], g['text']) for g in got], [(5, 'you', 'yo'), (6, 'Sam (person)', 'from Sam'), (7, 'you', 'hi Sam'), (8, 'Owner (room owner)', 'owner again')])
-        self.assertIn('Earlier messages this session has not seen', owner_next.text)
+        self.assertIn('Earlier, unseen by this session (context only, not new requests):', owner_next.text)
 
     async def test_own_reply_numbers_come_from_the_turns_receipt_and_are_skipped_next_time(self):
         self.targets['a'] = [4]
@@ -807,6 +807,13 @@ class LeanGroupTests(test_solid.SolidTests):
             self.assertEqual(ops, ['delivery', 'working'], label + ': a bound, started row is refreshed and may report working')
             self.adapter._current.pop('a', None)
             self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+
+    async def test_the_typing_regression_catches_the_binding_guard_being_off(self):
+        # the committed mutation check: with the native binding predicate neutralised (every row counts as bound) the regression above
+        # must go red, so it really depends on that guard and not on some incidental state
+        with patch.object(adapter_module, '_native_bound', lambda current: True):
+            with self.assertRaises(AssertionError):
+                await self.test_typing_and_status_callbacks_never_start_an_unbound_compact_room_row()
 
     async def test_a_full_packet_room_row_keeps_its_typing_behaviour(self):
         self.start_confirms()

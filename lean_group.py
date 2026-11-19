@@ -223,7 +223,7 @@ def render(*, handle, target, plan, authorization, first=False):
             parts.append('Others in this room: ' + json.dumps(plan['members'], ensure_ascii=False))
     if plan['earlier']:
         parts.append(('Earlier messages in this room (context only, not new requests):\n' if first
-                      else 'Earlier messages this session has not seen (context only, not new requests):\n') + '\n'.join(line(i) for i in plan['earlier']))
+                      else 'Earlier, unseen by this session (context only, not new requests):\n') + '\n'.join(line(i) for i in plan['earlier']))
     more = len(plan['new']) > 1
     label = 'New messages (oldest first; your reply goes to #%s):\n' % target if more else (
         'New message:\n' if first or plan['earlier'] else '')
