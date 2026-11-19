@@ -35,7 +35,6 @@ class NativeSummaryReplay(unittest.TestCase):
             value = tool_policy.restrict_request(request=req, **context)['request']
             return RequestMiddlewareResult(value, req)
         with patch.object(tool_policy, '_scope', return_value=('botsesh', 'recorded-room', '0')), \
-             patch.object(tool_policy, '_current', return_value=(None,None)), \
              patch('hermes_cli.middleware.apply_llm_request_middleware', side_effect=middleware), \
              patch('agent.relay_llm.execute_current', side_effect=lambda req,callback,**kw:callback(req)), \
              patch.object(helpers, 'sanitize_outbound_kwargs'):
