@@ -172,7 +172,7 @@ class LeanGroupTests(test_solid.SolidTests):
         current = self.adapter._current['a']
         self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['4'].update(
             posted_reply={'number': 5}, explicit_post_calls={'c1': {'result': {'number': 6}}}))
-        current.update(hermes_session_id='s1', hook_turn=('s1', 'run-own'), model_processed=True, delivered=True)
+        current.update(hermes_session_id='s1', hook_turn=('s1', 'run-own'), native_turn=('s1', 'run-own'), model_processed=True, delivered=True)
         self.store.entry = Entry('s1')
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.assertEqual(self.ledger()['own'], [5, 6])
@@ -436,8 +436,8 @@ class LeanGroupTests(test_solid.SolidTests):
         import sys
         from unittest.mock import patch
         with patch.dict(sys.modules, {'gateway.session_context': None}):
-            self.assertFalse(adapter_module.native_identity_available())
-        self.assertTrue(adapter_module.native_identity_available())
+            self.assertFalse(adapter_module._native_identity_supported())
+        self.assertTrue(adapter_module._native_identity_supported())
 
     async def test_a_lean_text_binds_only_through_the_gateway_identity(self):
         await self.deliver(4)
@@ -704,6 +704,75 @@ class LeanGroupTests(test_solid.SolidTests):
         self.thread += [person(5, 'next', GUEST)]
         self.assertIn('Others in this room: ', (await self.deliver(5, complete=False)).text, 'the next turn is a complete delivery again')
 
+    # --- typing / status callbacks (review of 0.10.4 r2: they name the room, not the input) --------------------------------------------
+
+    def started_ops(self):
+        """Server-side start/working credits issued so far, from every call the adapter made to the client."""
+        out = []
+        for call in self.client.enrolled.call_args_list:
+            room, op = call.args[0], call.args[1]
+            if (op == 'delivery' and call.kwargs.get('state') == 'started') or op == 'working':
+                out.append((room, op, call.kwargs.get('target')))
+        return out
+
+    def start_confirms(self):
+        original = self.client.enrolled.side_effect
+
+        def wrapped(room, op, **args):
+            if op == 'delivery' and args.get('state') == 'started':
+                return {'delivery': {'startedAt': 1000}, 'read_effect': 'none'}
+            if op == 'working':
+                return {'ok': True}
+            return original(room, op, **args)
+        self.client.enrolled.side_effect = wrapped
+
+    async def test_typing_and_status_callbacks_never_start_an_unbound_compact_room_row(self):
+        self.start_confirms()
+        # a compact first delivery and, after a proven turn, a lean one: both are headerless rows
+        for label in ('compact first', 'lean'):
+            if label == 'lean':
+                await self.deliver(4)
+                self.thread += [person(5, 'next', GUEST)]
+            event = await self.deliver(5 if label == 'lean' else 4, complete=False)
+            current = self.adapter._current['a']
+            self.assertTrue(current['bare'] and current['lean_group'], label)
+            before = len(self.started_ops())
+            self.adapter._typing_at.clear()
+            await self.adapter.send_typing('a')
+            await self.adapter.send_or_update_status('a', 'k', 'thinking about it')
+            self.adapter._typing_at.clear()
+            await self.adapter.send_typing('a')
+            self.assertEqual(len(self.started_ops()), before, label + ': an unbound room input never reports started or working')
+            self.assertNotIn('start_reported', current)
+            # even with a started row state set by something else, the callback may not credit a start without the native binding
+            self.client.store.update(lambda d: d['rooms']['a']['processing_receipts'][str(current['target'])].update(state='started'))
+            self.adapter._typing_at.clear()
+            await self.adapter.send_typing('a')
+            self.assertEqual(len(self.started_ops()), before, label + ': a started row state alone is not a binding')
+            # the real native match: the hook starts it, and only then may typing refresh it and report working
+            with turn_env('a', current['target']):
+                started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-' + label, is_first_turn=label != 'lean')
+                processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-' + label)
+            self.assertEqual(current['native_turn'], ('s1', 't-' + label))
+            self.adapter._typing_at.clear(); self.adapter._working_at.clear()
+            mid = len(self.started_ops())
+            await self.adapter.send_typing('a')
+            ops = [op for _, op, _ in self.started_ops()[mid:]]
+            self.assertEqual(ops, ['delivery', 'working'], label + ': a bound, started row is refreshed and may report working')
+            self.adapter._current.pop('a', None)
+            self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+
+    async def test_a_full_packet_room_row_keeps_its_typing_behaviour(self):
+        self.start_confirms()
+        self.context = {**self.context, 'revision': 1, 'markdown': '# plan'}   # a Brief with text: the packet, not the compact form
+        await self.deliver(4, complete=False)
+        current = self.adapter._current['a']
+        self.assertFalse(current.get('bare'))
+        before = len(self.started_ops())
+        self.adapter._typing_at.clear()
+        await self.adapter.send_typing('a')
+        self.assertEqual([op for _, op, _ in self.started_ops()[before:]], ['delivery', 'working'])
+
     def test_ledger_is_bounded(self):
         room = {}
         for n in range(12):
@@ -768,7 +837,7 @@ class LeanGroupTests(test_solid.SolidTests):
 
     async def test_without_the_gateway_identity_the_first_delivery_is_the_packet_too(self):
         from unittest.mock import patch
-        with patch.object(adapter_module, 'native_identity_available', lambda: False):
+        with patch.object(adapter_module, '_native_identity_supported', lambda: False):
             event = await self.deliver(4, complete=False)
         self.assertIn(FULL_MARK, event.text)
         self.assertFalse(self.adapter._current['a']['lean_group'])

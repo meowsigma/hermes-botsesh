@@ -38,16 +38,6 @@ def _input_numbers(check):
     # OAuth's authoritative inbox. These are candidate inputs, not permissions.
     return set(check.get('mentions', []) + check.get('replies', []) + check.get('inputs', []))
 
-def native_identity_available():
-    """True when this core can bind a turn to its room and input through its own session variables.  A lean group text names no room
-    (a room's lean text can equal another room's), so it is planned only where that identity exists; otherwise the full catch-up,
-    which carries the room id and receipt, goes out as before."""
-    try:
-        from gateway.session_context import get_session_env  # noqa: F401
-        return callable(get_session_env)
-    except Exception:
-        return False
-
 
 def _native_turn_identity():
     """(chat_id, message_id) the Hermes gateway bound to THIS running turn, or None when it did not (outside a gateway turn).
@@ -64,27 +54,59 @@ def _native_turn_identity():
     return (chat_id, message_id) if chat_id and message_id else None
 
 
+def _native_identity_supported():
+    """True when this core can bind the room and input of a running turn (the gateway's `HERMES_SESSION_*` session variables).
+
+    0.10.4 r1: a compact owner-DM text carries no receipt header, so the only thing that ties the turn's hooks to its event is that
+    identity.  A core that cannot provide it never gets a compact delivery: it keeps the original receipt-bound envelope."""
+    try:
+        import inspect
+        from gateway.session_context import get_session_env, set_session_vars
+        names = inspect.signature(set_session_vars).parameters
+        return callable(get_session_env) and all(name in names for name in ('platform', 'chat_id', 'message_id'))
+    except Exception:
+        return False
+
+
+def _bare_event(identity, user_message):
+    """The ONE running compact (headerless) owner-DM event that THIS hook's turn runs, or None.
+
+    A compact text has no receipt id and may equal another room's, another turn's or a foreign full-frame hook's words, so a text
+    match is never evidence.  Only the gateway's own session variables of the running turn (room and input) name the event, and
+    only when exactly one adapter's open row claims that very input (an ambiguous native match binds nothing, as in
+    `_dm_catchup_context`).  No identity, no match, a text that is not in the message or a second claimant: None."""
+    if identity is None or not isinstance(user_message, str):
+        return None
+    chat_id, message_id = identity
+    claimed = [current for adapter in list(_ADAPTERS) for current in [adapter._current.get(chat_id)]
+               if current is not None and str(current.get('target')) == message_id]
+    if len(claimed) != 1:
+        return None
+    current = claimed[0]
+    if (current.get('bare') and not current.get('hook_terminal') and current.get('event_id') == message_id
+            and current.get('text') and current['text'] in user_message):
+        return current
+    return None
+
+
 def processed_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """A candidate output is not yet proof that the turn completed successfully."""
     if platform != 'botsesh':
         return
     identity = _native_turn_identity()
     with _HOOK_LOCK:
-        # 0.10.4: a compact owner-DM text carries no receipt header. With the gateway's own session variables it binds only the
-        # event of THIS room and input; without them (an older core) only when exactly one running event carries this text,
-        # so two rooms with the same short text bind nothing rather than each other.
-        texted = [(adapter, room_id, current) for adapter in list(_ADAPTERS) for room_id, current in list(adapter._current.items())
-                  if current.get('bare') and not current.get('hook_terminal') and isinstance(user_message, str)
-                  and current.get('text') and current['text'] in user_message]
-        # 0.10.5: a lean GROUP text names no room either, and a room is shared: it binds only through the gateway's identity.
-        bound = [c for _, room_id, c in texted if identity == (room_id, str(c.get('target')))] if identity else (
-            [c for _, _, c in texted] if len(texted) == 1 and not texted[0][2].get('lean_group') else [])
+        # 0.10.4 r1: a compact owner-DM text carries no receipt header. It binds only through the gateway's own session variables
+        # of this turn (`_bare_event`); with no identity, or an ambiguous one, it binds NOTHING, whatever else is running and
+        # whatever words the hook carries, so a foreign hook can neither start nor complete it.  The positive record
+        # `native_turn` is what `_delivery_proves_read` asks for.
+        bound = _bare_event(identity, user_message)
         for adapter in list(_ADAPTERS):
             for room_id, current in list(adapter._current.items()):
                 if current.get('bare'):
-                    if any(current is c for c in bound):
+                    if current is bound:
                         current['hook_turn'] = (session_id, turn_id)
                         current['hermes_session_id'] = session_id
+                        current['native_turn'] = (session_id, turn_id)
                     continue
                 if identity and current.get('lean_session') and identity != (room_id, str(current.get('target'))):
                     continue  # 0.10.3: identical lean texts in two rooms: bind only the event the gateway says this turn runs
@@ -591,13 +613,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return False
         lean = current['lean_session']
         if not lean:
-            if current.get('lean_group') is True:
-                # 0.10.5: a compact COMPLETE group delivery (no receipt header: it names its room only by a short handle) proves the read
-                # only when the hooks bound THIS exact native turn through the gateway's own room/input identity (`hook_turn`, written
-                # nowhere else for a headerless row) in the session Hermes reported for it.  An absent, ambiguous or foreign identity
-                # binds nothing, and nothing bound means unproven: the reply claims no read and no session pointer is credited.
-                turn = current.get('hook_turn')
-                return bool(isinstance(turn, tuple) and len(turn) == 2 and turn[0] and current.get('hermes_session_id') == turn[0])
+            if current.get('bare'):
+                # 0.10.4 r1: a COMPLETE compact first delivery carries the whole read as plain lines but no receipt header, so
+                # nothing in its text ties a hook to it.  It counts as delivered only through the positive record the gateway's
+                # own session variables left (`processed_turn` -> `native_turn`), for the very turn the hooks bound and the
+                # session Hermes reported for it.  No identity, an ambiguous or foreign one, a restored turn: unproven.
+                native = current.get('native_turn')
+                return bool(isinstance(native, tuple) and len(native) == 2 and current.get('hook_turn') == native
+                            and native[0] and native[1] and current.get('hermes_session_id') == native[0])
             return True
         proof = current.get('lean_proof')
         if not (isinstance(proof, tuple) and len(proof) == 3 and proof[2] in ('session', 'recovery')):
@@ -698,13 +721,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         continuity that is gone, so the next turn gets the full catch-up.  The ledger also records how many messages the session
         holds, so a session emptied or rewound later is caught at planning time (`lean_dm.plan`)."""
         lean = current.get('lean_session')
-        if lean and not self._delivery_proves_read(current):
-            def drop(data):
-                room = data['rooms'].get(room_id)
-                if room is not None and (room.get('dm_session') or {}).get('session_id') == lean:
-                    room.pop('dm_session', None)
-            self.client.store.update(drop)
-            return
+        if (lean or current.get('bare')) and not self._delivery_proves_read(current):
+            if lean:
+                def drop(data):
+                    room = data['rooms'].get(room_id)
+                    if room is not None and (room.get('dm_session') or {}).get('session_id') == lean:
+                        room.pop('dm_session', None)
+                self.client.store.update(drop)
+            return  # 0.10.4 r1: a compact first delivery that no native event proved records no session either
         session_id, through = current.get('hermes_session_id'), current.get('dm_through')
         if not session_id or type(through) is not int or not current.get('model_processed'):
             return
@@ -953,7 +977,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                             and not (saved and saved.get('takeover_offer')) and target not in takeover_targets)
             lean = None
             first = None
-            if owner_dm:
+            if owner_dm and _native_identity_supported():
+                # 0.10.4 r1: a compact text has no receipt header; only the gateway's session variables can tie its hooks to this
+                # event.  A core without them keeps the original receipt-bound envelope (below) and its full-delivery proof.
                 hermes_session = self._hermes_session_id(source)
                 # What Hermes actually holds for that session now: an id that still matches the ledger proves nothing about a
                 # transcript that was emptied or rewound under it (blocking read, off the event loop).
@@ -974,7 +1000,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 numbers = [m['number'] for m in batch['messages'] if type(m.get('number')) is int]
                 if digest is not None and numbers:
                     group_ledger = {'through': max(numbers), 'ctx': digest, 'messages': batch['messages']}
-                    if native_identity_available():
+                    if _native_identity_supported():
                         hermes_session = self._hermes_session_id(source)
                         history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
                         entry = (binding.get('group_sessions') or {}).get(hermes_session) if hermes_session else None
@@ -1891,6 +1917,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         row = binding.get('processing_receipts', {}).get(str(current['target']), {})
         if current.get('failure_delivered') or row.get('explicit_failure') or row.get('explicit_pass') or row.get('state') in ('replied', 'failed', 'passed'):
             return  # A give-up intent owns this target, even while confirmation retries.
+        if current.get('bare') and not (current.get('start_reported') and isinstance(current.get('native_turn'), tuple)
+                                        and current.get('hook_turn') == current['native_turn']):
+            # A headerless (compact DM or room) row is bound to its native event only by the hook that saw the gateway's own room/input
+            # identity.  This callback names the room, not the input, so for such a row it may only refresh a start that hook already
+            # established; it never starts or reports `working` for an unbound input (DM or room alike).
+            return
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')
         working_at = self.__dict__.setdefault('_working_at', {})
