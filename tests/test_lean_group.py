@@ -612,6 +612,34 @@ class LeanGroupTests(test_solid.SolidTests):
         self.assertNotIn('terminal', names, 'a guest-requested turn never gets host tools, hint or no hint')
         self.assertIn(lean_group.group_hint(True), result['request']['messages'][0]['content'])
 
+    async def test_an_unproven_lean_turn_cannot_claim_the_read_through_an_explicit_pass_or_post(self):
+        from hermes_botsesh_test import tool_policy
+        await self.deliver(4)
+        self.thread += [person(5, 'next', GUEST)]
+        for name, first in (('proven', False), ('unproven', True)):
+            self.adapter._current.pop('a', None)
+            self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
+            event = await self.deliver(5, complete=False)
+            self.assertTrue(self.adapter._current['a']['lean_session'], name)
+            with turn_env('a', 5):
+                started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-' + name, is_first_turn=first)
+                processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-' + name)
+                def verdict(tool, args):
+                    return tool_policy.enforce_tools(tool_name=tool, args=args, session_id='s1', turn_id='t-' + name)
+                claims = [('botsesh_pass', {'receipt_id': 'r1', 'processed': True}),
+                          ('botsesh_post', {'text': 'x', 'reply_to': 5, 'receipt_id': 'r1', 'processed': True}),
+                          ('tool_call', {'calls': [{'name': 'botsesh_post', 'arguments': {'text': 'x', 'receipt_id': 'r1', 'processed': True}}]})]
+                plain = [('botsesh_post', {'text': 'an extra deliberate message'}), ('botsesh_post', {'text': 'x', 'processed': False}),
+                         ('tool_call', {'calls': [{'name': 'botsesh_post', 'arguments': {'text': 'x'}}]})]
+                if name == 'proven':
+                    for tool, args in claims + plain:
+                        self.assertNotEqual((verdict(tool, args) or {}).get('message'), tool_policy.UNPROVEN_READ['message'], (name, tool))
+                else:
+                    for tool, args in claims:
+                        self.assertEqual((verdict(tool, args) or {}).get('message'), tool_policy.UNPROVEN_READ['message'], (name, tool))
+                    for tool, args in plain:
+                        self.assertNotEqual((verdict(tool, args) or {}).get('message'), tool_policy.UNPROVEN_READ['message'], (name, tool, 'a post that claims no read is still allowed'))
+
     def test_ledger_is_bounded(self):
         room = {}
         for n in range(12):

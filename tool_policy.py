@@ -16,6 +16,22 @@ NOT_A_TURN = {'action': 'block', 'message': "BotSesh couldn't match this tool ca
 UPDATING = {'action': 'block', 'message': 'BotSesh is switching to its updated version (a few seconds; no restart needed), so BotSesh tools are paused for this turn. Reply in plain text and it will be posted.'}
 UPDATE_NEEDS_RESTART = {'action': 'block', 'message': 'BotSesh was updated; restart Hermes to finish. BotSesh tools are paused until then. Reply in plain text and it will be posted.'}
 ENDED = {'action': 'block', 'message': 'This BotSesh turn already ended (answered, passed or reported); nothing more is posted from it.'}
+UNPROVEN_READ = {'action': 'block', 'message': "BotSesh couldn't confirm this turn's text holds the whole room read, so it cannot be marked read. Reply in plain text (or NO_REPLY to stay quiet); do not pass or post with a receipt or processed:true."}
+
+
+def _claims_read(tool_name, args):
+    """True when a tool call (directly or through the `tool_call` wrapper) is a botsesh pass or a post that claims the frozen read."""
+    calls = []
+    if tool_name == 'tool_call' and isinstance(args, dict) and isinstance(args.get('calls'), list):
+        calls = [(c.get('name'), c.get('arguments')) for c in args['calls'] if isinstance(c, dict)]
+    else:
+        calls = [(tool_name, args)]
+    for name, arguments in calls:
+        arguments = arguments if isinstance(arguments, dict) else {}
+        if name == 'botsesh_pass' or (name == 'botsesh_post' and (arguments.get('processed') is not False
+                                                                  and (arguments.get('processed') is True or arguments.get('receipt_id')))):
+            return True
+    return False
 
 
 def room_tools(policy):
@@ -317,6 +333,11 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
         with _HOOK_LOCK:
             if adapter._current.get(room_id) is not current or current.get('hook_terminal'):
                 return dict(ENDED)
+            if (current.get('lean_group') is True and current.get('lean_session') and not adapter._delivery_proves_read(current)
+                    and _claims_read(tool_name, kwargs.get('args'))):
+                # 0.10.5: a lean group text whose delivery the hook could not prove cannot claim the read it never proved, not even
+                # through an explicit post or pass; a plain reply (an authored one that claims no read) is still posted.
+                return dict(UNPROVEN_READ)
             if tool_name in room_tools(current.get('tool_policy')):
                 return None
             if room_tools(current.get('tool_policy')) == SERVICE_TOOLS:
