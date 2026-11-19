@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PY = os.environ.get('MUTATE_PYTHON', sys.executable)
 TESTS = ['test_turn_binding_sources', 'test_turn_binding_matrix', 'test_failure_labels', 'test_turn_binding_callbacks', 'test_host_tools',
          'test_owner_dm_operator', 'test_solid', 'test_cant_do', 'test_confirmed_pass', 'test_lean_dm']
+# MUTATE_TESTS="test_turn_binding_matrix test_turn_binding_callbacks": run only these files (e.g. everything but the AST guard, to prove that a
+# declaration mutant is also killed by BEHAVIOUR and not only by the guard that reads the declarations)
+TESTS = os.environ.get('MUTATE_TESTS', '').split() or TESTS
 FILES = {name: (ROOT / name).read_text() for name in
          ('adapter.py', 'live.py', 'tool_policy.py', 'native_turn.py', 'owner_operator.py')}
 
