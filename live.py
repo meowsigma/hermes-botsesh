@@ -375,10 +375,10 @@ def _locate(session_id='', turn_id=''):
         from .tool_policy import _scope
         platform, room_id, _message = _scope()
     except Exception:
-        platform, room_id = '', ''
+        platform, room_id, _message = '', '', ''
     if platform and platform != 'botsesh':
         return None
-    from .adapter import _ADAPTERS, _HOOK_LOCK
+    from .adapter import _ADAPTERS, _HOOK_LOCK, _native_bound
     with _HOOK_LOCK:
         if session_id and turn_id:
             for adapter in list(_ADAPTERS):
@@ -388,7 +388,12 @@ def _locate(session_id='', turn_id=''):
         if platform == 'botsesh' and room_id:
             found = [(adapter, adapter._current[room_id]) for adapter in list(_ADAPTERS) if room_id in adapter._current]
             if len(found) == 1 and not found[0][1].get('hook_terminal'):
-                return found[0][0], room_id, found[0][1]['target']
+                current = found[0][1]
+                # 0.10.4 r2: chat scope alone never attaches a compact (headerless) row: draft text and tool steps would be shown
+                # as the working turn of an input no hook bound.  It needs its positive native record AND this hook's own input.
+                if current.get('bare') and not (_native_bound(current) and _message == str(current['target'])):
+                    return None
+                return found[0][0], room_id, current['target']
     return None
 
 

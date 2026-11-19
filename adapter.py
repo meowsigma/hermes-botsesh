@@ -89,6 +89,20 @@ def _bare_event(identity, user_message):
     return None
 
 
+def _native_bound(current):
+    """True when a server-visible start/working report may name this row (0.10.4 r2).
+
+    A receipt-framed (full) row keeps its own receipt header, as before.  A compact (headerless) row is tied to its event only by
+    the positive `native_turn` record that `processed_turn` writes through `_bare_event` (the gateway's own room and input of the
+    running turn).  The typing and status callbacks of the gateway name a chat, never an input, so they cannot establish that: an
+    admitted compact row that no hook bound has not started and is not working, whatever else runs in its room."""
+    if not current.get('bare'):
+        return True
+    native = current.get('native_turn')
+    return bool(isinstance(native, tuple) and len(native) == 2 and native[0] and native[1]
+                and current.get('hook_turn') == native and current.get('hermes_session_id') == native[0])
+
+
 def processed_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
     """A candidate output is not yet proof that the turn completed successfully."""
     if platform != 'botsesh':
@@ -1785,7 +1799,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return
         room_id = event.source.chat_id
         current = self._current.get(room_id)
-        if current and current.get('event_id', str(current['target'])) == event.message_id:
+        if current and current.get('event_id', str(current['target'])) == event.message_id and _native_bound(current):
+            # 0.10.4 r2: a compact row starts only through its native hook (`started_turn`), never from a callback that names a chat.
             receipt(self.client.store, room_id, current['target'], state='started', started_at=time.time())
             await self._delivery(room_id, current['target'], 'started')
 
@@ -1923,11 +1938,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         row = binding.get('processing_receipts', {}).get(str(current['target']), {})
         if current.get('failure_delivered') or row.get('explicit_failure') or row.get('explicit_pass') or row.get('state') in ('replied', 'failed', 'passed'):
             return  # A give-up intent owns this target, even while confirmation retries.
-        if current.get('bare') and not (current.get('start_reported') and isinstance(current.get('native_turn'), tuple)
-                                        and current.get('hook_turn') == current['native_turn']):
-            # A headerless (compact DM or room) row is bound to its native event only by the hook that saw the gateway's own room/input
-            # identity.  This callback names the room, not the input, so for such a row it may only refresh a start that hook already
-            # established; it never starts or reports `working` for an unbound input (DM or room alike).
+        if current.get('bare') and not (_native_bound(current) and (row.get('state') == 'started' or current.get('start_reported'))):
+            # 0.10.4 r2: this callback (and `send_or_update_status`, which calls it) names a chat, not an input.  A compact row only
+            # refreshes a start that its own native hook already established (`started_turn`); it never creates one, reports `working`
+            # or spends the throttle window.  Presentation continues unchanged for receipt-framed rows (a compact DM or room row alike).
             return
         self._typing_at[chat_id] = time.monotonic()
         await self._delivery(chat_id, current['target'], 'started')

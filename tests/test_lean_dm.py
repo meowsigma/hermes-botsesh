@@ -538,9 +538,12 @@ class LeanDmTests(SolidTests):
 
     # --- r2 (t_138d06f8): no full-batch attestation after an incomplete recovery; no stale continuity -------------------------
 
-    def real_wire(self):
+    def real_wire(self, confirm_starts=False):
         """Posts, deliveries and quiet passes go through the REAL Client and OAuth journals; only the MCP wire is doubled. The
-        assertions below therefore see what would actually leave the machine (and what the journals keep), not an adapter call."""
+        assertions below therefore see what would actually leave the machine (and what the journals keep), not an adapter call.
+
+        `confirm_starts`: the doubled server answers a `started` delivery with its `startedAt` like the real one (without it the
+        start is "unconfirmed" and `start_reported` stays unset, which is what every other test here expects)."""
         import hashlib
         from hermes_botsesh_test.client import Client
         from hermes_botsesh_test.oauth import OAuthClient
@@ -558,6 +561,8 @@ class LeanDmTests(SolidTests):
             if name == 'finish_room_turn':
                 return {'read_checkpoint': 99}
             if name == 'hermes_delivery':
+                if confirm_starts and args.get('state') == 'started':
+                    return {'read_effect': 'none', 'delivery': {'startedAt': int(time.time() * 1000)}}
                 return {'read_effect': 'none'}
             self.fail('Unexpected MCP operation: ' + name)
         patcher = patch.object(OAuthClient, 'rpc', rpc)
@@ -1404,6 +1409,142 @@ class LeanDmTests(SolidTests):
         self.assertNotIn(3, self.client.store.room('a').get('handled', []))
         self.assertIsNone(self.ledger(), 'an unproven first delivery records no session')
         self.assertFalse(any(n == 'finish_room_turn' for _, n, _ in self.requests))
+
+    # --- 0.10.4 r2 (t_3f8acd0d): typing/status callbacks must not start or "work" an unbound compact row -------------------------
+
+    def working_calls(self, room, target):
+        # the presence RPC `working` (the mocked MCP layer records it in `self.calls`; the real wire only sees deliveries)
+        return [args for r, op, args in self.calls if r == room and op == 'working' and args.get('target') == target]
+
+    async def presence_route(self, route, room='a', target=5):
+        """Fire ONE of the three routes that can report a running turn as started/working, with the throttles cleared, and return
+        how many server `started` deliveries and `working` presence calls it produced for this input."""
+        adapter = self.adapter
+        adapter._typing_at.clear(); adapter.__dict__.setdefault('_working_at', {}).clear()
+        before = (len(self.started_calls(room, target)), len(self.working_calls(room, target)))
+        if route == 'typing':  # the gateway's direct typing callback (it names a chat, never an input)
+            await adapter.send_typing(room)
+        elif route == 'status':  # the gateway's status callback, which calls typing
+            await adapter.send_or_update_status(room, 'busy', 'still working on it')
+        else:  # the adapter's own working heartbeat (two ticks: it runs, then the loop ends)
+            ticks = []
+            async def tick(_seconds):
+                ticks.append(_seconds)
+                if len(ticks) >= 2:
+                    adapter._running = False
+            adapter._running = True
+            try:
+                with patch.object(adapter_module.asyncio, 'sleep', tick):
+                    await adapter._heartbeat(room)
+            finally:
+                adapter._running = False
+        return (len(self.started_calls(room, target)) - before[0], len(self.working_calls(room, target)) - before[1])
+
+    async def assert_presence_follows_the_native_binding(self, event, session, first, target):
+        """`event` is an admitted compact row (lean or first) whose turn nothing has bound yet."""
+        a = self.adapter._current['a']
+        self.assertTrue(a['bare'])
+        self.assertNotIn('native_turn', a)
+        for route in ('typing', 'status', 'heartbeat'):
+            with self.subTest('unbound, ' + route):
+                self.assertEqual(await self.presence_route(route, target=target), (0, 0), 'an unbound compact input is never started or working')
+        # a foreign full-frame turn whose hooks run with no native identity binds nothing and starts nothing here
+        foreign = await self.foreign_full_frame_event()
+        self.foreign_hooks(foreign.text, None, turn='tf-presence')
+        self.adapter._current.pop('b', None)
+        for route in ('typing', 'status', 'heartbeat'):
+            with self.subTest('after a foreign hook, ' + route):
+                self.assertEqual(await self.presence_route(route, target=target), (0, 0))
+        # a row that merely LOOKS started locally (its state says so) is still not bound: the binding is what counts
+        row = self.client.store.room('a')['processing_receipts'][str(target)]
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts'][str(target)].update(state='started'))
+        for route in ('typing', 'status', 'heartbeat'):
+            with self.subTest('state started but unbound, ' + route):
+                self.assertEqual(await self.presence_route(route, target=target), (0, 0))
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts'][str(target)].update(state=row['state']))
+        self.assertEqual(self.started_calls('a', target), [], 'no callback reported a start for the unbound input')
+        self.assertNotIn('start_reported', a)
+        self.assertNotIn('a', self.adapter._typing_at, 'a refused callback does not spend the throttle window')
+        # bound by its hooks, but its start is not established yet (the hook is still reporting it): nothing refreshes a start
+        # that is not there
+        with turn_env('a', target):
+            processed_turn(user_message=event.text, platform='botsesh', session_id=session, turn_id='t-presence')
+        self.assertEqual(a['native_turn'], (session, 't-presence'))
+        self.assertNotIn('start_reported', a)
+        for route in ('typing', 'status', 'heartbeat'):
+            with self.subTest('bound but not started, ' + route):
+                self.assertEqual(await self.presence_route(route, target=target), (0, 0))
+        self.assertEqual(self.started_calls('a', target), [])
+        # the intended native match: its own hook binds it and reports ONE start; typing/status/heartbeat then refresh it
+        with turn_env('a', target):
+            started_turn(user_message=event.text, platform='botsesh', session_id=session, turn_id='t-presence', is_first_turn=first)
+        self.assertEqual(a['native_turn'], (session, 't-presence'))
+        self.assertTrue(a['start_reported'])
+        self.assertEqual(len(self.started_calls('a', target)), 1, 'the trusted hook reported the start itself')
+        for route in ('typing', 'status', 'heartbeat'):
+            with self.subTest('bound, ' + route):
+                self.assertEqual(await self.presence_route(route, target=target), (1, 1), 'the bound input is refreshed as before')
+
+    async def test_typing_status_and_heartbeat_never_start_an_unbound_compact_lean_row_and_the_native_match_starts_it_and_permits_a_heartbeat(self):
+        self.real_wire(confirm_starts=True)
+        event = await self.lean_five()
+        self.assertTrue(self.adapter._current['a']['lean_session'])
+        await self.assert_presence_follows_the_native_binding(event, 's1', False, 5)
+
+    async def test_typing_status_and_heartbeat_never_start_an_unbound_compact_first_row_and_the_native_match_starts_it_and_permits_a_heartbeat(self):
+        self.real_wire(confirm_starts=True)
+        event = await self.deliver(3, complete=False)
+        self.assertIsNone(self.adapter._current['a']['lean_session'])
+        await self.assert_presence_follows_the_native_binding(event, 's5', True, 3)
+
+    async def test_the_processing_start_callback_never_starts_an_unbound_compact_row(self):
+        self.real_wire()
+        event = await self.lean_five()
+        a = self.adapter._current['a']
+        await self.adapter.on_processing_start(event)
+        self.assertEqual(self.started_calls('a', 5), [])
+        self.assertNotEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'started')
+        with turn_env('a', 5):
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+        self.assertEqual(a['native_turn'], ('s1', 't1'))
+        await self.adapter.on_processing_start(event)
+        self.assertEqual(len(self.started_calls('a', 5)), 1, 'the bound input starts as before')
+        self.assertNotIn('start_reported', a)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'started')
+        self.assertEqual(await self.presence_route('typing'), (1, 1), 'a bound row whose receipt shows the start is refreshed')
+
+    def test_a_compact_row_is_bound_only_by_the_positive_record_of_the_turn_its_hooks_bound(self):
+        bound = adapter_module._native_bound
+        good = dict(bare=True, native_turn=('s', 't'), hook_turn=('s', 't'), hermes_session_id='s')
+        self.assertTrue(bound(good))
+        self.assertTrue(bound({'target': 5}), 'a receipt-framed row keeps its own header')
+        self.assertTrue(bound({'target': 5, 'bare': False}))
+        without = lambda key: {k: v for k, v in good.items() if k != key}
+        for name, row in (('no record', without('native_turn')), ('record is not a tuple', {**good, 'native_turn': ['s', 't']}),
+                          ('short record', {**good, 'native_turn': ('s',)}), ('long record', {**good, 'native_turn': ('s', 't', 'x')}),
+                          ('empty session', {**good, 'native_turn': ('', 't'), 'hook_turn': ('', 't'), 'hermes_session_id': ''}),
+                          ('empty turn', {**good, 'native_turn': ('s', ''), 'hook_turn': ('s', '')}),
+                          ('no session at all', {**good, 'native_turn': (None, 't'), 'hook_turn': (None, 't'), 'hermes_session_id': None}),
+                          ('another hook turn', {**good, 'hook_turn': ('s', 'other')}), ('no hook turn', without('hook_turn')),
+                          ('another session reported', {**good, 'hermes_session_id': 'other'}), ('no session reported', without('hermes_session_id'))):
+            with self.subTest(name):
+                self.assertFalse(bound(row), name)
+
+    async def test_a_live_frame_hook_never_attaches_to_an_unbound_compact_row_by_chat_scope_alone(self):
+        from hermes_botsesh_test.live import _locate
+        event = await self.lean_five()
+        a = self.adapter._current['a']
+        with turn_env('a', 5):
+            self.assertIsNone(_locate('', ''), 'the room has one running row, but nothing tied this hook to it')
+            self.assertIsNone(_locate('s1', 't1'), 'hook ids that bound nothing')
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+        self.assertEqual(a['native_turn'], ('s1', 't1'))
+        with turn_env('a', 5):
+            self.assertEqual(_locate('s1', 't1')[1:], ('a', 5), 'its own hook ids')
+            self.assertEqual(_locate('', '')[1:], ('a', 5), 'its own native input once bound')
+        with turn_env('a', 7):
+            self.assertIsNone(_locate('', ''), 'another input of the same room is not this row')
+            self.assertIsNone(_locate('s1', 'other-turn'))
 
     async def test_two_adapters_claiming_the_same_compact_input_is_ambiguous_and_binds_neither(self):
         event = await self.lean_five()
