@@ -34,7 +34,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             original_id = '41fe858d-6386-4cfb-9a8e-6be797733cdd'
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
-            adapter._current['offline'] = {'receipt_id': read['receipt_id'], 'target': 7, 'client_id': original_id, 'delivered': False, 'model_processed': True}
+            adapter._current['offline'] = {'receipt_id': read['receipt_id'], 'target': 7, 'client_id': original_id, 'delivered': False, 'model_processed': True, 'lean_session': None}
             real_enrolled = client.enrolled
             def lose_output(room, op, **args):
                 result = real_enrolled(room, op, **args)
@@ -103,7 +103,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             current_id = '41fe858d-6386-4cfb-9a8e-6be797733cdd'
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
-            adapter._current['offline'] = {'receipt_id': read['receipt_id'], 'target': 7, 'client_id': current_id, 'delivered': False, 'model_processed': True}
+            adapter._current['offline'] = {'receipt_id': read['receipt_id'], 'target': 7, 'client_id': current_id, 'delivered': False, 'model_processed': True, 'lean_session': None}
             sent = await adapter.send('offline', 'The 1001st final.', metadata={'notify': True})
             self.assertTrue(sent.success, sent.error)
             room = client.store.room('offline')
@@ -136,7 +136,7 @@ class GatewayRecovery(unittest.IsolatedAsyncioTestCase):
             client.enrolled = Mock(return_value={})
             with patch('hermes_botsesh_test.adapter.Client', return_value=client):
                 adapter = BotSeshAdapter(PlatformConfig())
-            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 7, 'client_id': 'same-id', 'delivered': False, 'model_processed': True}
+            adapter._current['a'] = {'receipt_id': 'receipt-a', 'target': 7, 'client_id': 'same-id', 'delivered': False, 'model_processed': True, 'lean_session': None}
             refused = await adapter.send('a', 'Changed content', metadata={'notify': True})
             self.assertFalse(refused.success)
             self.assertIn('pending_send_mismatch', refused.error)

@@ -58,7 +58,7 @@ class RoomLoopUnwedge(unittest.IsolatedAsyncioTestCase):
         # Live finding: a definitively refused finish_room_turn pass was re-raised on every check.
         self.a._delivery = AsyncMock()
         current = {'target': 3, 'receipt_id': 'batch', 'client_id': 'c', 'batch_targets': [3],
-                   'model_processed': True, 'intentional_silence': True}
+                   'model_processed': True, 'intentional_silence': True, 'lean_session': None}
         self.a._current['room'] = current
         from hermes_botsesh_test.reliability import receipt
         receipt(self.client.store, 'room', 3, state='started', receipt_id='batch', frozen=self.frozen)
