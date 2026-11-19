@@ -739,7 +739,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if held is None:
             return  # cannot tell what the session holds: record nothing, the next turn is the full catch-up
         row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
-        own = lean_group.own_numbers(row)
+        own = lean_group.own_numbers(row) | {n for n in current.get('own_numbers') or () if type(n) is int}
         def save(data):
             room = data['rooms'].get(room_id)
             if room is None or room.get('room_type') == 'dm' or room.get('transport') != 'oauth':
@@ -1708,6 +1708,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 self._journal_gateway_delivery(chat_id, {'text': content, **options}, current['target'] if final else None, pending_final=bool(final and not current['delivered']))
             payload = {'text': content, **options}
             result = await self._post_final(chat_id, payload, current['target']) if final else await self._post_payload(chat_id, payload)
+            if final and type(result.get('number')) is int:
+                # 0.10.5: the number of this session's own final reply (the group ledger skips it in the next delivery instead of
+                # listing "you: ..." again as an unseen message)
+                current['own_numbers'] = sorted(set(current.get('own_numbers') or ()) | {result['number']})
             if final and result.get('read_effect') != 'none':
                 current['delivered'] = True
             elif first_final and self._unattested_final(payload) and 'number' in result:

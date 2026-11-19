@@ -573,8 +573,10 @@ class LeanGroupTests(test_solid.SolidTests):
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         ((rpc, wire),) = self.sends()
         self.assertEqual((rpc, wire['batch_id'], wire['reply_to']), ('send_message', 'receipt-4', 4))
+        wire_number = sent.message_id and int(sent.message_id)
         self.assertIs(self.client.store.room('a')['gateway_deliveries'][wire['client_id']]['payload']['processed'], True)
         self.assertEqual(self.ledger()['through'], 4)
+        self.assertEqual(self.ledger()['own'], [wire_number], 'the number of our own final reply is remembered: it is not listed again as unseen')
 
     async def test_the_first_delivery_keeps_the_packet_when_it_cannot_show_everything_exactly(self):
         cases = {
