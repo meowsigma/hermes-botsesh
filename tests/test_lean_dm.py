@@ -107,8 +107,13 @@ class LeanDmTests(SolidTests):
         event = self.adapter._admit_event.call_args.args[0]
         if complete:
             current = self.adapter._current[room]
-            current.update(hermes_session_id=session, model_processed=True, delivered=True)
-            await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            if current.get('lean_session'):
+                # r3: a lean turn is proven only by the real hook sequence of its native event (an explicit non-first turn in the
+                # session it was built for); setting `hermes_session_id` by hand would write no proof.
+                await self.hermes_turn(event, session, 'run-%s-%s' % (room, target), room=room, first=False)
+            else:
+                current.update(hermes_session_id=session, model_processed=True, delivered=True)
+                await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
             self.assertNotIn(room, self.adapter._current)
         return event
 
@@ -258,7 +263,8 @@ class LeanDmTests(SolidTests):
         # Hermes reports the same session with history: nothing attached, nothing to recover
         with turn_env('a', 5):
             self.assertIsNone(started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1', is_first_turn=False))
-        self.assertNotIn('lean_needs_recovery', current)
+        self.assertEqual(current['lean_proof'], ('s1', 't1', 'session'), 'the positive record of this exact turn')
+        self.assertTrue(self.adapter._delivery_proves_read(current))
         # Hermes started a different session (reset between the check and the turn): the history rides pre_llm_call
         with turn_env('a', 5):
             context = started_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t2', is_first_turn=True)
@@ -270,7 +276,8 @@ class LeanDmTests(SolidTests):
         self.assertNotIn('cmd84', text)
         self.assertLess(len(text), 9500, 'Hermes spills a larger hook context to a file preview')
         self.assertNotIn('#5 ', text, 'the current input is in the message itself')
-        self.assertIs(current['lean_recovered'], True)
+        self.assertEqual(current['lean_proof'], ('s9', 't2', 'recovery'), 'the earlier turn proof is void, the complete recovery of this turn is the new one')
+        self.assertTrue(self.adapter._delivery_proves_read(current))
         # once per delivery
         with turn_env('a', 5):
             self.assertIsNone(started_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t2', is_first_turn=True))
@@ -301,7 +308,7 @@ class LeanDmTests(SolidTests):
         self.assertNotIn('a-private-reply', context['context'])
         self.assertNotIn('#1 "Owner": hi', context['context'])
         # room a's event was not touched by b's turn: no binding, no recovery state, no premature completion
-        for key in ('hook_turn', 'hermes_session_id', 'lean_needs_recovery', 'lean_catchup_sent', 'lean_recovered'):
+        for key in ('hook_turn', 'hermes_session_id', 'lean_proof', 'lean_catchup_sent'):
             self.assertNotIn(key, current_a, key)
         self.assertFalse(current_a['model_processed'], 'one turn ending must not mark the other room processed')
         self.assertEqual(current_b['hook_turn'], ('s9', 'tb'))
@@ -322,7 +329,7 @@ class LeanDmTests(SolidTests):
             self.assertIsNone(started_turn(user_message=event_a.text, platform='botsesh', session_id='s9', turn_id='t1', is_first_turn=True))
         with turn_env('c-unknown', 5):
             self.assertIsNone(started_turn(user_message=event_a.text, platform='botsesh', session_id='s9', turn_id='t2', is_first_turn=True))
-        self.assertNotIn('lean_needs_recovery', self.adapter._current['a'])
+        self.assertNotIn('lean_proof', self.adapter._current['a'])
 
     async def test_two_adapters_claiming_the_same_input_is_ambiguous_and_attaches_nothing(self):
         event = await self.lean_five()
@@ -365,11 +372,11 @@ class LeanDmTests(SolidTests):
                     self.client.store.update(mutate)
                     self.assertIsNone(recover(tag=name))
                     self.assertNotIn('lean_catchup_sent', current)
-                    self.assertIsNot(current.get('lean_recovered'), True)
-                    self.assertTrue(current.get('lean_needs_recovery'), 'a rejected recovery still keeps this session out of the ledger')
+                    self.assertNotIn('lean_proof', current, 'a rejected recovery proves nothing, so the session stays out of the ledger')
+                    self.assertFalse(self.adapter._delivery_proves_read(current))
                 finally:
                     self.client.store.update(lambda d: (d.clear(), d.update(copy.deepcopy(pristine))))
-                    current.pop('lean_needs_recovery', None)
+                    current.pop('lean_proof', None)
         with self.subTest('no gateway identity'):
             self.assertIsNone(adapter_module._dm_catchup_context('s9', 't-none', True, event.text))
         with self.subTest('another input of the same room'):
@@ -494,7 +501,8 @@ class LeanDmTests(SolidTests):
         controls = {m['number'] for m in row['frozen']['batch']['messages'] if lean_dm.is_control(m)}
         self.assertEqual(attested - held - given_now - own - controls, set(), 'nothing is attested that no turn of this session was given')
         # the reply goes out exactly as before: the original receipt, processed:true, for this input
-        current.update(model_processed=True, hermes_session_id='s1')
+        self.model_turn(event, 's1', 't1', first=False)  # the real hooks: Hermes explicitly reports a non-first turn in s1 for this event
+        self.assertTrue(self.adapter._delivery_proves_read(current))
         sent = await self.adapter.send('a', 'a plain reply', metadata={'notify': True})
         self.assertTrue(sent.success, sent)
         (payload,) = self.posts.values()
@@ -569,7 +577,10 @@ class LeanDmTests(SolidTests):
 
     async def unproven_lean_turn(self, how):
         """A lean owner-DM turn (built for s1, input #5, receipt-5) whose model completed in Hermes session s9 with the late recovery
-        `how`: 'failed', 'clipped' or 'absent'. Returns its event; nothing was sent yet."""
+        `how`: 'failed', 'clipped' or 'absent'. Returns its event; nothing was sent yet.
+
+        r3 (t_8a87d779): 'absent_same_id' is the conjunction the r2 fixtures never covered: Hermes EMPTIED s1 after the lean delivery was
+        planned (same id, `is_first_turn=True`) and the gateway bound no native room/input identity to the turn."""
         self.real_wire()
         if how == 'clipped':
             await self.deliver(3)
@@ -583,12 +594,14 @@ class LeanDmTests(SolidTests):
         self.assertEqual(self.adapter._current['a']['lean_session'], 's1')
         if how == 'failed':
             self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
-        context = self.model_turn(event, 's9', 't1', identity=how != 'absent')
+        if how == 'absent_same_id':
+            self.store.held['s1'] = 0
+        context = self.model_turn(event, 's1' if how == 'absent_same_id' else 's9', 't1', identity=how not in ('absent', 'absent_same_id'))
         if how == 'failed':
             self.assertIsNone(context)
         elif how == 'clipped':
             self.assertIn('older messages omitted', context['context'])
-            self.assertIsNot(self.adapter._current['a'].get('lean_recovered'), True)
+            self.assertNotIn('lean_proof', self.adapter._current['a'])
         else:
             self.assertIsNone(context, 'no gateway identity: nothing could be attached')
         self.assertFalse(self.adapter._delivery_proves_read(self.adapter._current['a']))
@@ -682,8 +695,9 @@ class LeanDmTests(SolidTests):
         self.assertEqual(self.states(5), ['completed'])
         self.assertEqual(self.ledger(), {'session_id': 's1', 'through': 5, 'brief': self.ledger()['brief'], 'messages': 4})
 
-    async def test_the_production_final_journals_the_same_authored_payload_it_later_sends_and_replays_it_after_a_restart(self):
-        event = await self.unproven_lean_turn('failed')
+    async def assert_journaled_sent_and_replayed(self, event):
+        """The production final of an unproven lean turn: `send_final_ledgered` journals the claim-free payload BEFORE anything is sent,
+        the later `send` builds the identical dict, and a restarted adapter retries that saved send once and settles it unread."""
         current = self.adapter._current['a']
         client_id = current['client_id']
         parent = next(cls for cls in type(self.adapter).__mro__[1:] if 'send_final_ledgered' in cls.__dict__)
@@ -713,6 +727,90 @@ class LeanDmTests(SolidTests):
         self.assertNotIn(5, room.get('handled', []))
         self.assertNotIn('read_attested', room['processing_receipts']['5'])
         self.assertFalse(any(n == 'finish_room_turn' for _, n, _ in self.requests))
+        self.assertIsNone(self.ledger(), 'the replay settlement of an unattested reply drops the stale continuity too: the process that '
+                          'would have done it died')
+
+    async def test_the_production_final_journals_the_same_authored_payload_it_later_sends_and_replays_it_after_a_restart(self):
+        await self.assert_journaled_sent_and_replayed(await self.unproven_lean_turn('failed'))
+
+    # --- r3 (t_8a87d779): same session id emptied + no native event identity -------------------------------------------------
+
+    async def test_same_id_emptied_session_without_native_identity_sends_an_authored_reply_and_never_reuses_the_ledger(self):
+        event = await self.unproven_lean_turn('absent_same_id')  # also asserts: no recovery context, `_delivery_proves_read` is False
+        current = self.adapter._current['a']
+        self.assertEqual(self.store.entry.session_id, 's1', 'the session id never changed')
+        self.assertEqual(current['hook_turn'], ('s1', 't1'), 'the hooks really ran and bound this turn')
+        self.assertTrue(current['model_processed'], 'a successful model completion')
+        self.assertNotIn('lean_proof', current)
+        self.assertNotIn('lean_catchup_sent', current)
+        self.assertEqual(self.ledger()['session_id'], 's1', 'before settlement the stale continuity is still on file')
+        # the final: threaded authored reply to #5 with a stable client_id, no read claim in the wire, the journals or the settlement
+        await self.assert_authored_final(event, 5)
+        # Hermes now holds the SAME id again, at least as many messages as the ledger recorded (4): the planner length guard cannot
+        # mask stale continuity, only the dropped ledger can
+        self.store.held['s1'] = 6
+        self.thread += [agent(6, 'ok'), human(7, 'next')]
+        nxt = await self.deliver(7, complete=False)
+        self.assertEqual(self.store.entry.session_id, 's1')
+        self.assertIn('Complete BotSesh collaboration data', nxt.text, '#7 is a full catch-up although the session id and its length match')
+        self.assertIn('a-private-reply', nxt.text, 'the history this session never received arrives in full')
+        self.assertIsNone(self.adapter._current['a']['lean_session'])
+        self.model_turn(nxt, 's1', 't2', first=True)
+        self.assertTrue((await self.adapter.send('a', 'second reply', metadata={'notify': True})).success)
+        name, wire = self.sends()[1]
+        self.assertEqual((name, wire['batch_id'], wire['reply_to']), ('send_message', 'receipt-7', 7), 'a full delivery attests its read again')
+
+    async def test_same_id_emptied_session_without_native_identity_journals_replays_and_restarts_without_attesting(self):
+        event = await self.unproven_lean_turn('absent_same_id')
+        await self.assert_journaled_sent_and_replayed(event)
+
+    async def test_a_quiet_pass_in_a_same_id_emptied_session_without_native_identity_attests_nothing(self):
+        event = await self.unproven_lean_turn('absent_same_id')
+        self.assertTrue((await self.adapter.send('a', 'NO_REPLY', metadata={'notify': True})).success)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertFalse(any(n in ('finish_room_turn', 'send_message', 'hermes_authored') for _, n, _ in self.requests))
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'completed_unread')
+        self.assertIsNone(self.ledger())
+
+    async def test_a_missing_or_true_first_turn_flag_is_never_continuity(self):
+        event = await self.lean_five()
+        current = self.adapter._current['a']
+        self.adapter._dm_catchup_text = Mock(side_effect=RuntimeError('hook broke'))
+        for flag in (None, True):
+            with self.subTest(flag):
+                with turn_env('a', 5):
+                    self.assertIsNone(started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-%s' % flag, is_first_turn=flag))
+                self.assertEqual(current['hook_turn'], ('s1', 't-%s' % flag))
+                self.assertNotIn('lean_proof', current)
+                self.assertFalse(self.adapter._delivery_proves_read(current))
+        with self.subTest('explicit False in the same session is the only continuity'):
+            with turn_env('a', 5):
+                self.assertIsNone(started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-false', is_first_turn=False))
+            self.assertTrue(self.adapter._delivery_proves_read(current))
+        with self.subTest('and a later first-turn signal on the same event voids it'):
+            with turn_env('a', 5):
+                started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-reset', is_first_turn=True)
+            self.assertNotIn('lean_proof', current)
+            self.assertFalse(self.adapter._delivery_proves_read(current))
+
+    async def test_a_proof_belongs_to_one_exact_turn_of_the_event(self):
+        event = await self.lean_five()
+        current = self.adapter._current['a']
+        with turn_env('a', 5):
+            self.assertIsNotNone(started_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t1', is_first_turn=True))
+            self.assertEqual(current['lean_proof'], ('s9', 't1', 'recovery'))
+            self.assertTrue(self.adapter._delivery_proves_read(current))
+            # a second Hermes turn of the same event in yet another session: the recovery was never given to that one
+            self.assertIsNone(started_turn(user_message=event.text, platform='botsesh', session_id='s10', turn_id='t2', is_first_turn=False))
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s10', turn_id='t2')
+        self.assertEqual(current['hook_turn'], ('s10', 't2'))
+        self.assertFalse(self.adapter._delivery_proves_read(current))
+        # the session Hermes reports at the end of the turn must be the proven one too
+        current.update(lean_proof=('s1', 't3', 'session'), hook_turn=('s1', 't3'), hermes_session_id='s1')
+        self.assertTrue(self.adapter._delivery_proves_read(current))
+        with turn_env('a', 5):
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s2', turn_id='t3')
+        self.assertFalse(self.adapter._delivery_proves_read(current))
 
     async def test_a_quiet_pass_after_an_unproven_delivery_attests_nothing(self):
         event = await self.unproven_lean_turn('failed')
@@ -867,6 +965,27 @@ class LeanDmTests(SolidTests):
 
 
 class LeanPieceTests(unittest.TestCase):
+    def test_proof_of_read_is_a_positive_record_and_everything_else_is_unproven(self):
+        proves = adapter_module.BotSeshAdapter._delivery_proves_read
+        self.assertFalse(proves({}), 'a turn that never recorded how it was delivered proves nothing')
+        self.assertTrue(proves({'lean_session': None}), 'a full delivery put the whole frozen read in front of the model')
+        self.assertFalse(proves({'lean_session': 's1'}))
+        self.assertFalse(proves({'lean_session': 's1', 'hermes_session_id': 's1', 'hook_turn': ('s1', 't')}),
+                         'equal session ids and no bad signal are not proof')
+        good = {'lean_session': 's1', 'hermes_session_id': 's1', 'hook_turn': ('s1', 't'), 'lean_proof': ('s1', 't', 'session')}
+        self.assertTrue(proves(good))
+        for name, bad in {'another turn': dict(good, hook_turn=('s1', 't2')), 'another session at the end': dict(good, hermes_session_id='s2'),
+                          'proof of another session': dict(good, lean_proof=('s9', 't', 'session')),
+                          'proof that is not a tuple': dict(good, lean_proof=['s1', 't', 'session']),
+                          'unknown kind': dict(good, lean_proof=('s1', 't', 'guess')), 'short proof': dict(good, lean_proof=('s1', 't')),
+                          'no hook turn': {k: v for k, v in good.items() if k != 'hook_turn'},
+                          'no reported session': {k: v for k, v in good.items() if k != 'hermes_session_id'}}.items():
+            with self.subTest(name):
+                self.assertFalse(proves(bad))
+        recovered = {'lean_session': 's1', 'hermes_session_id': 's9', 'hook_turn': ('s9', 't'), 'lean_proof': ('s9', 't', 'recovery')}
+        self.assertTrue(proves(recovered), 'a complete recovery attached to this exact turn proves a session other than the one planned for')
+        self.assertFalse(proves(dict(recovered, lean_proof=('s9', 't', 'session'))), 'a session proof is only for the session the delivery was built for')
+
     def test_plan_requires_the_exact_session_and_a_reachable_window(self):
         thread = [MANIFEST, human(1, 'a'), agent(2, 'b'), human(3, 'c')]
         binding = {'dm_session': {'session_id': 's1', 'through': 1}}

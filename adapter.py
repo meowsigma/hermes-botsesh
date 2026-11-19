@@ -81,11 +81,17 @@ def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
     The history is private room content, so it is attached only for the ONE native event this very Hermes turn runs, taken
     from the gateway's session variables (room and input) and re-proved against that input's receipt, participant and owner
     pin before any frozen content is read.  Matching by turn text is not identity: no match, an ambiguous match or any failed
-    check attaches nothing.  Whether the session may later be recorded as holding the DM is decided at completion
-    (`_remember_dm_session`): only a complete recovery counts, anything else sends the full catch-up on the next turn."""
+    check attaches nothing.
+
+    This hook is also the ONLY place that can prove a lean delivery (`current['lean_proof']`, read by `_delivery_proves_read`):
+    a positive record, written only for this exact (session, turn) of the trusted native event, that either Hermes explicitly
+    reported a non-first turn in the very session the delivery was built for, or a COMPLETE recovery was attached.  Anything
+    this function cannot see (no native identity, no event match, a missing or True first-turn flag, a failed or clipped
+    recovery, a second turn of the same event) writes nothing, and nothing means unproven: the reply claims no read, the
+    session is not recorded and the ledger is dropped (`_remember_dm_session`), so the next turn is the full catch-up."""
     identity = _native_turn_identity()
     if identity is None:
-        return None
+        return None  # no trusted event: nothing is disclosed and, as nothing is recorded, nothing is proven
     chat_id, message_id = identity
     with _HOOK_LOCK:
         found = [(adapter, current) for adapter in list(_ADAPTERS)
@@ -98,9 +104,14 @@ def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
                 or current.get('event_id') != message_id
                 or not isinstance(user_message, str) or not current.get('text') or current['text'] not in user_message):
             return None
-        if is_first_turn is not True and session_id == current['lean_session']:
-            return None  # the session the delivery was built for runs it: nothing to recover
-        current['lean_needs_recovery'] = True  # from here on this session is not recorded unless a COMPLETE recovery is attached
+        turn = (session_id, turn_id)
+        current.pop('lean_proof', None)  # a proof belongs to one exact turn: whatever an earlier turn of this event left is void
+        if is_first_turn is False and session_id == current['lean_session']:
+            # The session the delivery was built for runs it and Hermes says it already holds history: nothing to recover.
+            # Only an explicit False counts; a missing or True flag (a fresh or emptied session) is never taken as continuity.
+            if current.get('hook_turn') == turn:
+                current['lean_proof'] = (session_id, turn_id, 'session')
+            return None
     try:
         frozen = adapter._recovery_frozen(chat_id, current)
         if frozen is None:
@@ -114,7 +125,8 @@ def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
         return None
     with _HOOK_LOCK:
         current['lean_catchup_sent'] = True
-        current['lean_recovered'] = complete
+        if complete is True and current.get('hook_turn') == turn:
+            current['lean_proof'] = (session_id, turn_id, 'recovery')
     return {'context': context}
 
 def started_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
@@ -508,17 +520,25 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     def _delivery_proves_read(current):
         """True when the model of this turn was given everything the immutable receipt's `processed: true` would attest.
 
-        A full delivery put the whole frozen read in front of the model.  A lean one did so only through the session that holds
-        the conversation: the session it was built for ran it and the hook did not find that session fresh, or the hook attached
-        a COMPLETE recovery.  An absent, failed, clipped or unprovable recovery (or a turn whose session is unknown) proves
-        nothing, so the reply must not claim the full batch and the session must not be recorded.  Used for the final, its
-        journal, a quiet pass and the session ledger alike, so they can never disagree."""
-        if not current.get('lean_session'):
+        Proof is a POSITIVE record, never the absence of a bad signal.  A full delivery put the whole frozen read in front of the
+        model (`lean_session` is present and empty: both producers of `current` write it).  A lean one did so only through the
+        session that holds the conversation, and only the pre_llm_call hook can say so (`_dm_catchup_context` writes
+        `lean_proof` for one exact (session, turn)): Hermes explicitly reported a non-first turn in the session the delivery was
+        built for, or a COMPLETE recovery was attached.  The proof must still be the turn the post/pre hooks bound (`hook_turn`)
+        and the session Hermes reported for it, so a second turn of the same event, a changed session or a turn the hook could
+        not tie to its native event proves nothing.  A turn with no record, a missing key, an absent native identity, a reset
+        or a restored turn is therefore unproven: the reply must not claim the full batch and the session must not be recorded.
+        Used for the final, its journal, a quiet pass and the session ledger alike, so they can never disagree."""
+        if 'lean_session' not in current:
+            return False
+        lean = current['lean_session']
+        if not lean:
             return True
-        if current.get('lean_recovered') is True:
-            return True
-        return bool(current.get('hermes_session_id') and current['hermes_session_id'] == current['lean_session']
-                    and not current.get('lean_needs_recovery'))
+        proof = current.get('lean_proof')
+        if not (isinstance(proof, tuple) and len(proof) == 3 and proof[2] in ('session', 'recovery')):
+            return False
+        return bool(current.get('hook_turn') == proof[:2] and current.get('hermes_session_id') == proof[0]
+                    and (proof[2] == 'recovery' or proof[0] == lean))
 
     @staticmethod
     def _unattested_final(payload):
@@ -550,11 +570,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     def _mark_unread_reply(self, room_id, target):
         """The answer to this input went out as an authored reply that claimed no read: locally complete, no read checkpoint advances
-        (the same terminal state an authored no-read tool post gets)."""
+        (the same terminal state an authored no-read tool post gets).  The session that ran it is not proven to hold the DM, so the
+        ledger goes too: this is also the only settlement a restarted adapter runs for such a reply, and a replay must not leave
+        the stale continuity behind."""
         def mark(data):
             room = data['rooms'].get(room_id)
             if not room:
                 return
+            room.pop('dm_session', None)
             saved = room.get('processing_receipts', {}).get(str(target))
             if saved:
                 saved.update(state='completed_unread', replied_at=time.time(), updated_at=time.time())
@@ -602,18 +625,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     def _remember_dm_session(self, room_id, current):
         """A model turn completed in a Hermes session: that session now holds this DM up to the delivered input.
 
-        A full delivery put the whole read into the session.  A lean one only counts when `_delivery_proves_read` (the session
-        that ran it is the one it was built for and the hook did not find it fresh, or the hook attached a COMPLETE recovery).
-        Anything else (a recovery that failed, was clipped, or could not be tied to this event) is not recorded, so the next turn
-        gets the full catch-up instead of building on history this session never received.
-
-        When the hook found the session fresh (or Hermes ran the turn in another session) and no complete recovery arrived, the
-        ledger entry the lean text was built from is also dropped: under the SAME session id (an emptied or reset session) it
-        would otherwise still match and let the next turn be lean on continuity that is gone.  The ledger also records how many
-        messages the session holds, so a session emptied or rewound later is caught at planning time (`lean_dm.plan`)."""
+        A full delivery put the whole read into the session.  A lean one only counts when `_delivery_proves_read`, a positive
+        record of this exact turn (Hermes reported a non-first turn in the session it was built for, or a COMPLETE recovery was
+        attached).  Anything else (no native identity, a first-turn or reset signal, a recovery that failed, was clipped or could
+        not be tied to this event, a restored turn) is not recorded, and the ledger entry the lean text was built from is DROPPED:
+        under the SAME session id (an emptied or reset session) it would otherwise still match and let the next turn be lean on
+        continuity that is gone, so the next turn gets the full catch-up.  The ledger also records how many messages the session
+        holds, so a session emptied or rewound later is caught at planning time (`lean_dm.plan`)."""
         lean = current.get('lean_session')
-        if lean and current.get('lean_recovered') is not True and (current.get('lean_needs_recovery') or (
-                current.get('hermes_session_id') and current['hermes_session_id'] != lean)):
+        if lean and not self._delivery_proves_read(current):
             def drop(data):
                 room = data['rooms'].get(room_id)
                 if room is not None and (room.get('dm_session') or {}).get('session_id') == lean:
@@ -622,8 +642,6 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return
         session_id, through = current.get('hermes_session_id'), current.get('dm_through')
         if not session_id or type(through) is not int or not current.get('model_processed'):
-            return
-        if lean and not self._delivery_proves_read(current):
             return
         held = self._session_history(session_id)
         if held is None:
