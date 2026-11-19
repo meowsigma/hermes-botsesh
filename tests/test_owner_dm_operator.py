@@ -36,15 +36,14 @@ class OwnerDmTests(unittest.TestCase):
         self.client.enrolled.return_value = self.live
         self.client.create.return_value = {'room_id': 'new', 'share_link': 'https://botsesh.com/b/new'}
         self.adapter = types.SimpleNamespace(_current={'dm': self.current}, client=self.client, _is_sender_authorized=Mock(return_value=True))
-        # Adapter import alone requires host gateway registration. The guard uses
-        # this same real adapter registry interface, with no gateway/network double side effects.
-        self.adapter_module = types.ModuleType('owner_dm_test.adapter')
-        self.adapter_module._ADAPTERS = [self.adapter]
-        self.adapter_module._HOOK_LOCK = threading.RLock()
+        # The guard uses the real adapter module's registry and its real binding function (`bind_turn`, the only way a tool call is
+        # attributed to a turn); only the registry's content is this double.
+        from owner_dm_test import adapter as adapter_module
+        self.adapter_module = adapter_module
         self.scope = {'HERMES_SESSION_PLATFORM': 'botsesh', 'HERMES_SESSION_CHAT_ID': 'dm', 'HERMES_SESSION_MESSAGE_ID': '3'}
         self.stack = __import__('contextlib').ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.dict(sys.modules, {'owner_dm_test.adapter': self.adapter_module}))
+        self.stack.enter_context(patch.object(adapter_module, '_ADAPTERS', [self.adapter]))
         self.stack.enter_context(patch('gateway.session_context.get_session_env', side_effect=lambda key, default='': self.scope.get(key, default)))
         self.stack.enter_context(patch.object(tools, 'Client', return_value=self.client))
         self.ctx = Mock()
@@ -56,6 +55,16 @@ class OwnerDmTests(unittest.TestCase):
         self.client.enrolled.return_value = self.live
         tools.offer_ownership({'room_id': 'new', 'user_requested': True, 'client_id': 'operation'}, self.ctx)
         self.assertEqual([c.args for c in self.client.enrolled.call_args_list], [('dm', 'dm_context'), ('dm', 'dm_context'), ('new', 'offer_ownership')])
+
+    def test_the_operator_binding_itself_needs_the_gateways_own_room_and_input(self):
+        from owner_dm_test import owner_operator
+        owner_operator.owner_dm_client('dm')  # the gateway names this very room and input: bound
+        for label, change in (('another input', {'HERMES_SESSION_MESSAGE_ID': '4'}), ('no input', {'HERMES_SESSION_MESSAGE_ID': ''}),
+                              ('another room', {'HERMES_SESSION_CHAT_ID': 'elsewhere'}), ('no room', {'HERMES_SESSION_CHAT_ID': ''}),
+                              ('another platform', {'HERMES_SESSION_PLATFORM': 'telegram'}), ('no platform', {'HERMES_SESSION_PLATFORM': ''})):
+            with self.subTest(label), patch.dict(self.scope, change):
+                with self.assertRaises(BotSeshError):
+                    owner_operator.owner_dm_client('dm')
 
     def test_foreign_group_spoof_and_missing_authority_are_denied_before_effects(self):
         mutants = [

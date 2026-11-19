@@ -810,9 +810,9 @@ class LeanGroupTests(test_solid.SolidTests):
             self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
 
     async def test_the_typing_regression_catches_the_binding_guard_being_off(self):
-        # the committed mutation check: with the native binding predicate neutralised (every row counts as bound) the regression above
+        # the committed mutation check: with r3's positive native-record predicate neutralised (every compact row counts as bound) the regression above
         # must go red, so it really depends on that guard and not on some incidental state
-        with patch.object(adapter_module, '_native_bound', lambda current: True):
+        with patch.object(adapter_module, 'native_record', lambda current: True):
             with self.assertRaises(AssertionError):
                 await self.test_typing_and_status_callbacks_never_start_an_unbound_compact_room_row()
 

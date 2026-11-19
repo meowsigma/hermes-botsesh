@@ -38,20 +38,16 @@ def _input_numbers(check):
     # OAuth's authoritative inbox. These are candidate inputs, not permissions.
     return set(check.get('mentions', []) + check.get('replies', []) + check.get('inputs', []))
 
+def _ambient():
+    """(platform, chat_id, input_id) the Hermes gateway bound to THIS running turn through its own session variables ('' when it did not).
 
-def _native_turn_identity():
-    """(chat_id, message_id) the Hermes gateway bound to THIS running turn, or None when it did not (outside a gateway turn).
-
-    These are the gateway's own session variables for the native event (the same ones the native tools trust), not anything
-    parsed out of model-visible text.  A lean DM delivery carries no room id, so it cannot be told apart by its text."""
+    These are the gateway's variables for the native event (the ones the native tools trust), never anything parsed out of
+    model-visible text.  `bind_turn` is the only reader that turns them into an attribution."""
     try:
         from gateway.session_context import get_session_env
-        if get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh':
-            return None
-        chat_id, message_id = get_session_env('HERMES_SESSION_CHAT_ID', ''), get_session_env('HERMES_SESSION_MESSAGE_ID', '')
+        return tuple(get_session_env(name, '') for name in ('HERMES_SESSION_PLATFORM', 'HERMES_SESSION_CHAT_ID', 'HERMES_SESSION_MESSAGE_ID'))
     except Exception:
-        return None
-    return (chat_id, message_id) if chat_id and message_id else None
+        return ('', '', '')
 
 
 def _native_identity_supported():
@@ -68,111 +64,168 @@ def _native_identity_supported():
         return False
 
 
-def _bare_event(identity, user_message):
-    """The ONE running compact (headerless) owner-DM event that THIS hook's turn runs, or None.
+class Binding:
+    """What `bind_turn` answers: the ONE in-flight row a claim names (`adapter`, `room_id`, `current`), or nothing.
 
-    A compact text has no receipt id and may equal another room's, another turn's or a foreign full-frame hook's words, so a text
-    match is never evidence.  Only the gateway's own session variables of the running turn (room and input) name the event, and
-    only when exactly one adapter's open row claims that very input (an ambiguous native match binds nothing, as in
-    `_dm_catchup_context`).  No identity, no match, a text that is not in the message or a second claimant: None."""
-    if identity is None or not isinstance(user_message, str):
-        return None
-    chat_id, message_id = identity
-    claimed = [current for adapter in list(_ADAPTERS) for current in [adapter._current.get(chat_id)]
-               if current is not None and str(current.get('target')) == message_id]
-    if len(claimed) != 1:
-        return None
-    current = claimed[0]
-    if (current.get('bare') and not current.get('hook_terminal') and current.get('event_id') == message_id
-            and current.get('text') and current['text'] in user_message):
-        return current
-    return None
+    Falsy when unbound.  `reason` says which rule refused; it is for diagnostics and the tool veto's wording, never an authority.
+    `rows` lists every row that carries a hook's explicit ids (normally one)."""
+    __slots__ = ('adapter', 'room_id', 'current', 'reason', 'rows')
+
+    def __init__(self, adapter=None, room_id=None, current=None, reason='no_row', rows=()):
+        self.adapter, self.room_id, self.current, self.reason, self.rows = adapter, room_id, current, reason, list(rows)
+
+    def __bool__(self):
+        return self.current is not None
+
+    def __iter__(self):
+        return iter((self.adapter, self.room_id, self.current))
 
 
-def _native_bound(current):
-    """True when a server-visible start/working report may name this row (0.10.4 r2).
+def native_record(current):
+    """True when a compact (headerless) row holds the positive record of the turn its hooks bound (0.10.4 r1/r2).
 
-    A receipt-framed (full) row keeps its own receipt header, as before.  A compact (headerless) row is tied to its event only by
-    the positive `native_turn` record that `processed_turn` writes through `_bare_event` (the gateway's own room and input of the
-    running turn).  The typing and status callbacks of the gateway name a chat, never an input, so they cannot establish that: an
-    admitted compact row that no hook bound has not started and is not working, whatever else runs in its room."""
-    if not current.get('bare'):
-        return True
+    A compact text has no receipt header, so nothing in it ties a hook to its event: only `bind_turn(pair=...)` writes `native_turn`,
+    from the gateway's own room and input of the running turn, for the (session, turn) the hooks reported.  No record, a different
+    hook turn, an empty id or a session other than the one Hermes reported: not native."""
     native = current.get('native_turn')
     return bool(isinstance(native, tuple) and len(native) == 2 and native[0] and native[1]
                 and current.get('hook_turn') == native and current.get('hermes_session_id') == native[0])
 
 
+def _pairs_row(room_id, current, user_message, claim, sole):
+    """The evidence a hook's own `user_message` (and the gateway's room/input `claim`) carries for ONE row (see `bind_turn(pair=...)`)."""
+    if not isinstance(user_message, str):
+        return False
+    if current.get('bare'):
+        # A compact text may equal another room's, another turn's or a foreign hook's words: a text match is never evidence.  Only
+        # the one row that claims this very room/input pairs, and only when its event, text and openness check out.
+        return bool(claim and sole is current and not current.get('hook_terminal') and current.get('event_id') == claim[1]
+                    and current.get('text') and current['text'] in user_message)
+    if claim and current.get('lean_session') and claim != (room_id, str(current.get('target'))):
+        return False  # 0.10.3: identical lean texts in two rooms: pair only the event the gateway says this turn runs
+    # Core may prefix sender context.  Pair to both the frozen receipt and the addressed target, not byte equality with its wrapper.
+    return bool(current.get('receipt_id')
+                and (current['receipt_id'] in user_message or current.get('text') and current['text'] in user_message)
+                and current.get('target') is not None
+                and re.search(r'"addressed_message_number"\s*:\s*' + re.escape(str(current['target'])) + r'\s*[,}]', user_message))
+
+
+def bind_turn(*, adapter=None, room_id=None, target=None, event_id=None, receipt_id=None, hook=None, ambient=None,
+              need='native', ended=False, pair=None):
+    """THE binding function (0.10.4 r3).  Nothing is attributed to a turn except through it: live progress, typing/presence, status,
+    start, read proof, failure labels, completion and every tool-driven action find their `(adapter, room, row)` here and nowhere else.
+
+    A claim names a row with whatever identity its caller really has; every supplied identity must AGREE with the row, and a claim
+    that names nothing, disagrees or is ambiguous (several rows and no hook ids) binds NOTHING (a falsy `Binding`):
+
+    - `room_id`, `target` (input number), `event_id` (gateway event), `receipt_id`: explicit ids of a gateway callback or an
+      authored action.  Each must equal the row's own.
+    - `hook=(session_id, turn_id)`: the explicit native ids of a Hermes hook.  Both must be present and equal the row's `hook_turn`
+      (the pairing below); missing or empty ids, or a different turn, never bind, whatever room or input the callback shares.
+    - `ambient`: the gateway's own session variables of the running turn ('required': missing/foreign platform binds nothing;
+      'optional': used when present, and a conflicting room/input or another platform binds nothing).
+    - `adapter`: restrict to one adapter (a gateway callback names its own adapter); hooks search all.
+    - `need='native'`: the claim attributes LIVE activity (start, presence, progress, tool authority).  The row must be open, and a
+      compact (headerless) row needs its positive `native_record`.  `ended=True` also accepts an ended row (the end hook itself).
+      `need='settle'`: the claim delivers or settles an admitted event's output; ended rows are fine and a compact row needs no
+      record (what that output may CLAIM is decided separately by `_delivery_proves_read`, which asks `native_record` too).
+    - `pair=<user_message>`: the hook's turn is not yet tied to a row.  Pair it, here and only here, to the row whose own evidence this
+      hook carries: a compact row by the one native event that claims its room/input AND its text; a receipt-framed row by its
+      receipt/text AND addressed target.  A text alone never pairs a compact row, and pairing writes `hook_turn`,
+      `hermes_session_id` and (compact) `native_turn`, the only writer of those keys."""
+    if need not in ('native', 'settle'):
+        raise ValueError(need)
+    claim_room, claim_target = room_id, None if target is None else str(target)
+    claim = None
+    if ambient:
+        platform, chat, message = _ambient()
+        if platform and platform != 'botsesh':
+            return Binding(reason='platform')
+        if platform == 'botsesh' and chat and message:
+            if claim_room not in (None, chat) or claim_target not in (None, message):
+                return Binding(reason='scope')
+            claim_room, claim_target = chat, message
+            claim = (chat, message)
+        elif ambient == 'required':
+            return Binding(reason='no_scope')
+    if hook is not None:
+        hook = tuple(hook)
+        if len(hook) != 2 or not hook[0] or not hook[1]:
+            return Binding(reason='hook_ids')
+    if not (claim_room is not None or claim_target is not None or event_id is not None or receipt_id is not None or hook is not None):
+        return Binding(reason='no_claim')
+    with _HOOK_LOCK:
+        pool = [(a, rid, cur) for a in ([adapter] if adapter is not None else list(_ADAPTERS))
+                for rid, cur in list((getattr(a, '_current', None) or {}).items()) if cur is not None]
+        if pair is not None:
+            if hook is None:
+                return Binding(reason='hook_ids')
+            sole = [cur for _a, rid, cur in pool if claim and (rid, str(cur.get('target'))) == claim]
+            sole = sole[0] if len(sole) == 1 else None
+            paired = [(a, rid, cur) for a, rid, cur in pool if _pairs_row(rid, cur, pair, claim, sole)]
+            for _a, _rid, cur in paired:
+                cur['hook_turn'] = hook
+                cur['hermes_session_id'] = hook[0]
+                if cur.get('bare'):
+                    cur['native_turn'] = hook
+            return Binding(*paired[0], reason='paired') if paired else Binding(reason='no_pair')
+        rows = [r for r in pool if (claim_room is None or r[1] == claim_room)
+                and (claim_target is None or str(r[2].get('target')) == claim_target)
+                and (event_id is None or str(r[2].get('event_id', r[2].get('target'))) == str(event_id))
+                and (receipt_id is None or r[2].get('receipt_id') == receipt_id)
+                and (hook is None or r[2].get('hook_turn') == hook)]
+        if not rows:
+            return Binding(reason='no_row')
+        if need == 'native':
+            usable = [r for r in rows if (ended or not r[2].get('hook_terminal')) and (not r[2].get('bare') or native_record(r[2]))]
+            if not usable:
+                return Binding(reason='ended' if rows[0][2].get('hook_terminal') and not ended else 'not_native')
+            rows = usable
+        # Two rows that both carry the hook's explicit (session, turn) are that one Hermes turn seen by two adapter objects (a retired
+        # adapter that still holds its row): the hook's effect applies to each (`Binding.rows`).  Every other claim is a single row.
+        if len(rows) != 1 and hook is None:
+            return Binding(reason='ambiguous')
+        return Binding(*rows[0], reason='bound', rows=rows)
+
+
 def processed_turn(*, user_message='', platform='', session_id=None, turn_id=None, **kwargs):
-    """A candidate output is not yet proof that the turn completed successfully."""
+    """A candidate output is not yet proof that the turn completed successfully.  Ties the hook's turn to its row (`bind_turn(pair=...)`)."""
     if platform != 'botsesh':
         return
-    identity = _native_turn_identity()
-    with _HOOK_LOCK:
-        # 0.10.4 r1: a compact owner-DM text carries no receipt header. It binds only through the gateway's own session variables
-        # of this turn (`_bare_event`); with no identity, or an ambiguous one, it binds NOTHING, whatever else is running and
-        # whatever words the hook carries, so a foreign hook can neither start nor complete it.  The positive record
-        # `native_turn` is what `_delivery_proves_read` asks for.
-        bound = _bare_event(identity, user_message)
-        for adapter in list(_ADAPTERS):
-            for room_id, current in list(adapter._current.items()):
-                if current.get('bare'):
-                    if current is bound:
-                        current['hook_turn'] = (session_id, turn_id)
-                        current['hermes_session_id'] = session_id
-                        current['native_turn'] = (session_id, turn_id)
-                    continue
-                if identity and current.get('lean_session') and identity != (room_id, str(current.get('target'))):
-                    continue  # 0.10.3: identical lean texts in two rooms: bind only the event the gateway says this turn runs
-                # Core may prefix sender context. Bind to both frozen receipt
-                # and addressed target, not byte equality with its prompt wrapper.
-                if (isinstance(user_message, str) and current.get('receipt_id')
-                        and (current['receipt_id'] in user_message
-                             or current.get('text') and current['text'] in user_message)
-                        and current.get('target') is not None
-                        and re.search(r'"addressed_message_number"\s*:\s*' + re.escape(str(current['target'])) + r'\s*[,}]', user_message)):
-                    current['hook_turn'] = (session_id, turn_id)
-                    # 0.10.3: the Hermes session that actually runs this turn (lean DM deliveries are keyed to it).
-                    current['hermes_session_id'] = session_id
+    bind_turn(hook=(session_id, turn_id), ambient='optional', pair=user_message)
+
 
 def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
     """pre_llm_call safety net for a lean DM delivery: if Hermes ended up in a session other than the one the delivery
     was built for (a reset between the check and the turn, a restored turn, a new session), return the history catch-up
     as ephemeral context instead of leaving the model without the conversation.
 
-    The history is private room content, so it is attached only for the ONE native event this very Hermes turn runs, taken
-    from the gateway's session variables (room and input) and re-proved against that input's receipt, participant and owner
-    pin before any frozen content is read.  Matching by turn text is not identity: no match, an ambiguous match or any failed
-    check attaches nothing.
+    The history is private room content, so it is attached only for the ONE native event this very Hermes turn runs: the row
+    `bind_turn` binds to these hook ids AND the gateway's session variables (room and input), re-proved against that input's receipt,
+    participant and owner pin before any frozen content is read.  Matching by turn text is not identity: no binding, an ambiguous
+    one or any failed check attaches nothing.
 
     This hook is also the ONLY place that can prove a lean delivery (`current['lean_proof']`, read by `_delivery_proves_read`):
-    a positive record, written only for this exact (session, turn) of the trusted native event, that either Hermes explicitly
+    a positive record, written only for this exact (session, turn) of the bound native event, that either Hermes explicitly
     reported a non-first turn in the very session the delivery was built for, or a COMPLETE recovery was attached.  Anything
-    this function cannot see (no native identity, no event match, a missing or True first-turn flag, a failed or clipped
-    recovery, a second turn of the same event) writes nothing, and nothing means unproven: the reply claims no read, the
-    session is not recorded and the ledger is dropped (`_remember_dm_session`), so the next turn is the full catch-up."""
-    identity = _native_turn_identity()
-    if identity is None:
-        return None  # no trusted event: nothing is disclosed and, as nothing is recorded, nothing is proven
-    chat_id, message_id = identity
+    this function cannot see (no binding, a missing or True first-turn flag, a failed or clipped recovery, a second turn of the
+    same event) writes nothing, and nothing means unproven: the reply claims no read, the session is not recorded and the ledger
+    is dropped (`_remember_dm_session`), so the next turn is the full catch-up."""
+    turn = (session_id, turn_id)
     with _HOOK_LOCK:
-        found = [(adapter, current) for adapter in list(_ADAPTERS)
-                 for current in [adapter._current.get(chat_id)]
-                 if current is not None and str(current.get('target')) == message_id]
-        if len(found) != 1:
-            return None  # no event, or two adapters claim this very input: ambiguous, so nothing is disclosed
-        adapter, current = found[0]
-        if (not current.get('lean_session') or current.get('hook_terminal') or current.get('lean_catchup_sent')
-                or current.get('event_id') != message_id
+        bound = bind_turn(hook=turn, ambient='required')
+        if not bound:
+            return None  # no bound event: nothing is disclosed and, as nothing is recorded, nothing is proven
+        adapter, chat_id, current = bound
+        if (not current.get('lean_session') or current.get('lean_catchup_sent')
+                or current.get('event_id') != str(current['target'])
                 or not isinstance(user_message, str) or not current.get('text') or current['text'] not in user_message):
             return None
-        turn = (session_id, turn_id)
         current.pop('lean_proof', None)  # a proof belongs to one exact turn: whatever an earlier turn of this event left is void
         if is_first_turn is False and session_id == current['lean_session']:
             # The session the delivery was built for runs it and Hermes says it already holds history: nothing to recover.
             # Only an explicit False counts; a missing or True flag (a fresh or emptied session) is never taken as continuity.
-            if current.get('hook_turn') == turn:
-                current['lean_proof'] = (session_id, turn_id, 'session')
+            current['lean_proof'] = (session_id, turn_id, 'session')
             return None
         if current.get('lean_group'):
             return None  # 0.10.5: a room turn gets no history recovery: no positive proof means no read claim and a full catch-up next
@@ -189,7 +242,7 @@ def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
         return None
     with _HOOK_LOCK:
         current['lean_catchup_sent'] = True
-        if complete is True and current.get('hook_turn') == turn:
+        if complete is True and bind_turn(adapter=adapter, hook=turn, ambient='required').current is current:
             current['lean_proof'] = (session_id, turn_id, 'recovery')
     return {'context': context}
 
@@ -204,11 +257,10 @@ def started_turn(*, user_message='', platform='', session_id=None, turn_id=None,
     if platform != 'botsesh' or not session_id or not turn_id:
         return
     context = _dm_catchup_context(session_id, turn_id, kwargs.get('is_first_turn'), user_message)
+    hook = (session_id, turn_id)
     with _HOOK_LOCK:
-        turns = [(adapter, room_id, current) for adapter in list(_ADAPTERS)
-                 for room_id, current in list(adapter._current.items())
-                 if current.get('hook_turn') == (session_id, turn_id)
-                 and not current.get('hook_terminal') and not current.get('start_reported')]
+        bound = bind_turn(hook=hook, ambient='optional')
+        turns = [tuple(r) for r in bound.rows if not r[2].get('start_reported')]
     for adapter, room_id, current in turns:
         binding = adapter.client.store.room(room_id)
         saved = binding.get('processing_receipts', {}).get(str(current['target']), {})
@@ -230,7 +282,7 @@ def started_turn(*, user_message='', platform='', session_id=None, turn_id=None,
             continue  # Never reconstruct a start from a later answer/completion.
         with _HOOK_LOCK:
             latest = adapter.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
-            if (adapter._current.get(room_id) is current
+            if (bind_turn(adapter=adapter, room_id=room_id, hook=hook, ambient='optional').current is current
                     and latest.get('receipt_id') == current.get('receipt_id')
                     and latest.get('state') in ('admitting', 'admitted', 'started')
                     and not latest.get('explicit_failure') and not latest.get('explicit_pass')):
@@ -243,11 +295,10 @@ def ended_turn(*, platform='', session_id=None, turn_id=None, completed=False, f
     if platform != 'botsesh':
         return
     with _HOOK_LOCK:
-        for adapter in list(_ADAPTERS):
-            for current in list(adapter._current.values()):
-                if current.get('hook_turn') == (session_id, turn_id) and session_id and turn_id:
-                    current['model_processed'] = completed is True and failed is False and interrupted is False
-                    current['hook_terminal'] = True
+        bound = bind_turn(hook=(session_id, turn_id), ambient='optional', ended=True)
+        for _adapter, _room, current in bound.rows:
+            current['model_processed'] = completed is True and failed is False and interrupted is False
+            current['hook_terminal'] = True
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -630,17 +681,24 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if current.get('bare'):
                 # 0.10.4 r1: a COMPLETE compact first delivery carries the whole read as plain lines but no receipt header, so
                 # nothing in its text ties a hook to it.  It counts as delivered only through the positive record the gateway's
-                # own session variables left (`processed_turn` -> `native_turn`), for the very turn the hooks bound and the
+                # own session variables left (`bind_turn(pair=...)` -> `native_turn`), for the very turn the hooks bound and the
                 # session Hermes reported for it.  No identity, an ambiguous or foreign one, a restored turn: unproven.
-                native = current.get('native_turn')
-                return bool(isinstance(native, tuple) and len(native) == 2 and current.get('hook_turn') == native
-                            and native[0] and native[1] and current.get('hermes_session_id') == native[0])
+                return native_record(current)
             return True
         proof = current.get('lean_proof')
         if not (isinstance(proof, tuple) and len(proof) == 3 and proof[2] in ('session', 'recovery')):
             return False
         return bool(current.get('hook_turn') == proof[:2] and current.get('hermes_session_id') == proof[0]
                     and (proof[2] == 'recovery' or proof[0] == lean))
+
+    @staticmethod
+    def _proven_session(current):
+        """0.10.5: the Hermes session a turn ran in, but only for a turn whose delivery `_delivery_proves_read` accepted; None otherwise.
+
+        The room ledger (`_remember_group_session`) learns which session to credit here and nowhere else, so it reads the pairing key
+        only behind the same positive record (`native_record` / `lean_proof`) that every other claim on the turn asks for, never from a
+        bare key of a row no hook bound."""
+        return current.get('hermes_session_id') if BotSeshAdapter._delivery_proves_read(current) else None
 
     @staticmethod
     def _unattested_final(payload):
@@ -780,7 +838,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         (room.get('group_sessions') or {}).pop(lean, None)
                 self.client.store.update(drop)
             return
-        ledger, session_id = current.get('group_ledger'), current.get('hermes_session_id')
+        ledger, session_id = current.get('group_ledger'), self._proven_session(current)
         if not ledger or not session_id or not current.get('model_processed'):
             return
         held = self._session_history(session_id)
@@ -1311,8 +1369,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             reply_expected=False, metadata={'botsesh_control': True})
         self._dm_contexts[room_id]['generation'] = str(uuid.uuid4())
         await self._control_invalidate(room_id)
-        if room_id in self._current:
-            self._current[room_id]['interrupt_requested'] = True
+        bound = bind_turn(adapter=self, room_id=room_id, need='settle')
+        if bound:
+            bound.current['interrupt_requested'] = True
         self.live._spawn(self.live.clear_now(room_id))
         logger.info('BotSesh DM %s: busy mode interrupt; stopping the running turn for message %s.', room_id, target)
         await self.handle_message(event)  # The native stop; its ack stays a local runtime notice.
@@ -1513,9 +1572,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     _input_target=target, client_id=posts[0]['exact']['client_id'])
         if not result or result.get('read_effect') != 'processed_frozen_receipt':
             return None
-        current = self._current.get(room_id)
-        if current and current['target'] == target and current['receipt_id'] == receipt_id:
-            current['delivered'] = True
+        bound = bind_turn(adapter=self, room_id=room_id, target=target, receipt_id=receipt_id, need='settle')
+        if bound:
+            bound.current['delivered'] = True
         return result
 
     async def _post_final(self, room_id, payload, target):
@@ -1551,9 +1610,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if room.get('pending_final', {}).get('payload') == payload:
                 room.pop('pending_final', None)
         self.client.store.update(retire)
-        current = self._current.get(room_id)
-        if current and current['target'] == target:
-            current['failure_delivered'] = True
+        bound = bind_turn(adapter=self, room_id=room_id, target=target, need='settle')
+        if bound:
+            bound.current['failure_delivered'] = True
         return {'read_effect': 'none'}
 
     async def _post_payload(self, room_id, payload, target=None):
@@ -1614,7 +1673,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         marker = next((m for m in _GATEWAY_RECOVERY_MARKERS if content.startswith(m)), None)
         if not marker and content.startswith('♻️ Recovered reply'):
             raise BotSeshError('gateway_replay_unrecognized_marker')
-        if not marker and chat_id in self._current:
+        if not marker and bind_turn(adapter=self, room_id=chat_id, need='settle'):
             return None
         original = content[len(marker):] if marker else content
         room = self.client.store.room(chat_id)
@@ -1651,7 +1710,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         if (metadata or {}).get('_interim_send') and _shutdown_notice(content):
-            if self._current.get(chat_id):
+            if bind_turn(adapter=self, room_id=chat_id, need='settle'):
                 # The durable linked final outcome owns the interruption. Native
                 # shutdown status is not a second answer, failure or read receipt.
                 health(self.client.store, chat_id, last_status=time.time())
@@ -1666,7 +1725,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 return await self._control_notice(chat_id, content)
             except Exception:
                 return SendResult(success=False, error='Native command response delivery unconfirmed')
-        current = self._current.get(chat_id)
+        current = bind_turn(adapter=self, room_id=chat_id, need='settle').current
         try:
             replay = self._gateway_replay(chat_id, content, metadata)
             if replay:
@@ -1736,7 +1795,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 current['failure_delivered'] = True
                 return SendResult(success=True)
             if current and (metadata or {}).get('notify') and current.get('model_processed') is not True:
-                code = 'interrupted' if current.get('interrupt_requested') else current.get('provider_hint') or failure_code(content)
+                # 0.10.4 r3: the label is the bound turn's own record: the owner's stop, or the classification the EVENT-BOUND final
+                # (`send_final_ledgered`) stored on this row.  This callback names a chat only, so it never classifies prose or
+                # reads a status diagnostic; with nothing attributable the failure is the plain runtime_error.
+                code = 'interrupted' if current.get('interrupt_requested') else current.get('final_failure_code') or 'runtime_error'
                 self._queue_failure(chat_id, current['target'], code)
                 await self._flush_failures(chat_id)
                 current['failure_delivered'] = True
@@ -1795,9 +1857,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return
         room_id = event.source.chat_id
-        current = self._current.get(room_id)
-        if current and current.get('event_id', str(current['target'])) == event.message_id and _native_bound(current):
-            # 0.10.4 r2: a compact row starts only through its native hook (`started_turn`), never from a callback that names a chat.
+        bound = bind_turn(adapter=self, room_id=room_id, event_id=event.message_id)
+        if bound:
+            # 0.10.4 r2/r3: a compact row starts only through its native hook (`started_turn`), never from a callback that names
+            # a chat; the binding refuses an unbound compact row, an ended row and another event.
+            current = bound.current
             receipt(self.client.store, room_id, current['target'], state='started', started_at=time.time())
             await self._delivery(room_id, current['target'], 'started')
 
@@ -1805,10 +1869,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return
         room_id = event.source.chat_id
-        current = self._current.get(room_id, {})
-        if current.get('event_id', str(current.get('target'))) != str(event.message_id):
+        bound = bind_turn(adapter=self, room_id=room_id, event_id=event.message_id, need='settle')
+        if not bound:
             return
-        current = self._current[room_id]
+        current = bound.current
         if current.get('native_admission'):
             await self._reconcile_native(room_id)
             return
@@ -1846,7 +1910,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
 
     async def _send_files(self, chat_id, paths, *, caption=None, voice=False, names=None):
         from .media import read_local, upload, MAX_FILES_PER_MESSAGE
-        current = self._current.get(chat_id)
+        current = bind_turn(adapter=self, room_id=chat_id, need='settle').current
         # Inside a turn the identity is that turn's (a retry of the same answer dedupes);
         # outside one (send_message, background) every send is its own new intent.
         scope = current['client_id'] if current else str(uuid.uuid4())
@@ -1918,24 +1982,25 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         # Native diagnostic callback, NOT model output or a clarify/approval.
         # Presence carries progress; one durable final failure replaces repeated
         # raw provider-error bubbles. A recoverable diagnostic is not a verdict.
-        current = self._current.get(chat_id)
-        if current:
-            current['provider_hint'] = failure_code(content)
+        # 0.10.4 r3: it names a chat, never an event, so what it says is room-local: it is neither stored on a turn nor read back as
+        # a failure label (a later failure of whichever input is current would otherwise carry this one's reason).
+        if bind_turn(adapter=self, room_id=chat_id, need='settle'):
             health(self.client.store, chat_id, last_status=time.time())
             await self.send_typing(chat_id)
         return SendResult(success=True)
 
     async def send_typing(self, chat_id, **kwargs):
-        current = self._current.get(chat_id)
+        bound = bind_turn(adapter=self, room_id=chat_id)  # a compact row only with its positive native record; an ended row never
+        current = bound.current
         binding = self.client.store.room(chat_id)
         # DM owners watch a live delivery line: 5 s working heartbeat there, 20 s in rooms.
         interval = 5 if binding.get('room_type') == 'dm' else 20
-        if not current or time.monotonic() - self._typing_at.get(chat_id, 0) < interval - 0.5:
+        if not bound or time.monotonic() - self._typing_at.get(chat_id, 0) < interval - 0.5:
             return
         row = binding.get('processing_receipts', {}).get(str(current['target']), {})
         if current.get('failure_delivered') or row.get('explicit_failure') or row.get('explicit_pass') or row.get('state') in ('replied', 'failed', 'passed'):
             return  # A give-up intent owns this target, even while confirmation retries.
-        if current.get('bare') and not (_native_bound(current) and (row.get('state') == 'started' or current.get('start_reported'))):
+        if current.get('bare') and not (row.get('state') == 'started' or current.get('start_reported')):
             # 0.10.4 r2: this callback (and `send_or_update_status`, which calls it) names a chat, not an input.  A compact row only
             # refreshes a start that its own native hook already established (`started_turn`); it never creates one, reports `working`
             # or spends the throttle window.  Presentation continues unchanged for receipt-framed rows (a compact DM or room row alike).
@@ -1958,7 +2023,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         text_content = human_text(visible_text(text_content))
         if (getattr(event, 'metadata', None) or {}).get('botsesh_control') is True:
             return await self.send(event.source.chat_id, text_content, metadata=metadata), self
-        current = self._current.get(event.source.chat_id)
+        current = bind_turn(adapter=self, room_id=event.source.chat_id, event_id=event.message_id, need='settle').current
         target = int(event.source.message_id if str(event.message_id).startswith('takeover:') else event.message_id)
         target_row = self.client.store.room(event.source.chat_id).get('processing_receipts', {}).get(str(target), {})
         if target_row.get('event_id', str(target)) != str(event.message_id):
@@ -1968,7 +2033,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # apology. The exact typed notice owns it, not a new raw message.
             await self._flush_failures(event.source.chat_id)
             return SendResult(success=True), self
-        if current is None or current.get('event_id', str(current['target'])) != str(event.message_id):
+        if current is None:
             posted = await self._posted_reply(event.source.chat_id, target, target_row.get('receipt_id'))
             if posted:
                 return SendResult(success=True, message_id=str(posted['number'])), self
@@ -1995,6 +2060,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if current and current.get('model_processed') is not True:
             # Our durable failure outbox owns this short no-read notice. Do not
             # put raw provider prose in a second, unrelated core replay ledger.
+            # 0.10.4 r3: this is the one place a failure text is attributed to a turn (the event-bound final of THIS event), so it is the
+            # only place that may classify it; `send()` and `_reconcile_native` read the result from the row, never from a status hint.
+            current['final_failure_code'] = failure_code(text_content)
             return await self.send(event.source.chat_id, text_content, reply_to=reply_to, metadata={**metadata, 'notify': True}), self
         if current and current.get('model_processed') is True:
             payload = {'text': text_content, **self._final_options(event.source.chat_id, current)}

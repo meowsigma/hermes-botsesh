@@ -100,20 +100,9 @@ def check_chat_only_runtime():
 
 
 def _scope():
-    from gateway.session_context import get_session_env
-    return (get_session_env('HERMES_SESSION_PLATFORM', ''),
-            get_session_env('HERMES_SESSION_CHAT_ID', ''),
-            get_session_env('HERMES_SESSION_MESSAGE_ID', ''))
-
-
-def _current(room_id, target):
-    from .adapter import _ADAPTERS
-    matches = []
-    for adapter in list(_ADAPTERS):
-        current = adapter._current.get(room_id)
-        if current and str(current.get('target')) == target:
-            matches.append((adapter, current))
-    return matches[0] if len(matches) == 1 else (None, None)
+    """The gateway's own (platform, room, input) of the running turn.  Only a platform gate: attribution is `adapter.bind_turn`."""
+    from .adapter import _ambient
+    return _ambient()
 
 
 DM_REPLY = ('\nBOTSESH DM REPLY: your final plain-text reply IS posted to this DM as your answer. '
@@ -199,24 +188,26 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
     The execution veto below remains authoritative even for a hallucinated tool
     or tool-call wrapper. Unsupported provider wire formats get no tools.
     """
-    platform, room_id, target = _scope()
+    platform, room_id, _input = _scope()
     if platform != 'botsesh':
         return None
-    from .adapter import _HOOK_LOCK
+    from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
-        adapter, current = _current(room_id, target)
+        # The row of this native input may only NARROW the allowlist (a scheduled service input is narrower than a guest turn).
+        scoped = bind_turn(ambient='required', need='settle')
+        adapter, current = scoped.adapter, scoped.current
+        # Authority (host tools, the owner-DM prompt) needs the hook's own explicit ids on top of that input: one binding for both.
+        granted = bind_turn(hook=(session_id, turn_id), ambient='required')
+        granted = granted.current if granted and granted.current is current else None
         override = getattr(adapter, '_guest_tools_override', 'server')
-        unrestricted = bool(current and current.get('hook_turn') == (session_id, turn_id)
-                and not current.get('hook_terminal') and host_tools_allowed(current.get('tool_policy'), override))
+        unrestricted = bool(granted and host_tools_allowed(granted.get('tool_policy'), override))
         # 0.10.4: only a verified owner-DM turn (admission's owner_dm gate), bound to this exact native turn.
-        owner_dm = bool(current and current.get('dm_prompt') is True and current.get('hook_turn') == (session_id, turn_id)
-                        and not current.get('hook_terminal'))
-        # 0.10.5: a lean group turn (compact delivery, no per-turn packet), bound to this exact native turn the same way.
-        group_lean = bool(current and current.get('lean_group') is True and current.get('hook_turn') == (session_id, turn_id)
-                          and not current.get('hook_terminal'))
+        owner_dm = bool(granted and granted.get('dm_prompt') is True)
+        # 0.10.5: a lean group turn (compact delivery, no per-turn packet) gets the short group hint only through the same binding.
+        group_lean = bool(granted and granted.get('lean_group') is True)
     from . import agreement
     # Cached from this room's own reads; absent proof keeps the unchanged tools.
-    agree = agreement.exposed_for(adapter.client.store, room_id) if adapter else True
+    agree = agreement.exposed_for(adapter.client.store, scoped.room_id) if adapter else True
     original = request
     if owner_dm:
         request = _owner_dm_request(request)
@@ -266,10 +257,10 @@ def enforce_tools(**kwargs):
         # The blocked-tool notice must not advertise a tool this server cannot run.
         try:
             from . import agreement
-            from .adapter import _HOOK_LOCK
-            _, room_id, target = _scope()
+            from .adapter import _HOOK_LOCK, bind_turn
             with _HOOK_LOCK:
-                adapter, _ = _current(room_id, target)
+                scoped = bind_turn(ambient='required', need='settle')
+            adapter, room_id = scoped.adapter, scoped.room_id
             if adapter is not None and not agreement.exposed_for(adapter.client.store, room_id):
                 result = {**result, 'message': result['message'].replace('read, post, pass and agree', 'read, post and pass')}
         except Exception:
@@ -278,7 +269,7 @@ def enforce_tools(**kwargs):
 
 
 def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
-    from .adapter import _HOOK_LOCK
+    from .adapter import _HOOK_LOCK, bind_turn
     platform, room_id, target = _scope()
     if platform != 'botsesh':
         return None
@@ -291,12 +282,15 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
         return dict(UPDATE_NEEDS_RESTART if runtime.swap_blocked() else UPDATING)
     try:
         with _HOOK_LOCK:
-            adapter, current = _current(room_id, target)
+            scoped = bind_turn(ambient='required', need='settle')  # the row of this native input, only to say WHY a call is refused
+            adapter, current = scoped.adapter, scoped.current
             if not current:
                 return dict(NOT_A_TURN)
+            room_id = scoped.room_id  # the room the binding proved, not a second read of the gateway's variables
             if current.get('hook_terminal'):
                 return dict(ENDED)
-            if not session_id or not turn_id or current.get('hook_turn') != (session_id, turn_id):
+            bound = bind_turn(hook=(session_id, turn_id), ambient='required')
+            if not bound or bound.current is not current:
                 logger.warning('BotSesh tool %s refused: tool call is not bound to the live turn (hook mismatch).', tool_name)
                 return dict(UNVERIFIED)
             binding = adapter.client.store.room(room_id)
@@ -331,7 +325,7 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
             adapter.client.enrolled(room_id, 'verify')
             live = None
         with _HOOK_LOCK:
-            if adapter._current.get(room_id) is not current or current.get('hook_terminal'):
+            if bind_turn(adapter=adapter, hook=(session_id, turn_id), ambient='required').current is not current:
                 return dict(ENDED)
             if (current.get('lean_group') is True and not adapter._delivery_proves_read(current)
                     and _claims_read(tool_name, kwargs.get('args'))):
