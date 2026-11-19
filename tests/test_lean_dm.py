@@ -112,10 +112,11 @@ class LeanDmTests(SolidTests):
         event = self.adapter._admit_event.call_args.args[0]
         if complete:
             current = self.adapter._current[room]
-            if current.get('lean_session'):
+            if current.get('lean_session') or current.get('bare'):
                 # r3: a lean turn is proven only by the real hook sequence of its native event (an explicit non-first turn in the
-                # session it was built for); setting `hermes_session_id` by hand would write no proof.
-                await self.hermes_turn(event, session, 'run-%s-%s' % (room, target), room=room, first=False)
+                # session it was built for); setting `hermes_session_id` by hand would write no proof.  0.10.4 r1: the same holds
+                # for a compact FIRST delivery (a fresh session: `first=True`), whose hooks bind it by the native identity.
+                await self.hermes_turn(event, session, 'run-%s-%s' % (room, target), room=room, first=not current.get('lean_session'))
             else:
                 current.update(hermes_session_id=session, model_processed=True, delivered=True)
                 await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
@@ -151,8 +152,13 @@ class LeanDmTests(SolidTests):
         current = self.adapter._current['a']
         self.assertIsNone(current['lean_session'], 'a complete first delivery is a full-delivery for the proof of read')
         self.assertTrue(current['bare'] and current['dm_prompt'])
+        # 0.10.4 r1: the whole read is in the text, but the text has no receipt header: it is proven only by the hooks of this very
+        # turn binding it through the gateway's native identity
+        self.assertFalse(self.adapter._delivery_proves_read(current))
+        self.model_turn(first, 's1', 't1', first=True)
+        self.assertEqual(current['native_turn'], ('s1', 't1'))
         self.assertTrue(self.adapter._delivery_proves_read(current))
-        current.update(hermes_session_id='s1', model_processed=True, delivered=True)
+        current['delivered'] = True
         await self.adapter.on_processing_complete(first, ProcessingOutcome.SUCCESS)
         self.thread += [agent(4, 'yo, not much'), human(5, 'Yoo wsp big dawg')]
         second = await self.deliver(5, complete=False)
@@ -581,7 +587,11 @@ class LeanDmTests(SolidTests):
             ended_turn(platform='botsesh', session_id=session, turn_id=turn, completed=True, failed=False, interrupted=False)
             return context
         if not identity:
-            return hooks()
+            context = hooks()
+            # 0.10.4 r1: with no native identity the hooks bind and credit nothing.  The completion this fixture still reports
+            # stands in for the native admission's terminal row (`_native_state`), which does not depend on the hooks.
+            self.adapter._current[room].update(model_processed=True, hook_terminal=True)
+            return context
         with turn_env(room, target):
             return hooks()
 
@@ -749,8 +759,9 @@ class LeanDmTests(SolidTests):
         event = await self.unproven_lean_turn('absent_same_id')  # also asserts: no recovery context, `_delivery_proves_read` is False
         current = self.adapter._current['a']
         self.assertEqual(self.store.entry.session_id, 's1', 'the session id never changed')
-        self.assertEqual(current['hook_turn'], ('s1', 't1'), 'the hooks really ran and bound this turn (no identity: the one running event with this text)')
-        self.assertTrue(current['model_processed'], 'a successful model completion')
+        self.assertNotIn('hook_turn', current, 'no identity: the hooks ran and bound NOTHING (no text match, not even the one running event with this text)')
+        self.assertNotIn('native_turn', current)
+        self.assertTrue(current['model_processed'], 'a successful model completion (the native admission, not the hooks)')
         self.assertNotIn('lean_proof', current)
         self.assertNotIn('lean_catchup_sent', current)
         self.assertEqual(self.ledger()['session_id'], 's1', 'before settlement the stale continuity is still on file')
@@ -1259,15 +1270,21 @@ class LeanDmTests(SolidTests):
                 processed_turn(user_message=text, platform='botsesh', session_id='s7', turn_id='tx')
             self.assertNotIn('hook_turn', a, name)
             self.assertEqual(b['hook_turn'], ('s9', 'tb'), name)
-        # no gateway identity (an older core): two running events with the same words bind nothing, exactly one binds
+        # r1: with no gateway identity (an older core, a hook outside a turn) NOTHING binds: not two events with the same words and
+        # not exactly one either, because a text match is no evidence that this hook's turn is that event
         processed_turn(user_message='Yoo wsp big dawg', platform='botsesh', session_id='s6', turn_id='tn')
         self.assertNotIn('hook_turn', a)
         self.assertEqual(b['hook_turn'], ('s9', 'tb'))
         self.adapter._current.pop('b')
         processed_turn(user_message='Yoo wsp big dawg', platform='botsesh', session_id='s6', turn_id='tn')
-        self.assertEqual(a['hook_turn'], ('s6', 'tn'), 'a single running event with this text binds without an identity')
+        self.assertNotIn('hook_turn', a, 'a single running event with this text binds nothing without a native identity')
+        self.assertNotIn('native_turn', a)
+        self.assertNotIn('hermes_session_id', a)
+        with turn_env('a', 5):
+            processed_turn(user_message='Yoo wsp big dawg', platform='botsesh', session_id='s6', turn_id='tn')
+        self.assertEqual((a['hook_turn'], a['native_turn']), (('s6', 'tn'), ('s6', 'tn')), 'its own room and input bind it')
 
-    async def test_a_compact_turn_binds_its_proof_through_the_native_identity_and_a_complete_first_delivery_through_nothing(self):
+    async def test_a_compact_turn_binds_its_proof_through_the_native_identity_and_a_complete_first_delivery_through_the_same_binding(self):
         # steady state: lean, proven only by the pre_llm_call proof of the exact turn
         event = await self.lean_five()
         current = self.adapter._current['a']
@@ -1276,14 +1293,166 @@ class LeanDmTests(SolidTests):
         self.model_turn(event, 's1', 't1', first=False)
         self.assertEqual(current['lean_proof'], ('s1', 't1', 'session'))
         self.assertTrue(self.adapter._delivery_proves_read(current))
-        # a complete first delivery needs no hook proof: it put the whole read in front of the model
+        # r1: a complete first delivery has the whole read in its text but no receipt header, so it is proven only by the same
+        # positive binding: the hooks of its own turn, tied to it by the native identity
         self.adapter._current.pop('a')
         self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={}, handled=[]))
         self.store.entry = Entry('s5')
         self.thread += [agent(6, 'ok'), human(7, 'and now?')]
         first = await self.deliver(7, complete=False)
+        current = self.adapter._current['a']
         self.assertTrue('Earlier in this DM (context only' in first.text)
-        self.assertTrue(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        self.assertFalse(self.adapter._delivery_proves_read(current), 'nothing bound it yet')
+        self.model_turn(first, 's5', 't2', first=True, identity=False)
+        self.assertFalse(self.adapter._delivery_proves_read(current), 'hooks without a native identity prove nothing')
+        current.pop('hook_terminal'); current['model_processed'] = False
+        self.model_turn(first, 's5', 't3', first=True)
+        self.assertEqual((current['hook_turn'], current['native_turn'], current['hermes_session_id']), (('s5', 't3'), ('s5', 't3'), 's5'))
+        self.assertTrue(self.adapter._delivery_proves_read(current))
+
+    # --- 0.10.4 r1 (t_d6a5d8c0): the reviewer's regression, a foreign hook with no native identity -------------------------------
+
+    def started_calls(self, room, target):
+        # the real wire (`real_wire`) records the start report as the server request `hermes_delivery` with state `started`
+        return [args for r, name, args in self.requests if r == room and name == 'hermes_delivery' and args.get('number') == target and args.get('state') == 'started']
+
+    async def foreign_full_frame_event(self):
+        """A valid full-frame turn of ANOTHER room (a group room b, the original receipt-bound envelope) that carries the same words."""
+        self.client.store.update(lambda d: d['rooms']['b'].update(room_type='room'))
+        event = await self.deliver(3, room='b', complete=False)
+        self.assertIn('Yoo wsp big dawg', event.text)
+        self.assertFalse(self.adapter._current['b']['bare'])
+        return event
+
+    def foreign_hooks(self, text, identity=None, session='sf', turn='tf'):
+        def hooks():
+            started_turn(user_message=text, platform='botsesh', session_id=session, turn_id=turn, is_first_turn=True)
+            processed_turn(user_message=text, platform='botsesh', session_id=session, turn_id=turn)
+            ended_turn(platform='botsesh', session_id=session, turn_id=turn, completed=True, failed=False, interrupted=False)
+        if identity:
+            with turn_env(*identity):
+                hooks()
+        else:
+            hooks()
+
+    def assert_untouched_by_a_foreign_hook(self, current, room='a', target=5):
+        for key in ('hook_turn', 'native_turn', 'hermes_session_id', 'hook_terminal', 'start_reported', 'lean_proof'):
+            self.assertNotIn(key, current, key)
+        self.assertFalse(current['model_processed'])
+        self.assertEqual(self.started_calls(room, target), [], 'the foreign hook reported no start for this input')
+        self.assertFalse(self.adapter._delivery_proves_read(current))
+
+    async def test_a_foreign_full_frame_hook_with_no_identity_neither_starts_nor_completes_a_pending_compact_dm_row_and_the_native_match_does(self):
+        self.real_wire()
+        event = await self.lean_five()
+        a = self.adapter._current['a']
+        ledger = copy.deepcopy(self.ledger())
+        foreign = await self.foreign_full_frame_event()
+        b = self.adapter._current['b']
+        for name, identity in (('no identity', None), ('its own identity', ('b', 3))):
+            with self.subTest(name):
+                b.pop('hook_turn', None); b.pop('hook_terminal', None); b['model_processed'] = False
+                self.foreign_hooks(foreign.text, identity, turn='tf-' + name)
+                self.assertEqual(b['hook_turn'], ('sf', 'tf-' + name), 'its own receipt-framed text binds the foreign turn, as before')
+                self.assertTrue(b['model_processed'])
+                self.assert_untouched_by_a_foreign_hook(a)
+                self.assertEqual(self.ledger(), ledger, 'a foreign completion covers no read of the compact row and moves no ledger')
+        # the intended native match: the same hooks of ITS OWN room and input
+        with self.subTest('the native match'):
+            self.model_turn(event, 's1', 't1', first=False)
+            self.assertEqual((a['hook_turn'], a['native_turn'], a['lean_proof']), (('s1', 't1'), ('s1', 't1'), ('s1', 't1', 'session')))
+            self.assertEqual(len(self.started_calls('a', 5)), 1)
+            self.assertTrue(a['model_processed'] and a['hook_terminal'])
+            with turn_env('a', 5):  # a late hook of the same event after its turn ended re-binds nothing
+                processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t-late')
+            self.assertEqual((a['hook_turn'], a['native_turn']), (('s1', 't1'), ('s1', 't1')))
+            self.assertTrue(self.adapter._delivery_proves_read(a))
+            self.assertTrue((await self.adapter.send('a', 'a plain reply', metadata={'notify': True})).success)
+            ((name, wire),) = self.sends()
+            self.assertEqual((name, wire['batch_id'], wire['reply_to']), ('send_message', 'receipt-5', 5))
+            await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            self.assertEqual(self.ledger()['through'], 5)
+
+    async def test_a_foreign_full_frame_hook_with_no_identity_cannot_make_a_compact_first_delivery_count_as_read(self):
+        self.real_wire()
+        first = await self.deliver(3, complete=False)
+        a = self.adapter._current['a']
+        self.assertTrue(a['bare'] and a['lean_session'] is None and 'Earlier in this DM' in first.text)
+        self.assertIsNone(self.ledger())
+        foreign = await self.foreign_full_frame_event()
+        # the foreign room's text quotes the compact DM verbatim (a person pasting it, a forwarded line): the old fallback bound it
+        self.foreign_hooks(foreign.text + '\nquoted: ' + first.text, turn='tf-quote')
+        self.assert_untouched_by_a_foreign_hook(a, target=3)
+        self.assertIsNone(self.ledger())
+        # no hook of its own: the completion that is known (the native admission's terminal row) still proves no read
+        a.update(model_processed=True, hook_terminal=True)
+        self.assertFalse(self.adapter._delivery_proves_read(a))
+        self.assertTrue((await self.adapter.send('a', 'a plain reply', metadata={'notify': True})).success)
+        ((name, wire),) = self.sends()
+        self.assertEqual((name, wire['reply_to'], set(wire) & {'batch_id', 'receipt_id', 'processed'}), ('hermes_authored', 3, set()))
+        await self.adapter.on_processing_complete(first, ProcessingOutcome.SUCCESS)
+        row = self.client.store.room('a')['processing_receipts']['3']
+        self.assertEqual(row['state'], 'completed_unread')
+        self.assertNotIn('read_attested', row)
+        self.assertNotIn(3, self.client.store.room('a').get('handled', []))
+        self.assertIsNone(self.ledger(), 'an unproven first delivery records no session')
+        self.assertFalse(any(n == 'finish_room_turn' for _, n, _ in self.requests))
+
+    async def test_two_adapters_claiming_the_same_compact_input_is_ambiguous_and_binds_neither(self):
+        event = await self.lean_five()
+        other = self.make_adapter()
+        other._current['a'] = copy.copy(self.adapter._current['a'])
+        _ADAPTERS.add(other)
+        self.addCleanup(_ADAPTERS.discard, other)
+        with turn_env('a', 5):
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+        for current in (self.adapter._current['a'], other._current['a']):
+            self.assertNotIn('hook_turn', current)
+            self.assertNotIn('native_turn', current)
+        _ADAPTERS.discard(other)
+        with turn_env('a', 5):
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+        self.assertEqual(self.adapter._current['a']['native_turn'], ('s1', 't1'), 'the one claimant binds')
+
+    async def test_a_compact_row_whose_event_id_is_not_its_input_never_binds(self):
+        event = await self.lean_five()
+        current = self.adapter._current['a']
+        current['event_id'] = 'takeover:x'  # a takeover event is never a compact DM turn: the gateway's message id is the input number
+        with turn_env('a', 5):
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+        self.assertNotIn('native_turn', current)
+
+    async def test_a_runtime_that_cannot_bind_a_native_identity_keeps_the_receipt_bound_envelope_and_its_full_proof(self):
+        with patch.object(adapter_module, '_native_identity_supported', return_value=False):
+            await self.deliver(3)
+            self.thread += [agent(4, 'yo'), human(5, 'again')]
+            event = await self.deliver(5, complete=False)
+        current = self.adapter._current['a']
+        self.assertIn('Complete BotSesh collaboration data', event.text)
+        self.assertFalse(current['bare'])
+        self.assertIsNone(current['lean_session'])
+        self.assertTrue(self.adapter._delivery_proves_read(current), 'receipt-bound: the whole frozen read is in the text')
+        self.assertFalse(current.get('lean_proof'))
+
+    def test_the_capability_probe_needs_the_gateways_session_variables(self):
+        self.assertTrue(adapter_module._native_identity_supported())
+        with patch.dict('sys.modules', {'gateway.session_context': SimpleNamespace(get_session_env=lambda *a: '', set_session_vars=lambda platform=None: None)}):
+            self.assertFalse(adapter_module._native_identity_supported(), 'a core whose session variables lack chat_id/message_id')
+        with patch.dict('sys.modules', {'gateway.session_context': None}):
+            self.assertFalse(adapter_module._native_identity_supported(), 'a core with no session variables at all')
+
+    async def test_a_compact_first_delivery_credits_no_session_ledger_without_its_native_binding(self):
+        await self.deliver(3, complete=False)
+        current = self.adapter._current['a']
+        # everything a hook could have written EXCEPT the positive native record
+        current.update(hermes_session_id='s1', hook_turn=('s1', 't'), model_processed=True)
+        self.assertFalse(self.adapter._delivery_proves_read(current))
+        self.adapter._remember_dm_session('a', current)
+        self.assertIsNone(self.ledger())
+        current['native_turn'] = ('s1', 't')
+        self.assertTrue(self.adapter._delivery_proves_read(current))
+        self.adapter._remember_dm_session('a', current)
+        self.assertEqual(self.ledger()['through'], 3)
 
     async def test_the_compact_first_delivery_falls_back_to_the_full_packet_when_it_would_not_be_complete(self):
         base = lambda: [MANIFEST, human(1, 'hi'), agent(2, 'yo'), human(3, 'Yoo wsp big dawg')]
@@ -1512,6 +1681,21 @@ class LeanPieceTests(unittest.TestCase):
         recovered = {'lean_session': 's1', 'hermes_session_id': 's9', 'hook_turn': ('s9', 't'), 'lean_proof': ('s9', 't', 'recovery')}
         self.assertTrue(proves(recovered), 'a complete recovery attached to this exact turn proves a session other than the one planned for')
         self.assertFalse(proves(dict(recovered, lean_proof=('s9', 't', 'session'))), 'a session proof is only for the session the delivery was built for')
+        # r1: a complete COMPACT first delivery (bare, no lean session) has no receipt header: only the native binding proves it
+        self.assertTrue(proves({'lean_session': None, 'bare': False}), 'the receipt-bound full packet is unchanged')
+        first = {'lean_session': None, 'bare': True, 'native_turn': ('s1', 't'), 'hook_turn': ('s1', 't'), 'hermes_session_id': 's1'}
+        self.assertTrue(proves(first))
+        for name, bad in {'no native record': {k: v for k, v in first.items() if k != 'native_turn'},
+                          'a hook turn of another turn': dict(first, hook_turn=('s1', 't2')),
+                          'no hook turn': {k: v for k, v in first.items() if k != 'hook_turn'},
+                          'a session other than the one bound': dict(first, hermes_session_id='s2'),
+                          'no reported session': {k: v for k, v in first.items() if k != 'hermes_session_id'},
+                          'a record that is not a tuple': dict(first, native_turn=['s1', 't']),
+                          'a short record': dict(first, native_turn=('s1',), hook_turn=('s1',)),
+                          'an empty session': dict(first, native_turn=('', 't'), hook_turn=('', 't'), hermes_session_id=''),
+                          'an empty turn': dict(first, native_turn=('s1', ''), hook_turn=('s1', ''))}.items():
+            with self.subTest('compact first: ' + name):
+                self.assertFalse(proves(bad))
 
     def test_plan_requires_the_exact_session_and_a_reachable_window(self):
         thread = [MANIFEST, human(1, 'a'), agent(2, 'b'), human(3, 'c')]
