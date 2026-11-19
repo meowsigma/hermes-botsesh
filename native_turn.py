@@ -140,6 +140,10 @@ class NativeTurnMixin:
         # 0.10.3: a lean owner-DM turn whose delivery did not prove the model received the whole frozen read (absent, failed or
         # clipped late recovery) must not claim that read: no quiet pass, and its final went out as an authored reply.
         proven = self._delivery_proves_read(current)
+        # 0.10.3 r4: a media-only answer (files/voice threaded to this input; no text final, no explicit post or pass) is a send
+        # path like the final and the quiet pass.  The upload itself is an authored message and claims nothing; what settles the
+        # batch is decided here, from the SAME `proven`: without it the answer settles unread, with the same exact-target reply.
+        media_answered = bool(current.get('media_sent') and current.get('model_processed'))
         if rejected_posts and not current.get('delivered') and not row.get('read_attested'):
             self._queue_failure(room_id, current['target'], 'runtime_error')
             await self._flush_failures(room_id)
@@ -165,17 +169,21 @@ class NativeTurnMixin:
         elif row.get('explicit_failure'):
             await self._flush_explicit_failure(room_id, current['target'])
         elif (current.get('reply_unattested') or (current.get('model_processed') and current.get('intentional_silence')
-                                                  and not row.get('explicit_post_calls') and not proven)) and not row.get('read_attested'):
+                                                  and not row.get('explicit_post_calls') and not proven)
+              or (media_answered and not proven)) and not row.get('read_attested'):
             # No read checkpoint advances: local completion only (the state an authored no-read post gets). The next turn's
             # full catch-up carries whatever this one did not receive.
             await self._delivery(room_id, current['target'], 'completed_unread', batch_id=current['receipt_id'])
             for target in current.get('batch_targets', [current['target']]):
                 self._mark_unread_reply(room_id, target)
-        elif current.get('delivered') or row.get('read_attested') or (current.get('media_sent') and current.get('model_processed')):
+        elif (current.get('delivered') or row.get('read_attested')
+              or (media_answered and proven and not row.get('explicit_post_calls') and not row.get('explicit_agreement'))):
             # A confirmed processed:true post/ack is its own explicit read
             # attestation, even if the runtime fails after that useful answer.
             # Keep the native failure ledger, not a failed/unanswered room ask.
-            # DM P2: a media-only answer (files/voice threaded to this input) answers it too.
+            # DM P2: a media-only answer (files/voice threaded to this input) answers it too, but only with positive proof
+            # that the model received the frozen read (r4); a media upload next to an explicit authored no-read post or agreement
+            # stays no-read like that post (the branch below).
             await self._delivery(room_id, current['target'], 'completed', batch_id=current['receipt_id'])
             for target in current.get('batch_targets', [current['target']]):
                 self._mark_handled(room_id, target, state='replied' if target == current['target'] and (current.get('delivered') or current.get('media_sent')) else 'passed')

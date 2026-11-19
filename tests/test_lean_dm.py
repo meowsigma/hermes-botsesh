@@ -4,17 +4,21 @@ import json
 import re
 import time
 import unittest
+import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from test_solid import SolidTests
-from hermes_botsesh_test import adapter as adapter_module, lean_dm
+from hermes_botsesh_test import adapter as adapter_module, lean_dm, media
 from hermes_botsesh_test.adapter import _ADAPTERS, started_turn, processed_turn, ended_turn
 from gateway.session_context import set_session_vars, clear_session_vars
 from gateway.platforms.event import ProcessingOutcome
 
 OWNER = 'owner'
+PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
+OGG = b'OggS' + b'\x00' * 40
 MANIFEST = {'id': 1, 'number': 0, 'text': 'Hermes commands available (85). Type / to choose a command.', 'isOwn': True,
             'senderParticipantId': 'agent', 'authorParticipant': {'id': 'agent', 'name': 'Hermes', 'verified': True},
             'dmControl': {'version': 1, 'kind': 'manifest', 'commands': [{'name': 'cmd%d' % i, 'description': 'x' * 200} for i in range(85)]}}
@@ -834,6 +838,180 @@ class LeanDmTests(SolidTests):
         passes = [args for _, n, args in self.requests if n == 'finish_room_turn']
         self.assertEqual([(a['batch_id'], a['output']) for a in passes], [('receipt-5', {'nothing_to_add': True})])
         self.assertEqual(self.client.store.room('a')['processing_receipts']['5']['state'], 'passed')
+
+    # --- r4 (t_8f9772b9): a media-only reply is a send path too; it never acknowledges the frozen batch without proof --------------
+
+    def media_wire(self):
+        """The DM upload route (`upload_files`) behind the `real_wire` doubles: every exact upload is recorded and, like the server,
+        one UUID is one message number.  Everything else keeps going through the real Client/OAuth journals."""
+        self.uploads, numbers, inner = [], {}, self.client.enrolled.side_effect
+
+        def enrolled(room, op, **args):
+            if op == 'upload_files':
+                self.uploads.append(copy.deepcopy(args))
+                return {'client_id': args['client_id'], 'number': numbers.setdefault(args['client_id'], 200 + len(numbers)),
+                        'attachments': [], 'read_effect': 'none'}
+            return inner(room, op, **args)
+        self.client.enrolled.side_effect = enrolled
+
+    async def media_only_reply(self, voice=False):
+        """The model answers the running turn with ONE file or voice note and no text final or pass of its own."""
+        self.media_wire()
+        current, texts = self.adapter._current['a'], len(self.sends())
+        name, data = ('reply.ogg', OGG) if voice else ('chart.png', PNG)
+        path = Path(self.tmp.name) / name
+        path.write_bytes(data)
+        sent = await (self.adapter.send_voice('a', str(path)) if voice else self.adapter.send_image_file('a', str(path)))
+        self.assertTrue(sent.success, sent)
+        # exact bytes, threaded to exactly the input this turn answers, under the turn's durable send identity
+        self.assertEqual(len(self.uploads), 1)
+        upload = self.uploads[0]
+        self.assertEqual((upload['files'], upload['reply_to'], upload['voice'], upload['text']), ([(name, data)], current['target'], voice, ''))
+        self.assertEqual(upload['client_id'], media.upload_identity(self.client, 'a', [(name, data)], text='', voice=voice,
+                                                                    reply_to=current['target'], scope=current['client_id']))
+        self.assertEqual(current['media_sent'], [200])
+        self.assertEqual(len(self.sends()), texts, 'the upload is the only thing this send path put on the wire')
+        return upload
+
+    def completed_batches(self, state, target):
+        return [args.get('batch_id') for _, name, args in self.requests if name == 'hermes_delivery' and args.get('state') == state and args['number'] == target]
+
+    def assert_not_acknowledged(self, target, cursor):
+        """The frozen batch of `target` was neither acknowledged nor read: no completed delivery, no pass, no cursor, no attestation."""
+        room = self.client.store.room('a')
+        row = room['processing_receipts'][str(target)]
+        self.assertEqual(self.states(target), ['completed_unread'], 'a plain completed delivery is the server-side batch acknowledgment')
+        self.assertEqual(self.completed_batches('completed', target), [])
+        self.assertEqual(self.completed_batches('completed_unread', target), [row['receipt_id']])
+        self.assertFalse(any(n in ('finish_room_turn', 'send_message', 'hermes_authored') for _, n, _ in self.requests))
+        self.assertEqual(row['state'], 'completed_unread')
+        self.assertNotIn('read_attested', row)
+        self.assertNotIn('explicit_pass', row)
+        self.assertNotIn(target, room.get('handled', []))
+        self.assertEqual(room.get('processed_cursor'), cursor)
+        self.assertNotIn('pending_final', room)
+        self.assertNotIn('a', self.adapter._current)
+
+    async def assert_unproven_media_only_settles_unread(self, how, voice=False):
+        event = await self.unproven_lean_turn(how)
+        current = self.adapter._current['a']
+        target, cursor = current['target'], self.client.store.room('a').get('processed_cursor')
+        await self.media_only_reply(voice=voice)
+        self.assertFalse(self.adapter._delivery_proves_read(current))
+        self.assertTrue(current['model_processed'] and current['media_sent'] and not current['delivered'])
+        self.assertTrue(self.ledger(), 'before settlement the stale continuity is still on file')
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assert_not_acknowledged(target, cursor)
+        self.assertEqual(len(self.uploads), 1, 'settlement sends nothing more: the threaded upload is the one reply')
+        self.assertIsNone(self.ledger(), 'the session that did not receive the whole read is not recorded as holding it')
+
+    async def test_an_unproven_lean_turns_media_only_reply_settles_unread_and_keeps_its_threaded_upload(self):
+        # the r3 conjunction (same id emptied, no native identity); then Hermes holds the SAME id again at least as long as the ledger
+        # recorded, so only the dropped ledger can keep #7 from being lean on continuity that is gone
+        await self.assert_unproven_media_only_settles_unread('absent_same_id')
+        self.store.held['s1'] = 6
+        self.thread += [agent(6, 'ok'), human(7, 'next')]
+        nxt = await self.deliver(7, complete=False)
+        self.assertIn('Complete BotSesh collaboration data', nxt.text)
+        self.assertIn('a-private-reply', nxt.text, 'the history the unproven turn never delivered arrives in full')
+        self.assertIsNone(self.adapter._current['a']['lean_session'])
+
+    async def test_an_unproven_lean_turns_voice_reply_settles_unread_and_the_next_turn_attests_in_full(self):
+        await self.assert_unproven_media_only_settles_unread('failed', voice=True)
+        await self.assert_next_turn_is_full_and_attests('s9')
+
+    async def test_a_clipped_late_recovery_media_only_reply_settles_unread(self):
+        await self.assert_unproven_media_only_settles_unread('clipped')
+
+    async def test_an_absent_late_recovery_media_only_reply_settles_unread(self):
+        await self.assert_unproven_media_only_settles_unread('absent')
+
+    async def test_a_media_only_reply_of_a_proven_lean_turn_still_settles_the_read(self):
+        self.real_wire()
+        event = await self.lean_five()
+        self.model_turn(event, 's1', 't1', first=False)
+        self.assertTrue(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        await self.media_only_reply()
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        room = self.client.store.room('a')
+        self.assertEqual(self.states(5), ['completed'])
+        self.assertEqual(self.completed_batches('completed', 5), ['receipt-5'])
+        self.assertEqual(room['processing_receipts']['5']['state'], 'replied')
+        self.assertIn(5, room['handled'])
+        self.assertEqual(room['processed_cursor'], 5)
+        self.assertEqual(self.ledger(), {'session_id': 's1', 'through': 5, 'brief': self.ledger()['brief'], 'messages': 4})
+        self.assertFalse(any(n in ('finish_room_turn', 'send_message', 'hermes_authored') for _, n, _ in self.requests))
+
+    async def test_a_media_only_reply_of_a_full_delivery_still_settles_the_read(self):
+        self.real_wire()
+        event = await self.deliver(3, complete=False)
+        current = self.adapter._current['a']
+        self.model_turn(event, 's1', 't1', first=True)
+        self.assertIsNone(current['lean_session'])
+        self.assertTrue(current['model_processed'] and self.adapter._delivery_proves_read(current))
+        await self.media_only_reply(voice=True)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        room = self.client.store.room('a')
+        self.assertEqual(self.states(3), ['completed'])
+        self.assertEqual(room['processing_receipts']['3']['state'], 'replied')
+        self.assertEqual(room['processed_cursor'], 3)
+
+    async def test_an_independent_explicit_attestation_still_covers_an_unproven_turns_media_only_reply(self):
+        event = await self.unproven_lean_turn('failed')
+        # the model itself attested the frozen read with a processed:true post (the real Client journals it and records the read)
+        posted = self.client.enrolled('a', 'post', _input_target=5, text='explicit answer', client_id=str(uuid.uuid4()),
+                                      receipt_id='receipt-5', processed=True, reply_to=5)
+        self.assertEqual(posted['read_effect'], 'processed_frozen_receipt')
+        self.assertTrue(self.client.store.room('a')['processing_receipts']['5']['read_attested'])
+        await self.media_only_reply()
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        room = self.client.store.room('a')
+        self.assertEqual(self.states(5), ['completed'])
+        self.assertEqual(self.completed_batches('completed', 5), ['receipt-5'])
+        self.assertEqual(room['processing_receipts']['5']['state'], 'replied')
+        self.assertEqual(room['processed_cursor'], 5)
+        self.assertEqual([(n, a['batch_id'], a['reply_to']) for n, a in self.sends()], [('send_message', 'receipt-5', 5)], 'only the explicit post attested')
+
+    async def test_a_media_reply_next_to_a_silent_final_of_an_unproven_turn_attests_nothing(self):
+        event = await self.unproven_lean_turn('failed')
+        cursor = self.client.store.room('a').get('processed_cursor')
+        await self.media_only_reply()
+        self.assertTrue((await self.adapter.send('a', 'NO_REPLY', metadata={'notify': True})).success)
+        self.assertTrue(self.adapter._current['a']['intentional_silence'])
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assert_not_acknowledged(5, cursor)
+
+    async def test_a_media_upload_of_a_turn_whose_model_did_not_complete_is_a_failure_not_a_settlement(self):
+        self.real_wire()
+        event = await self.lean_five()
+        cursor = self.client.store.room('a').get('processed_cursor')
+        await self.hermes_turn(event, 's9', 't1', first=True, complete=False)  # unproven AND the model run failed
+        self.assertFalse(self.adapter._current['a'].get('model_processed'))
+        await self.media_only_reply()
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        room = self.client.store.room('a')
+        self.assertEqual(self.states(5), [], 'neither a read nor an unread completion: the failure path owns the turn')
+        self.assertEqual([a['failure_code'] for _, n, a in self.requests if n == 'hermes_delivery' and a.get('state') == 'failed'], ['runtime_error'])
+        self.assertEqual(room['processing_receipts']['5']['state'], 'failed')
+        self.assertNotIn(5, room.get('handled', []))
+        self.assertEqual(room.get('processed_cursor'), cursor)
+
+    async def test_a_media_upload_never_upgrades_an_explicit_no_read_post_into_a_batch_acknowledgment(self):
+        # a proven turn: the model posted an authored no-read answer by tool (no processed:true) and also sent a file
+        self.real_wire()
+        event = await self.lean_five()
+        self.model_turn(event, 's1', 't1', first=False)
+        self.assertTrue(self.adapter._delivery_proves_read(self.adapter._current['a']))
+        cid = str(uuid.uuid4())
+        self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['5'].update(explicit_post_calls={
+            cid: {'payload': {'text': 'authored', 'client_id': cid}, 'result': {'client_id': cid, 'number': 300, 'read_effect': 'none'}}}))
+        await self.media_only_reply()
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        room = self.client.store.room('a')
+        self.assertEqual(self.states(5), ['completed_unread'], 'the authored no-read post owns the settlement; a file next to it adds no read')
+        self.assertEqual(self.completed_batches('completed', 5), [])
+        self.assertNotIn(5, room.get('handled', []))
+        self.assertEqual(room.get('processed_cursor'), 3)
 
     async def test_an_emptied_session_under_the_same_id_never_reuses_the_stale_ledger(self):
         event = await self.lean_five()
