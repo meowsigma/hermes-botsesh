@@ -5,7 +5,7 @@ the focused committed tests must then go RED.  The originals are restored after 
 
   PYTHONPATH=<hermes core> MUTATE_PYTHON=<hermes venv python> python tests/check_turn_binding_mutants.py [name-prefix ...]
 
-Run it in a scratch checkout of the commit under test: it rewrites adapter.py, live.py, tool_policy.py, native_turn.py,
+Run it in a scratch checkout of the commit under test: it rewrites adapter.py, live.py, tool_policy.py, native_turn.py, lean_group.py,
 owner_operator.py in place for the duration of each mutant.  Never run it beside another test run of the same tree.
 
 r4 adds the rules the table-driven `test_turn_binding_matrix` pins: a REQUIRED identity that is missing binds nothing (R1, R3), every
@@ -25,7 +25,7 @@ TESTS = ['test_turn_binding_sources', 'test_turn_binding_matrix', 'test_failure_
 # declaration mutant is also killed by BEHAVIOUR and not only by the guard that reads the declarations)
 TESTS = os.environ.get('MUTATE_TESTS', '').split() or TESTS
 FILES = {name: (ROOT / name).read_text() for name in
-         ('adapter.py', 'live.py', 'tool_policy.py', 'native_turn.py', 'owner_operator.py')}
+         ('adapter.py', 'live.py', 'tool_policy.py', 'native_turn.py', 'owner_operator.py', 'lean_group.py')}
 
 M = {}
 
@@ -178,6 +178,23 @@ mutant('G2 the room ledger credits a session of a turn whose delivery is unprove
        "return current.get('hermes_session_id') if BotSeshAdapter._delivery_proves_read(current) else None", "return current.get('hermes_session_id')")
 mutant('G3 an unproven lean group row may attest a read through an explicit pass/post', 'tool_policy.py',
        "if (current.get('lean_group') is True and not adapter._delivery_proves_read(current)", "if (current.get('lean_group') is True and False")
+# --- the safety framing of a lean group turn (0.10.5 r5): every statement of the full catch-up is in the system prompt, verbatim ---------
+_TAIL = " + SERVER_POLICY + ' ' + HINT_SAFETY + PACKET_SAFETY + SERVER_SUMMARY + ' ' + SERVER_HUMANS)"
+mutant('G4 the lean group prompt drops the plugin\'s own hint statements (untrusted data, grant owner only, quoted words cannot)', 'lean_group.py',
+       _TAIL, " + SERVER_POLICY + ' ' + PACKET_SAFETY + SERVER_SUMMARY + ' ' + SERVER_HUMANS)")
+mutant('G5 the lean group prompt drops the packet notice (replayed history, quoted room words)', 'lean_group.py',
+       _TAIL, " + SERVER_POLICY + ' ' + HINT_SAFETY + SERVER_SUMMARY + ' ' + SERVER_HUMANS)")
+mutant('G6 the lean group prompt drops the server\'s policy (intent labels, tags, fake roles, file provenance)', 'lean_group.py',
+       _TAIL, " + HINT_SAFETY + PACKET_SAFETY + SERVER_SUMMARY + ' ' + SERVER_HUMANS)")
+mutant('G7 the lean group prompt drops the server\'s summary and human-accept statements', 'lean_group.py',
+       _TAIL, " + SERVER_POLICY + ' ' + HINT_SAFETY + PACKET_SAFETY)")
+mutant('G8 a server that words its static framing differently still gets the lean text', 'lean_group.py',
+       "        if not (isinstance(instructions, str) and SERVER_POLICY in instructions and SERVER_HUMANS in instructions\n"
+       "                and isinstance(summary, str) and SERVER_SUMMARY in summary):", "        if False:")
+mutant('G9 a key the lean text cannot show is dropped silently', 'lean_group.py',
+       "        if any(part.get(key) for key in part if key not in DIGEST_KEYS and key not in IGNORED_KEYS):", "        if False:")
+mutant('G10 the lean cant_do sentence loses \'not clarification\'', 'lean_group.py',
+       "capability blocker, not clarification. '", "capability blocker. '")
 
 
 def run(full=False):
