@@ -1536,12 +1536,12 @@ class LeanDmTests(SolidTests):
                                       ('receipt-framed', {}, True), ('receipt-framed, bare False', {'bare': False}, True)):
             owner._current['r'] = {'target': 5, 'event_id': '5', 'receipt_id': 'x', **row}
             with self.subTest('bind_turn: ' + label):
-                self.assertEqual(bool(adapter_module.bind_turn(adapter=owner, room_id='r')), native_ok)
-                self.assertTrue(adapter_module.bind_turn(adapter=owner, room_id='r', need='settle'), 'settling an admitted event needs no record')
+                self.assertEqual(bool(adapter_module.bind_turn(require=('room',), adapter=owner, room_id='r')), native_ok)
+                self.assertTrue(adapter_module.bind_turn(require=('room',), adapter=owner, room_id='r', need='settle'), 'settling an admitted event needs no record')
         for name, row in negatives:
             owner._current['r'] = {'target': 5, 'event_id': '5', 'receipt_id': 'x', 'bare': True, **row}
             with self.subTest('bind_turn refuses: ' + name):
-                self.assertFalse(adapter_module.bind_turn(adapter=owner, room_id='r'))
+                self.assertFalse(adapter_module.bind_turn(require=('room',), adapter=owner, room_id='r'))
 
     async def test_a_live_frame_hook_binds_only_by_its_explicit_turn_ids_and_never_by_chat_scope(self):
         from hermes_botsesh_test.live import _locate
@@ -1606,7 +1606,9 @@ class LeanDmTests(SolidTests):
         owner = self.make_adapter()
         row = {'target': 5, 'event_id': '5', 'receipt_id': 'rx', 'hook_turn': ('s', 't')}
         owner._current['r'] = row
-        bind = lambda **claim: adapter_module.bind_turn(adapter=owner, **claim)
+        names = {'room_id': 'room', 'target': 'input', 'event_id': 'event', 'receipt_id': 'receipt', 'hook': 'hook'}
+        # every explicit identity this claim carries is one the caller requires (the strict form; r4 tests the rest in the matrix)
+        bind = lambda **claim: adapter_module.bind_turn(require=tuple(names[k] for k in claim if k in names), adapter=owner, **claim)
         self.assertTrue(bind(room_id='r', target=5, event_id='5', receipt_id='rx', hook=('s', 't')), 'every identity agrees')
         for label, claim in (('nothing named', {}), ('another room', {'room_id': 'x'}), ('another input', {'room_id': 'r', 'target': 6}),
                              ('another event', {'room_id': 'r', 'event_id': 'takeover:z'}), ('another receipt', {'room_id': 'r', 'receipt_id': 'ry'}),
@@ -1615,6 +1617,23 @@ class LeanDmTests(SolidTests):
                              ('all agree but one', {'room_id': 'r', 'target': 5, 'event_id': '5', 'receipt_id': 'rx', 'hook': ('s', 'other')})):
             with self.subTest(label):
                 self.assertFalse(bind(**claim), label)
+        # r4: a REQUIRED identity (every explicit one a claim carries, by `bind` above) that is missing or empty is not "not supplied":
+        # it binds nothing, though the identities that remain would name the row
+        for label, claim in (('missing event', {'room_id': 'r', 'event_id': None}), ('empty event', {'room_id': 'r', 'event_id': ''}),
+                             ('missing input', {'room_id': 'r', 'target': None}), ('empty input', {'room_id': 'r', 'target': ''}),
+                             ('missing receipt', {'room_id': 'r', 'receipt_id': None}), ('empty receipt', {'room_id': 'r', 'receipt_id': ''}),
+                             ('missing room', {'room_id': None, 'target': 5}), ('empty room', {'room_id': '', 'target': 5}),
+                             ('missing hook', {'room_id': 'r', 'hook': None}), ('blank hook ids', {'room_id': 'r', 'hook': (' ', ' ')})):
+            with self.subTest(label):
+                self.assertFalse(bind(**claim), label)
+        self.assertTrue(bind(room_id='r', event_id='5'), 'the same claims with the event present bind')
+        self.assertFalse(adapter_module.bind_turn(require=('room', 'event'), adapter=owner, room_id='r', event_id=None), 'required: not supplied')
+        self.assertTrue(adapter_module.bind_turn(require=('room',), adapter=owner, room_id='r', event_id=None), 'not required: omitted')
+        for bad in ('room', ('rooms',), ('room', 'bogus')):
+            with self.subTest('require is a collection of known names: %r' % (bad,)), self.assertRaises(ValueError):
+                adapter_module.bind_turn(require=bad, adapter=owner, room_id='r')
+        with self.assertRaises(TypeError, msg='a caller that does not state its requirements cannot be written'):
+            adapter_module.bind_turn(adapter=owner, room_id='r')
         with self.subTest('ended'):
             row['hook_terminal'] = True
             self.assertFalse(bind(room_id='r', hook=('s', 't')))
@@ -1625,11 +1644,11 @@ class LeanDmTests(SolidTests):
             twin = self.make_adapter()
             twin._current['r'] = dict(row)
             with patch.object(adapter_module, '_ADAPTERS', {owner, twin}):
-                self.assertFalse(adapter_module.bind_turn(room_id='r', need='settle'), 'several rows and no hook ids: ambiguous')
-                self.assertFalse(adapter_module.bind_turn(target=5))
-                shared = adapter_module.bind_turn(target=5, hook=('s', 't'))
+                self.assertFalse(adapter_module.bind_turn(require=('room',), room_id='r', need='settle'), 'several rows and no hook ids: ambiguous')
+                self.assertFalse(adapter_module.bind_turn(require=('input',), target=5))
+                shared = adapter_module.bind_turn(require=('input', 'hook'), target=5, hook=('s', 't'))
                 self.assertEqual(len(shared.rows), 2, 'the hook\'s explicit ids name that one turn on both adapter objects')
-            self.assertTrue(adapter_module.bind_turn(adapter=owner, room_id='r', target=5), 'a callback names its own adapter')
+            self.assertTrue(adapter_module.bind_turn(require=('room', 'input'), adapter=owner, room_id='r', target=5), 'a callback names its own adapter')
         with self.subTest('ambient'):
             with turn_env('r', 5):
                 self.assertTrue(bind(ambient='required', hook=('s', 't')))
@@ -1651,6 +1670,13 @@ class LeanDmTests(SolidTests):
                 self.assertFalse(bind(ambient='optional', room_id='r'))
             finally:
                 clear_session_vars(tokens)
+            # r4: a PARTIAL gateway scope is not "nothing named": every variable that is present constrains the claim on its own, while the
+            # hook-ids-only path stays for a gateway that named neither a room nor an input
+            for label, scope, expected in (('a different chat alone', ('x', ''), False), ('a different input alone', ('', '9'), False),
+                                           ('the row\'s chat alone', ('r', ''), True), ('the row\'s input alone', ('', '5'), True)):
+                with self.subTest(label), turn_env(*scope):
+                    self.assertEqual(bool(bind(ambient='optional', hook=('s', 't'))), expected, label)
+            self.assertTrue(bind(ambient='optional', hook=('s', 't')), 'neither a room nor an input named: the hook ids alone bind')
 
     async def test_two_adapters_claiming_the_same_compact_input_is_ambiguous_and_binds_neither(self):
         event = await self.lean_five()

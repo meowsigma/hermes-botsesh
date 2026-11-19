@@ -249,7 +249,7 @@ class CommandTransportMixin(DmControlsMixin):
                     self._dm_contexts[chat_id]['generation'] = str(uuid.uuid4())
                     await self._control_invalidate(chat_id)
                     from .adapter import bind_turn
-                    bound = bind_turn(adapter=self, room_id=chat_id, need='settle')
+                    bound = bind_turn(require=('room',), adapter=self, room_id=chat_id, need='settle')
                     if bound:
                         bound.current['interrupt_requested'] = True  # Owner-stopped, not a provider failure.
                     if live is not None:

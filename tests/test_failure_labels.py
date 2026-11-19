@@ -71,7 +71,7 @@ class FailureLabelTests(unittest.IsolatedAsyncioTestCase):
         await self.admit(3)
         await self.adapter.send_or_update_status('a', 'error', 'HTTP 402: budget exceeded')
         from hermes_botsesh_test.adapter import bind_turn
-        bind_turn(adapter=self.adapter, room_id='a', need='settle').current['interrupt_requested'] = True
+        bind_turn(require=('room',), adapter=self.adapter, room_id='a', need='settle').current['interrupt_requested'] = True
         await self.adapter.send('a', 'Stopped.', metadata={'notify': True})
         self.assertEqual(self.failures(), [{'target': 3, 'state': 'failed', 'failure_code': 'interrupted'}])
 

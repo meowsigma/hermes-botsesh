@@ -65,6 +65,10 @@ class OwnerDmTests(unittest.TestCase):
             with self.subTest(label), patch.dict(self.scope, change):
                 with self.assertRaises(BotSeshError):
                     owner_operator.owner_dm_client('dm')
+        # r4: the caller must name its room itself: a missing or empty room is not completed from the gateway's variables
+        for label, room in (('no room named', None), ('an empty room named', '')):
+            with self.subTest(label), self.assertRaises(BotSeshError):
+                owner_operator.owner_dm_client(room)
 
     def test_foreign_group_spoof_and_missing_authority_are_denied_before_effects(self):
         mutants = [
