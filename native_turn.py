@@ -202,6 +202,8 @@ class NativeTurnMixin:
         await asyncio.to_thread(settle_takeover, self.client, room_id, current['target'])
         with contextlib.suppress(Exception):  # 0.10.3: bookkeeping for lean DM deliveries must never break settlement
             await asyncio.to_thread(self._remember_dm_session, room_id, current)
+        with contextlib.suppress(Exception):  # 0.10.5: the same for lean group-room deliveries
+            await asyncio.to_thread(self._remember_group_session, room_id, current)
         if self._current.get(room_id) is current:
             self._current.pop(room_id)
         # The durable final/failure is settled: end the owner-only live view, publish status.
@@ -241,5 +243,5 @@ class NativeTurnMixin:
         current['event_id'] = row.get('event_id', str(row['target']))
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'),
                        dm_through=row.get('dm_through'), dm_brief=row.get('dm_brief'), lean_session=row.get('lean_session'),
-                       bare=row.get('bare') is True, dm_prompt=row.get('dm_prompt') is True)
+                       bare=row.get('bare') is True, dm_prompt=row.get('dm_prompt') is True, lean_group=row.get('lean_group') is True)
         self._current[room_id] = current

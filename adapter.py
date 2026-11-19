@@ -38,6 +38,17 @@ def _input_numbers(check):
     # OAuth's authoritative inbox. These are candidate inputs, not permissions.
     return set(check.get('mentions', []) + check.get('replies', []) + check.get('inputs', []))
 
+def native_identity_available():
+    """True when this core can bind a turn to its room and input through its own session variables.  A lean group text names no room
+    (a room's lean text can equal another room's), so it is planned only where that identity exists; otherwise the full catch-up,
+    which carries the room id and receipt, goes out as before."""
+    try:
+        from gateway.session_context import get_session_env  # noqa: F401
+        return callable(get_session_env)
+    except Exception:
+        return False
+
+
 def _native_turn_identity():
     """(chat_id, message_id) the Hermes gateway bound to THIS running turn, or None when it did not (outside a gateway turn).
 
@@ -65,8 +76,9 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
         texted = [(adapter, room_id, current) for adapter in list(_ADAPTERS) for room_id, current in list(adapter._current.items())
                   if current.get('bare') and not current.get('hook_terminal') and isinstance(user_message, str)
                   and current.get('text') and current['text'] in user_message]
+        # 0.10.5: a lean GROUP text names no room either, and a room is shared: it binds only through the gateway's identity.
         bound = [c for _, room_id, c in texted if identity == (room_id, str(c.get('target')))] if identity else (
-            [c for _, _, c in texted] if len(texted) == 1 else [])
+            [c for _, _, c in texted] if len(texted) == 1 and not texted[0][2].get('lean_group') else [])
         for adapter in list(_ADAPTERS):
             for room_id, current in list(adapter._current.items()):
                 if current.get('bare'):
@@ -126,6 +138,8 @@ def _dm_catchup_context(session_id, turn_id, is_first_turn, user_message=''):
             if current.get('hook_turn') == turn:
                 current['lean_proof'] = (session_id, turn_id, 'session')
             return None
+        if current.get('lean_group'):
+            return None  # 0.10.5: a room turn gets no history recovery: no positive proof means no read claim and a full catch-up next
     try:
         frozen = adapter._recovery_frozen(chat_id, current)
         if frozen is None:
@@ -701,6 +715,42 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             room['dm_session'] = {'session_id': session_id, 'through': through, 'brief': brief, 'messages': held}
         self.client.store.update(save)
 
+    def _remember_group_session(self, room_id, current):
+        """0.10.5: a COMPLETED, PROVEN room turn in a Hermes session: that session now holds the room up to the newest message of the read
+        it was given, so the next turn in it gets only what came after.
+
+        Only the delivery's own proof counts (`_delivery_proves_read`: the full text, or the pre_llm_call hook's positive record for this
+        exact turn).  An unproven lean turn DROPS the ledger row it was built from, so the next turn in that session is a full catch-up;
+        a turn that did not complete records nothing, so its messages are simply delivered again.  The row carries numbers and a digest
+        of the room context only, never message text."""
+        from . import lean_group
+        lean = current.get('lean_session')
+        if lean and not self._delivery_proves_read(current):
+            def drop(data):
+                room = data['rooms'].get(room_id)
+                if room is not None:
+                    (room.get('group_sessions') or {}).pop(lean, None)
+            self.client.store.update(drop)
+            return
+        ledger, session_id = current.get('group_ledger'), current.get('hermes_session_id')
+        if not ledger or not session_id or not current.get('model_processed'):
+            return
+        held = self._session_history(session_id)
+        if held is None:
+            return  # cannot tell what the session holds: record nothing, the next turn is the full catch-up
+        row = self.client.store.room(room_id).get('processing_receipts', {}).get(str(current['target']), {})
+        own = lean_group.own_numbers(row)
+        def save(data):
+            room = data['rooms'].get(room_id)
+            if room is None or room.get('room_type') == 'dm' or room.get('transport') != 'oauth':
+                return
+            prior = (room.get('group_sessions') or {}).get(session_id) or {}
+            if prior.get('through', -1) > ledger['through'] and prior.get('ctx') == ledger['ctx']:
+                return  # a later turn of this session already moved the pointer further
+            lean_group.remember(room, session_id, through=ledger['through'], digest=ledger['ctx'], held=held,
+                                messages=ledger['messages'], own=own, auth=ledger.get('auth'), now=time.time())
+        self.client.store.update(save)
+
     async def _check_room(self, room_id):
         await self._refresh_dm_controls(room_id)
         await self._control_sweep()
@@ -902,6 +952,24 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 if lean is None:
                     # No usable continuity: the whole read as plain lines when it fits, else the full catch-up below.
                     first = self._first_plan(binding, result, batch_targets, author)
+            # 0.10.5: an ordinary OAuth group-room turn (not a service/check-in, takeover or DM turn) whose Hermes session already
+            # holds the room conversation gets only the messages after that session's pointer (see lean_group.py).  Whatever the
+            # delivery turns out to be, a completed and proven turn records the session's pointer for the next one (`group_ledger`).
+            group_lean = None
+            group_ledger = None
+            if (chat_type == 'group' and binding.get('transport') == 'oauth' and not service_policy
+                    and not (saved and saved.get('takeover_offer')) and target not in takeover_targets):
+                from . import lean_group
+                digest = lean_group.context_digest(result)
+                numbers = [m['number'] for m in batch['messages'] if type(m.get('number')) is int]
+                if digest is not None and numbers:
+                    group_ledger = {'through': max(numbers), 'ctx': digest, 'messages': batch['messages']}
+                    hermes_session = self._hermes_session_id(source) if native_identity_available() else None
+                    history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
+                    entry = (binding.get('group_sessions') or {}).get(hermes_session) if hermes_session else None
+                    group_plan = lean_group.plan(entry, batch['messages'], batch_targets, digest, history)
+                    if group_plan is not None:
+                        group_lean = {'session_id': hermes_session, 'plan': group_plan, 'entry': entry}
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -953,8 +1021,22 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 dm=chat_type == 'dm')
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id)
             from .receipt_handles import project
-            bare = lean is not None or first is not None  # 0.10.4: a compact text with no receipt header (bound by native identity)
-            if bare:
+            auth_text = None
+            if group_lean is not None:
+                handle = project(self.client, room_id, result, str(target)).get('receipt_id')  # registers the model-visible handle
+                if isinstance(handle, str) and re.fullmatch(r'r[0-9]+', handle):
+                    from .tool_policy import turn_context
+                    auth_text = turn_context(policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=False)
+                else:
+                    group_lean = None  # no short handle for this receipt: the full catch-up names it
+            bare = lean is not None or first is not None or group_lean is not None  # a compact text with no receipt header (bound by native identity)
+            if group_lean is not None:
+                from . import lean_group
+                same = (group_lean['entry'] or {}).get('auth') == lean_group.auth_key(auth_text)
+                # The runtime authorization block keeps its explanatory sentence only when it differs from the session's last turn.
+                text = lean_group.render(handle=handle, target=target, plan=group_lean['plan'],
+                                         authorization='BOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + (auth_text.split('\n', 1)[0] if same else auth_text))
+            elif bare:
                 from .tool_policy import host_tools_allowed
                 from . import lean_dm
                 project(self.client, room_id, result, str(target))  # registers the model-visible receipt handle, as the full text did
@@ -992,6 +1074,14 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                                      bare=bare, dm_prompt=owner_dm)
             else:
                 dm_brief = None
+            if group_ledger is not None:
+                if auth_text is None:  # a full group delivery: the ledger still records the policy text the session was given
+                    from .tool_policy import turn_context
+                    auth_text = turn_context(policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=False)
+                from . import lean_group
+                group_ledger['auth'] = lean_group.auth_key(auth_text)
+                frozen_fields.update(lean_session=group_lean['session_id'] if group_lean else None, bare=group_lean is not None,
+                                     lean_group=group_lean is not None)
             if media:
                 frozen_fields['media'] = {k: media[k] for k in ('media_urls', 'media_types', 'message_type')}
             from .owner_operator import pin_operator_binding
@@ -1002,8 +1092,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # 0.10.4: one durable write for what was five (each one is two fsyncs on the way to the model request).
             receipt(self.client.store, room_id, target, event_id=event_id, **frozen_fields)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
-                                      'dm_through': dm_through, 'dm_brief': dm_brief, 'lean_session': lean['session_id'] if lean else None,
-                                      'bare': bare, 'dm_prompt': owner_dm}
+                                      'dm_through': dm_through, 'dm_brief': dm_brief,
+                                      'lean_session': lean['session_id'] if lean else (group_lean['session_id'] if group_lean else None),
+                                      'bare': bare, 'dm_prompt': owner_dm, 'lean_group': group_lean is not None, 'group_ledger': group_ledger}
             self.live.begin_turn(room_id, target)
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.
