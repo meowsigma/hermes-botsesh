@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.6 — lean delivery planning (unpublished)
+
+The owner-DM planner stops looking for overlap once it finds a qualifying message number. In steady group turns, the planner sorts only messages selected for delivery. Group planning also stops when the compact delivery would exceed its existing budget. Message order, attribution, read checks and fallback to a complete delivery are unchanged. These changes reduce planner work; they are not a claim about end-to-end reply time.
+
 ## 0.10.5 — shorter owner-DM and group-room turns
 
 Patch release on 0.10.3 (`086deaa`). It also contains 0.10.4, which was never released on its own. Until now Hermes received a large room catch-up with BotSesh messages and kept every copy in its session, so turns were much bigger than the same message on Telegram and, in group rooms, grew with every message. Now, once the Hermes session already holds the conversation, an owner-DM turn is just what you typed and a group-room turn carries only the new messages. No server change is required. Updating from 0.10.3 applies in place, with no Hermes restart.
