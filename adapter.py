@@ -964,12 +964,20 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 numbers = [m['number'] for m in batch['messages'] if type(m.get('number')) is int]
                 if digest is not None and numbers:
                     group_ledger = {'through': max(numbers), 'ctx': digest, 'messages': batch['messages']}
-                    hermes_session = self._hermes_session_id(source) if native_identity_available() else None
-                    history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
-                    entry = (binding.get('group_sessions') or {}).get(hermes_session) if hermes_session else None
-                    group_plan = lean_group.plan(entry, batch['messages'], batch_targets, digest, history)
-                    if group_plan is not None:
-                        group_lean = {'session_id': hermes_session, 'plan': group_plan, 'entry': entry}
+                    if native_identity_available():
+                        hermes_session = self._hermes_session_id(source)
+                        history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
+                        entry = (binding.get('group_sessions') or {}).get(hermes_session) if hermes_session else None
+                        group_plan = lean_group.plan(entry, batch['messages'], batch_targets, digest, history) if hermes_session else None
+                        if group_plan is not None:
+                            group_lean = {'session_id': hermes_session, 'plan': group_plan, 'entry': entry, 'first': False}
+                        else:
+                            # A fresh or reset session, a gap, an edit or changed room context: the WHOLE read, still compact (message
+                            # lines, no 45 KB packet that every later turn of the session would carry).  A complete delivery, so the
+                            # reply may attest it; a read it cannot show exactly (Brief text, decisions, files, ...) keeps the packet.
+                            group_plan = lean_group.first_plan(result, batch['messages'], batch_targets)
+                            if group_plan is not None:
+                                group_lean = {'session_id': hermes_session, 'plan': group_plan, 'entry': None, 'first': True}
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -1032,9 +1040,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             bare = lean is not None or first is not None or group_lean is not None  # a compact text with no receipt header (bound by native identity)
             if group_lean is not None:
                 from . import lean_group
-                same = (group_lean['entry'] or {}).get('auth') == lean_group.auth_key(auth_text)
+                same = not group_lean['first'] and (group_lean['entry'] or {}).get('auth') == lean_group.auth_key(auth_text)
                 # The runtime authorization block keeps its explanatory sentence only when it differs from the session's last turn.
-                text = lean_group.render(handle=handle, target=target, plan=group_lean['plan'],
+                text = lean_group.render(handle=handle, target=target, plan=group_lean['plan'], first=group_lean['first'],
                                          authorization='BOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + (auth_text.split('\n', 1)[0] if same else auth_text))
             elif bare:
                 from .tool_policy import host_tools_allowed
@@ -1080,8 +1088,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     auth_text = turn_context(policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=False)
                 from . import lean_group
                 group_ledger['auth'] = lean_group.auth_key(auth_text)
-                frozen_fields.update(lean_session=group_lean['session_id'] if group_lean else None, bare=group_lean is not None,
-                                     lean_group=group_lean is not None)
+                frozen_fields.update(lean_session=group_lean['session_id'] if group_lean and not group_lean['first'] else None,
+                                     bare=group_lean is not None, lean_group=group_lean is not None)
             if media:
                 frozen_fields['media'] = {k: media[k] for k in ('media_urls', 'media_types', 'message_type')}
             from .owner_operator import pin_operator_binding
@@ -1093,7 +1101,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             receipt(self.client.store, room_id, target, event_id=event_id, **frozen_fields)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
                                       'dm_through': dm_through, 'dm_brief': dm_brief,
-                                      'lean_session': lean['session_id'] if lean else (group_lean['session_id'] if group_lean else None),
+                                      'lean_session': lean['session_id'] if lean else (group_lean['session_id'] if group_lean and not group_lean['first'] else None),
                                       'bare': bare, 'dm_prompt': owner_dm, 'lean_group': group_lean is not None, 'group_ledger': group_ledger}
             self.live.begin_turn(room_id, target)
             # Ordinary group wakes may pass. Stock core otherwise converts
