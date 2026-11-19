@@ -16,16 +16,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = os.environ.get('MUTATE_PYTHON', sys.executable)
-TESTS = ['test_turn_binding_sources', 'test_failure_labels', 'test_host_tools', 'test_owner_dm_operator', 'test_solid',
-         'test_cant_do', 'test_confirmed_pass', 'test_lean_dm']
+TESTS = ['test_turn_binding_sources', 'test_failure_labels', 'test_turn_binding_callbacks', 'test_host_tools', 'test_owner_dm_operator',
+         'test_solid', 'test_cant_do', 'test_confirmed_pass', 'test_lean_dm']
 FILES = {name: (ROOT / name).read_text() for name in
          ('adapter.py', 'live.py', 'tool_policy.py', 'native_turn.py', 'owner_operator.py')}
 
 M = {}
 
 
-def mutant(name, file, old, new):
-    M[name] = (file, old, new)
+def mutant(name, file, old, new, *more):
+    """One mutant = one rule weakened: `old` -> `new`, plus further (old, new) pairs when the rule is enforced at two places."""
+    M[name] = (file, [(old, new), *zip(more[::2], more[1::2])])
 
 
 # --- the rules of bind_turn -------------------------------------------------------------------------------------------------------
@@ -104,9 +105,11 @@ mutant('T2 the tool veto accepts ids that disagree', 'tool_policy.py',
        "            if not bound or bound.current is not current:", "            if False:")
 mutant('T3 the tool veto does not re-check the turn after verification', 'tool_policy.py',
        "if bind_turn(adapter=adapter, hook=(session_id, turn_id), ambient='required').current is not current:", "if False:")
-mutant('O1 owner-DM authority ignores the gateway scope', 'owner_operator.py',
+mutant('O1 owner-DM authority ignores the gateway scope (both bindings)', 'owner_operator.py',
        "first = bind_turn(room_id=chat_id, ambient='required', need='settle') if chat_id else None",
-       "first = bind_turn(room_id=chat_id, need='settle') if chat_id else None")
+       "first = bind_turn(room_id=chat_id, need='settle') if chat_id else None",
+       "bound = bind_turn(room_id=chat_id, target=target, ambient='required', need='settle')",
+       "bound = bind_turn(room_id=chat_id, target=target, need='settle')")
 
 
 def run(full=False):
@@ -133,17 +136,21 @@ def main(prefixes):
         print('baseline is not green:', failed)
         return 2
     survivors = []
-    for name, (file, old, new) in M.items():
+    for name, (file, edits) in M.items():
         if prefixes and not any(name.startswith(p) for p in prefixes):
             continue
         text = FILES[file]
-        if text.count(old) != 1:
-            print('%s: pattern found %d times (fix the mutant)' % (name, text.count(old)))
+        bad = [old for old, _new in edits if text.count(old) != 1]
+        if bad:
+            print('%s: pattern found %d times (fix the mutant)' % (name, text.count(bad[0])))
             survivors.append(name + ' [bad pattern]')
             continue
         path = ROOT / file
+        mutated = text
+        for old, new in edits:
+            mutated = mutated.replace(old, new)
         try:
-            path.write_text(text.replace(old, new))
+            path.write_text(mutated)
             failed, summary = run()
         finally:
             path.write_text(text)

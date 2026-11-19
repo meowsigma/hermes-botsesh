@@ -177,7 +177,7 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
         owner_dm = bool(granted and granted.get('dm_prompt') is True)
     from . import agreement
     # Cached from this room's own reads; absent proof keeps the unchanged tools.
-    agree = agreement.exposed_for(adapter.client.store, room_id) if adapter else True
+    agree = agreement.exposed_for(adapter.client.store, scoped.room_id) if adapter else True
     original = request
     if owner_dm:
         request = _owner_dm_request(request)
@@ -226,9 +226,9 @@ def enforce_tools(**kwargs):
         try:
             from . import agreement
             from .adapter import _HOOK_LOCK, bind_turn
-            _, room_id, target = _scope()
             with _HOOK_LOCK:
-                adapter = bind_turn(ambient='required', need='settle').adapter
+                scoped = bind_turn(ambient='required', need='settle')
+            adapter, room_id = scoped.adapter, scoped.room_id
             if adapter is not None and not agreement.exposed_for(adapter.client.store, room_id):
                 result = {**result, 'message': result['message'].replace('read, post, pass and agree', 'read, post and pass')}
         except Exception:
@@ -254,6 +254,7 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
             adapter, current = scoped.adapter, scoped.current
             if not current:
                 return dict(NOT_A_TURN)
+            room_id = scoped.room_id  # the room the binding proved, not a second read of the gateway's variables
             if current.get('hook_terminal'):
                 return dict(ENDED)
             bound = bind_turn(hook=(session_id, turn_id), ambient='required')

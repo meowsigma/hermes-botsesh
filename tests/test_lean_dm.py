@@ -1638,6 +1638,13 @@ class LeanDmTests(SolidTests):
                     self.assertFalse(bind(ambient='required'), scope)
                     self.assertFalse(bind(ambient='optional', hook=('s', 't')), scope)
             self.assertFalse(bind(ambient='required'), 'no gateway variables: a scope-only claim binds nothing')
+            self.assertFalse(bind(ambient='required', hook=('s', 't')), 'required scope absent: the hook\'s own ids alone do not bind')
+            self.assertFalse(bind(ambient='required', room_id='r', target=5), 'required scope absent: explicit room/input alone do not bind')
+            with turn_env('r', 5):
+                self.assertTrue(bind(ambient='required', room_id='r', target=5), 'a claim that agrees with the gateway scope')
+                self.assertFalse(bind(ambient='required', room_id='x'), 'a named room that is not the gateway\'s binds nothing (no re-pointing)')
+                self.assertFalse(bind(ambient='required', room_id='r', target=9), 'a named input that is not the gateway\'s binds nothing')
+                self.assertFalse(bind(ambient='optional', target=9), 'optional scope present: a conflicting named input binds nothing')
             self.assertTrue(bind(ambient='optional', room_id='r', hook=('s', 't')), 'optional: absent variables do not conflict')
             tokens = set_session_vars(platform='telegram', chat_id='r', message_id='5')
             try:

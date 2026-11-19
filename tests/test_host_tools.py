@@ -133,12 +133,29 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
         with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)):
             self.assertIsNone(restrict_request(request=original,session_id='s',turn_id='t'),'its own ids: the owner keeps the configured tools')
             self.assertIsNone(tool_policy.enforce_tools(tool_name='terminal',session_id='s',turn_id='t'))
+            self.client.enrolled.reset_mock()
             # same room, same input, but ids that disagree with the ones the pre_llm_call hook paired, or none at all
             for ids in (dict(session_id='s',turn_id='other'),dict(session_id='other',turn_id='t'),dict(session_id='',turn_id=''),dict(session_id='s',turn_id='')):
                 with self.subTest(ids):
                     names={x['function']['name'] for x in restrict_request(request=original,**ids)['request']['tools']}
                     self.assertEqual(names,room_only,'no host-tool authority without the hook\'s own explicit ids')
-                    self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',**ids)['action'],'block')
+                    self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',**ids),tool_policy.UNVERIFIED,'refused at the binding, not later')
+                    self.client.enrolled.assert_not_called()  # a call that is not bound to the live turn reaches no server
+        # the turn is replaced while the server verification is in flight: the re-check after it binds nothing, the call is refused
+        def replaced(*args,**kwargs):
+            c['hook_turn']=('s','next-turn')
+            return owner
+        self.client.enrolled=Mock(side_effect=replaced)
+        with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)):
+            self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',session_id='s',turn_id='t'),tool_policy.ENDED)
+        self.client.enrolled.assert_called()
+        c['hook_turn']=('s','t')
+        self.client.enrolled=Mock(return_value=owner)
+        # right ids, but the gateway names only a platform (no chat or no input): the hook's ids alone are not a binding
+        for label,missing in (('no input',('HERMES_SESSION_MESSAGE_ID',)),('no chat',('HERMES_SESSION_CHAT_ID',)),('neither',('HERMES_SESSION_CHAT_ID','HERMES_SESSION_MESSAGE_ID'))):
+            with self.subTest('partial scope: '+label),patch('gateway.session_context.get_session_env',side_effect=lambda k, default='',missing=missing:'' if k in missing else env.get(k,default)):
+                self.assertEqual({x['function']['name'] for x in restrict_request(request=original,session_id='s',turn_id='t')['request']['tools']},room_only)
+                self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',session_id='s',turn_id='t')['action'],'block')
         # right ids, but the gateway says another input (or room, or platform) is running: a conflicting scope binds nothing
         for label,change in (('another input',dict(HERMES_SESSION_MESSAGE_ID='4')),('another room',dict(HERMES_SESSION_CHAT_ID='elsewhere')),
                              ('another platform',dict(HERMES_SESSION_PLATFORM='telegram'))):
