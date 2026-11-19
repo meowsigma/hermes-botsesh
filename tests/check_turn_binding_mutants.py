@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY = os.environ.get('MUTATE_PYTHON', sys.executable)
 TESTS = ['test_turn_binding_sources', 'test_failure_labels', 'test_turn_binding_callbacks', 'test_host_tools', 'test_owner_dm_operator',
-         'test_solid', 'test_cant_do', 'test_confirmed_pass', 'test_lean_dm']
+         'test_solid', 'test_cant_do', 'test_confirmed_pass', 'test_lean_dm', 'test_lean_group']
 FILES = {name: (ROOT / name).read_text() for name in
          ('adapter.py', 'live.py', 'tool_policy.py', 'native_turn.py', 'owner_operator.py')}
 
@@ -112,6 +112,14 @@ mutant('O1 owner-DM authority ignores the gateway scope (all three bindings)', '
        "bound = bind_turn(room_id=chat_id, target=target, need='settle')",
        "if (bind_turn(adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current",
        "if (bind_turn(adapter=adapter, room_id=chat_id, target=target, need='settle').current is not current")
+# --- the group-room sites (0.10.5): the same binding function, nothing of their own ---------------------------------------------------
+mutant('R1 the short group hint needs only the gateway scope, not the hook\'s own ids', 'tool_policy.py',
+       "group_lean = bool(granted and granted.get('lean_group') is True)", "group_lean = bool(current and current.get('lean_group') is True)")
+mutant('R2 the room ledger credits a session of a turn whose delivery is unproven', 'adapter.py',
+       "        if not self._delivery_proves_read(current):\n            # Never credit a turn without positive proof", "        if False:\n            # Never credit a turn without positive proof",
+       "return current.get('hermes_session_id') if BotSeshAdapter._delivery_proves_read(current) else None", "return current.get('hermes_session_id')")
+mutant('R3 an unproven lean group row may attest a read through an explicit pass/post', 'tool_policy.py',
+       "if (current.get('lean_group') is True and not adapter._delivery_proves_read(current)", "if (current.get('lean_group') is True and False")
 
 
 def run(full=False):
