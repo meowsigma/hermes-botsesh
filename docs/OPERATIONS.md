@@ -42,6 +42,10 @@ Hermes hot-loads plugin commands/hooks, but does not create or replace the platf
 
 The plugin has no restart, checkpoint or auto-revert command. Keep normal recovery copies and the prior immutable install pin; existing private checkpoint data is left untouched but is no longer created or consumed. Check fresh room polling after maintenance; exit 0 alone is not channel-health proof.
 
+## Lean group prompt: server framing parity (0.10.5)
+
+A lean group-room turn does not carry the server's own safety framing (the `summary`, `instructions` and `AGENT_MESSAGE_POLICY` text of every full catch-up); `lean_group.GROUP_HINT` restates it verbatim in the system prompt instead, and `lean_group.context_digest` hands the read to the full packet unless the server's `instructions` still contain `SERVER_POLICY` and `SERVER_HUMANS` and its `summary` still contains `SERVER_SUMMARY` (and unless every non-empty key of the catch-up part is one the lean text can leave out). When the server's wording of any of those statements changes, update the three constants and the literal copies in `tests/test_lean_group.py` (`SERVER_POLICY_TEXT`, `SERVER_INSTRUCTIONS`, `SERVER_SUMMARY_TEXT`, from `agent-message-context.js`, `living-chat.js` and `mcp-server.js` `compactCatchup`) and run `tests/test_lean_group.py`; until then a server that words them differently simply gets the full packet. A statement a server ADDS beside the pinned ones is not detected by a substring check, so a new server safety sentence has to be added to the constants in the same change.
+
 ## Verification boundaries
 
 The task's isolated native gateways use unmodified stock and OAuth-PR Hermes, actual plugin installation and core lifecycle commands, and a loopback HTTPS protocol double. They prove transport lifecycle behavior without model inference or production writes, not real model return or daemon endurance. **LIMITED OWNER-AUTHORIZED SMOKE COVERAGE.**
