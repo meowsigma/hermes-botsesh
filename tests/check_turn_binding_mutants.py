@@ -105,11 +105,13 @@ mutant('T2 the tool veto accepts ids that disagree', 'tool_policy.py',
        "            if not bound or bound.current is not current:", "            if False:")
 mutant('T3 the tool veto does not re-check the turn after verification', 'tool_policy.py',
        "if bind_turn(adapter=adapter, hook=(session_id, turn_id), ambient='required').current is not current:", "if False:")
-mutant('O1 owner-DM authority ignores the gateway scope (both bindings)', 'owner_operator.py',
+mutant('O1 owner-DM authority ignores the gateway scope (all three bindings)', 'owner_operator.py',
        "first = bind_turn(room_id=chat_id, ambient='required', need='settle') if chat_id else None",
        "first = bind_turn(room_id=chat_id, need='settle') if chat_id else None",
        "bound = bind_turn(room_id=chat_id, target=target, ambient='required', need='settle')",
-       "bound = bind_turn(room_id=chat_id, target=target, need='settle')")
+       "bound = bind_turn(room_id=chat_id, target=target, need='settle')",
+       "if (bind_turn(adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current",
+       "if (bind_turn(adapter=adapter, room_id=chat_id, target=target, need='settle').current is not current")
 
 
 def run(full=False):
