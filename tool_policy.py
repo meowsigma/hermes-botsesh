@@ -165,6 +165,18 @@ def _owner_dm_request(request):
         return request
 
 
+def _group_request(request, agree):
+    """0.10.5: the compact group-room prompt for a lean group turn bound to its native event (see lean_group.GROUP_HINT).  Any failure
+    keeps the request unchanged, i.e. the original group-chat hint and the unchanged tool catalog."""
+    try:
+        from . import agreement, lean_dm, lean_group
+        from .adapter import HINT
+        return lean_dm.swap_request(request, (HINT, agreement.without_agreement(HINT)), lean_group.group_hint(agree))
+    except Exception as error:
+        logger.warning('BotSesh group room prompt not applied (%s).', type(error).__name__)
+        return request
+
+
 def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_completions', **kwargs):
     """Replace schemas per request; never mutate a cached agent or global tools.
 
@@ -183,12 +195,17 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
         # 0.10.4: only a verified owner-DM turn (admission's owner_dm gate), bound to this exact native turn.
         owner_dm = bool(current and current.get('dm_prompt') is True and current.get('hook_turn') == (session_id, turn_id)
                         and not current.get('hook_terminal'))
+        # 0.10.5: a lean group turn (compact delivery, no per-turn packet), bound to this exact native turn the same way.
+        group_lean = bool(current and current.get('lean_group') is True and current.get('hook_turn') == (session_id, turn_id)
+                          and not current.get('hook_terminal'))
     from . import agreement
     # Cached from this room's own reads; absent proof keeps the unchanged tools.
     agree = agreement.exposed_for(adapter.client.store, room_id) if adapter else True
     original = request
     if owner_dm:
         request = _owner_dm_request(request)
+    elif group_lean:
+        request = _group_request(request, agree)
     if unrestricted:
         if agree:
             return {'request': request, 'source': 'botsesh', 'reason': 'owner DM prompt'} if request is not original else None

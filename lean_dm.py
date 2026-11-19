@@ -325,6 +325,11 @@ def owner_dm_request(request, hints):
     exact variants) becomes `DM_HINT`, and the room tools leave the tool catalog.  Nothing else changes (history, tools, other
     system text).  Only the exact group hint is replaced; a system prompt without it (a local `platform_hints` override) or a
     request shape this does not know is returned as it was, so a failure to rewrite can only keep the unchanged group framing."""
+    return swap_request(request, hints, DM_HINT)
+
+
+def swap_request(request, hints, new_hint):
+    """`owner_dm_request` for any replacement hint (0.10.5 uses it for the compact group-room hint)."""
     if not isinstance(request, dict):
         return request
     changed, copy_ = False, dict(request)
@@ -334,13 +339,13 @@ def owner_dm_request(request, hints):
             new_rows = []
             for row in rows:
                 if isinstance(row, dict) and row.get('role') in ('system', 'developer') and 'content' in row:
-                    content, hit = _swap(row['content'], hints, DM_HINT)
+                    content, hit = _swap(row['content'], hints, new_hint)
                     row, changed = ({**row, 'content': content} if hit else row), changed or hit
                 new_rows.append(row)
             copy_[key] = new_rows
     for key in ('system', 'instructions'):
         if key in request:
-            value, hit = _swap(request[key], hints, DM_HINT)
+            value, hit = _swap(request[key], hints, new_hint)
             copy_[key], changed = value, changed or hit
     if not changed:
         return request  # the group hint is not there: nothing was proven replaceable, so nothing changes
