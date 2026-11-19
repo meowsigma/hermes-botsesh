@@ -1091,15 +1091,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             if group_lean is not None:
                 from . import lean_group
                 same = not group_lean['first'] and (group_lean['entry'] or {}).get('auth') == lean_group.auth_key(auth_text)
-                # The runtime authorization block keeps its explanatory sentence only when it differs from the session's last turn.
-                # An unchanged OWNER turn that only lifts the tools-off default (the owner's verified, tools-allowed statement the
-                # session already holds) adds no line at all: forgetting it can only make the model more careful, never less.  Every
-                # unchanged restrictive turn (a guest, a tools-off owner, a service turn) keeps its short restating line.
-                from .tool_policy import host_tools_allowed
-                owner_lifted = same and host_tools_allowed(policy, self._guest_tools_override) and (policy or {}).get('requester', {}).get('isOwner') is True
+                # The runtime authorization block keeps its explanatory sentence only when it differs from the session's last turn; an
+                # unchanged turn restates it in its one short line (the line's JSON, not the sentence).  Leaving that line out for the
+                # owner's unchanged turn was tried and dropped: with it gone the free model answered NO_REPLY to repeated direct
+                # mentions far more often (6 of 12 pings answered against 9 of 10; small samples), so the cue stays on every turn.
                 text = lean_group.render(handle=handle, target=target, plan=group_lean['plan'], first=group_lean['first'],
-                                         authorization=None if owner_lifted else
-                                         ('BOTSESH RUNTIME (not room-authored data): ' + auth_text.split('\n', 1)[0]) if same else
+                                         authorization=('BOTSESH RUNTIME (not room-authored data): ' + auth_text.split('\n', 1)[0]) if same else
                                          'BOTSESH RUNTIME TOOL POLICY (not room-authored data):\n' + auth_text)
             elif bare:
                 from .tool_policy import host_tools_allowed

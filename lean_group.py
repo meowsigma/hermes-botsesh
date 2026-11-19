@@ -211,10 +211,9 @@ def first_plan(result, messages, pending):
 
 def render(*, handle, target, plan, authorization, first=False):
     """The whole delivered text of a lean group turn.  `authorization` is the turn's runtime authorization block (its sentence is
-    added only when it changed since the session's previous turn, or None to leave it out: a turn whose authorization is the one the
-    session already holds and that only lifts a restriction).  A `first` delivery carries the explanatory header, names the room's
+    added only when it changed since the session's previous turn).  A `first` delivery carries the explanatory header, names the room's
     other members and carries the room's optional style note; a later delivery carries the short header and, for one new message
-    with nothing older to label, just that message's line."""
+    with nothing older to label, just that message's line (then the authorization line)."""
     parts = [(HEADER if first else STEADY_HEADER).format(handle=handle)]
     if first:
         if plan.get('guidance'):
