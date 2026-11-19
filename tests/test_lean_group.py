@@ -89,8 +89,9 @@ class LeanGroupTests(test_solid.SolidTests):
         event = self.adapter._admit_event.call_args.args[0]
         if complete:
             current = self.adapter._current[room]
-            if current.get('lean_session'):
-                await self.hermes_turn(event, session, 'run-%s-%s' % (room, target), room=room, first=first, identity=identity)
+            if current.get('lean_session') or current.get('lean_group'):
+                # a lean text AND a compact complete first delivery bind only through the gateway's identity in the hooks
+                await self.hermes_turn(event, session, 'run-%s-%s' % (room, target), room=room, first=first or not current.get('lean_session'), identity=identity)
             else:
                 current.update(hermes_session_id=session, model_processed=True, delivered=True)
                 await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
@@ -171,7 +172,7 @@ class LeanGroupTests(test_solid.SolidTests):
         current = self.adapter._current['a']
         self.client.store.update(lambda d: d['rooms']['a']['processing_receipts']['4'].update(
             posted_reply={'number': 5}, explicit_post_calls={'c1': {'result': {'number': 6}}}))
-        current.update(hermes_session_id='s1', model_processed=True, delivered=True)
+        current.update(hermes_session_id='s1', hook_turn=('s1', 'run-own'), model_processed=True, delivered=True)
         self.store.entry = Entry('s1')
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.assertEqual(self.ledger()['own'], [5, 6])
@@ -638,6 +639,70 @@ class LeanGroupTests(test_solid.SolidTests):
                         self.assertEqual((verdict(tool, args) or {}).get('message'), tool_policy.UNPROVEN_READ['message'], (name, tool))
                     for tool, args in plain:
                         self.assertNotEqual((verdict(tool, args) or {}).get('message'), tool_policy.UNPROVEN_READ['message'], (name, tool, 'a post that claims no read is still allowed'))
+
+    # --- positive native identity for a compact room delivery (review of 0.10.4: identity-less compact binding) -----------------------
+
+    async def test_a_compact_first_delivery_without_native_identity_credits_nothing(self):
+        self.real_wire()
+        event = await self.deliver(4, complete=False)
+        current = self.adapter._current['a']
+        self.assertEqual((current['lean_session'], current['lean_group']), (None, True))
+        # the hooks ran, but the gateway exposed no room/input identity: a headerless text binds nothing (not even as the only candidate)
+        self.model_turn(event, 's1', 'run-noid', first=True, identity=False)
+        self.assertNotIn('hook_turn', current)
+        self.assertNotIn('hermes_session_id', current)
+        # native admission still says the turn completed
+        current['model_processed'] = True
+        self.assertFalse(adapter_module.BotSeshAdapter._delivery_proves_read(current), 'completion without a bound native turn is not proof')
+        sent = await self.adapter.send('a', 'hello', metadata={'notify': True})
+        self.assertTrue(sent.success)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        ((rpc, wire),) = self.sends()
+        self.assertEqual(rpc, 'hermes_authored', 'an authored reply that claims no read')
+        self.assertEqual(set(wire) & {'batch_id', 'receipt_id', 'processed'}, set())
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['4']['state'], 'completed_unread')
+        self.assertNotIn(4, self.client.store.room('a').get('handled', []))
+        self.assertNotIn('processed_cursor', self.client.store.room('a'))
+        self.assertEqual(self.client.store.room('a').get('group_sessions') or {}, {}, 'no session pointer is credited')
+
+    async def test_a_foreign_native_event_cannot_bind_or_complete_a_compact_group_row(self):
+        event = await self.deliver(4, complete=False)
+        current = self.adapter._current['a']
+        # another room's native event whose model text happens to contain this row's text (identical short texts are possible)
+        with turn_env('b', 4):
+            started_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t9', is_first_turn=True)
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t9')
+            ended_turn(platform='botsesh', session_id='s9', turn_id='t9', completed=True, failed=False, interrupted=False)
+        # another input of the same room
+        with turn_env('a', 99):
+            started_turn(user_message=event.text, platform='botsesh', session_id='s9', turn_id='t10', is_first_turn=True)
+            ended_turn(platform='botsesh', session_id='s9', turn_id='t10', completed=True, failed=False, interrupted=False)
+        # a full-frame hook with NO identity naming this row's receipt and input
+        frame = event.text + ' receipt-4 "addressed_message_number": 4,'
+        started_turn(user_message=frame, platform='botsesh', session_id='s8', turn_id='t8', is_first_turn=True)
+        processed_turn(user_message=frame, platform='botsesh', session_id='s8', turn_id='t8')
+        ended_turn(platform='botsesh', session_id='s8', turn_id='t8', completed=True, failed=False, interrupted=False)
+        for key in ('hook_turn', 'hermes_session_id', 'hook_terminal'):
+            self.assertNotIn(key, current, 'a foreign or identity-less hook bound the compact row: ' + key)
+        self.assertIs(current['model_processed'], False)
+        self.assertFalse(adapter_module.BotSeshAdapter._delivery_proves_read(current))
+        # the intended native match binds and proves it
+        with turn_env('a', 4):
+            started_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1', is_first_turn=True)
+            processed_turn(user_message=event.text, platform='botsesh', session_id='s1', turn_id='t1')
+            ended_turn(platform='botsesh', session_id='s1', turn_id='t1', completed=True, failed=False, interrupted=False)
+        self.assertEqual(current['hook_turn'], ('s1', 't1'))
+        self.assertIs(current['model_processed'], True)
+        self.assertTrue(adapter_module.BotSeshAdapter._delivery_proves_read(current))
+
+    async def test_an_unbound_compact_turn_records_no_pointer_even_if_native_admission_completed_it(self):
+        event = await self.deliver(4, complete=False)
+        current = self.adapter._current['a']
+        current.update(hermes_session_id='s1', model_processed=True, delivered=True)   # a session id alone, no bound hook turn
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.client.store.room('a').get('group_sessions') or {}, {})
+        self.thread += [person(5, 'next', GUEST)]
+        self.assertIn('Others in this room: ', (await self.deliver(5, complete=False)).text, 'the next turn is a complete delivery again')
 
     def test_ledger_is_bounded(self):
         room = {}

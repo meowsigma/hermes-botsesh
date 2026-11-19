@@ -591,6 +591,13 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return False
         lean = current['lean_session']
         if not lean:
+            if current.get('lean_group') is True:
+                # 0.10.5: a compact COMPLETE group delivery (no receipt header: it names its room only by a short handle) proves the read
+                # only when the hooks bound THIS exact native turn through the gateway's own room/input identity (`hook_turn`, written
+                # nowhere else for a headerless row) in the session Hermes reported for it.  An absent, ambiguous or foreign identity
+                # binds nothing, and nothing bound means unproven: the reply claims no read and no session pointer is credited.
+                turn = current.get('hook_turn')
+                return bool(isinstance(turn, tuple) and len(turn) == 2 and turn[0] and current.get('hermes_session_id') == turn[0])
             return True
         proof = current.get('lean_proof')
         if not (isinstance(proof, tuple) and len(proof) == 3 and proof[2] in ('session', 'recovery')):
@@ -725,12 +732,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         of the room context only, never message text."""
         from . import lean_group
         lean = current.get('lean_session')
-        if lean and not self._delivery_proves_read(current):
-            def drop(data):
-                room = data['rooms'].get(room_id)
-                if room is not None:
-                    (room.get('group_sessions') or {}).pop(lean, None)
-            self.client.store.update(drop)
+        if not self._delivery_proves_read(current):
+            # Never credit a turn without positive proof: an unproven lean text drops the ledger row it was built from; an unproven
+            # compact first delivery (no native identity bound to this turn) records nothing at all.
+            if lean:
+                def drop(data):
+                    room = data['rooms'].get(room_id)
+                    if room is not None:
+                        (room.get('group_sessions') or {}).pop(lean, None)
+                self.client.store.update(drop)
             return
         ledger, session_id = current.get('group_ledger'), current.get('hermes_session_id')
         if not ledger or not session_id or not current.get('model_processed'):

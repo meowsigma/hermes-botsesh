@@ -333,7 +333,7 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
         with _HOOK_LOCK:
             if adapter._current.get(room_id) is not current or current.get('hook_terminal'):
                 return dict(ENDED)
-            if (current.get('lean_group') is True and current.get('lean_session') and not adapter._delivery_proves_read(current)
+            if (current.get('lean_group') is True and not adapter._delivery_proves_read(current)
                     and _claims_read(tool_name, kwargs.get('args'))):
                 # 0.10.5: a lean group text whose delivery the hook could not prove cannot claim the read it never proved, not even
                 # through an explicit post or pass; a plain reply (an authored one that claims no read) is still posted.
