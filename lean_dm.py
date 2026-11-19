@@ -107,8 +107,8 @@ def plan(binding, session_id, messages, pending, human, brief=None, history=None
         return None  # the Brief changed (or was never recorded): only the full catch-up carries it
     if history is not None and (history <= 0 or (type(ledger.get('messages')) is int and history < ledger['messages'])):
         return None  # emptied, rewound or reset under the same session id: the ledger describes a session that is gone
-    numbers = [m['number'] for m in messages if type(m.get('number')) is int]
-    if not numbers or min(numbers) > through + 1:
+    next_number = through + 1
+    if not any(type(m.get('number')) is int and m['number'] <= next_number for m in messages):
         return None  # the read window no longer reaches back to what this session last saw
     missed = []
     newest = max(pending) if pending else through

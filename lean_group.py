@@ -179,14 +179,22 @@ def plan(entry, messages, pending, digest, history):
         return None
     if history is None or history <= 0 or (type(entry.get('messages')) is int and history < entry['messages']):
         return None  # an emptied, rewound or compacted session under the same id: the ledger describes a session that is gone
-    numbers = [m['number'] for m in messages if type(m.get('number')) is int]
-    if not numbers or len(numbers) != len(messages) or min(numbers) > through + 1:
+    next_number = through + 1
+    reaches_window = False
+    for message in messages:
+        number = message.get('number')
+        if type(number) is not int:
+            return None
+        if number <= next_number:
+            reaches_window = True
+    if not reaches_window:
         return None  # the read window no longer reaches back to what this session last saw
+
     pending = set(pending)
     own_known = {n for n in entry.get('own') or [] if type(n) is int}
     seen_edits = entry.get('edits') if isinstance(entry.get('edits'), dict) else {}
-    earlier, new, chars = [], [], 0
-    for message in sorted(messages, key=lambda m: m['number']):
+    deliver = []
+    for message in messages:
         number = message['number']
         own = message.get('isOwn') is True
         edit = message['editCount'] if type(message.get('editCount')) is int else 0
@@ -196,12 +204,22 @@ def plan(entry, messages, pending, digest, history):
             continue
         if own and number not in pending and number in own_known:
             continue  # this session produced it
+        deliver.append(message)
+        if len(deliver) > MAX_MESSAGES:
+            return None
+
+    # Only the rows this turn delivers need ordering and JSON budget checks, not the whole frozen read.
+    deliver.sort(key=lambda m: m['number'])
+    earlier, new, chars = [], [], 0
+    for message in deliver:
         item = view(message)
         if item is None:
             return None
         chars += len(line(item)) + 1
-        (new if number in pending else earlier).append(item)
-    if not new or len(new) + len(earlier) > MAX_MESSAGES or chars > BUDGET:
+        if chars > BUDGET:
+            return None
+        (new if message['number'] in pending else earlier).append(item)
+    if not new:
         return None
     return {'earlier': earlier, 'new': new}
 
@@ -239,8 +257,10 @@ def first_plan(result, messages, pending):
         if item is None:
             return None
         chars += len(line(item)) + 1
+        if chars > FIRST_BUDGET:
+            return None
         (new if message['number'] in pending else earlier).append(item)
-    if not new or chars > FIRST_BUDGET:
+    if not new:
         return None
     return {'earlier': earlier, 'new': new, 'guidance': guidance, 'members': members}
 
