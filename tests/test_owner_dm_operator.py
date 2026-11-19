@@ -36,15 +36,14 @@ class OwnerDmTests(unittest.TestCase):
         self.client.enrolled.return_value = self.live
         self.client.create.return_value = {'room_id': 'new', 'share_link': 'https://botsesh.com/b/new'}
         self.adapter = types.SimpleNamespace(_current={'dm': self.current}, client=self.client, _is_sender_authorized=Mock(return_value=True))
-        # Adapter import alone requires host gateway registration. The guard uses
-        # this same real adapter registry interface, with no gateway/network double side effects.
-        self.adapter_module = types.ModuleType('owner_dm_test.adapter')
-        self.adapter_module._ADAPTERS = [self.adapter]
-        self.adapter_module._HOOK_LOCK = threading.RLock()
+        # The guard uses the real adapter module's registry and its real binding function (`bind_turn`, the only way a tool call is
+        # attributed to a turn); only the registry's content is this double.
+        from owner_dm_test import adapter as adapter_module
+        self.adapter_module = adapter_module
         self.scope = {'HERMES_SESSION_PLATFORM': 'botsesh', 'HERMES_SESSION_CHAT_ID': 'dm', 'HERMES_SESSION_MESSAGE_ID': '3'}
         self.stack = __import__('contextlib').ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.dict(sys.modules, {'owner_dm_test.adapter': self.adapter_module}))
+        self.stack.enter_context(patch.object(adapter_module, '_ADAPTERS', [self.adapter]))
         self.stack.enter_context(patch('gateway.session_context.get_session_env', side_effect=lambda key, default='': self.scope.get(key, default)))
         self.stack.enter_context(patch.object(tools, 'Client', return_value=self.client))
         self.ctx = Mock()

@@ -159,9 +159,9 @@ class LiveRelay:
             room = self.adapter.client.store.room(room_id)
         except Exception:
             return False
-        current = self.adapter._current.get(room_id)
+        from .adapter import bind_turn
         return (room.get('transport') == 'oauth' and room.get('active') is True
-                and current is not None and current.get('target') == target)
+                and bool(bind_turn(adapter=self.adapter, room_id=room_id, target=target, need='settle')))
 
     def _on_stream_start(self, room_id, target):
         turn = self._turn(room_id, target)
@@ -319,7 +319,8 @@ class LiveRelay:
     async def clear_now(self, room_id):
         """Stop / interrupt / new session: end the live view without waiting for the final."""
         turn = self._drop(room_id)
-        current = self.adapter._current.get(room_id)
+        from .adapter import bind_turn
+        current = bind_turn(adapter=self.adapter, room_id=room_id, need='settle').current
         target = turn.target if turn is not None else (current or {}).get('target')
         if target is not None:
             # Late deltas/tool events of the stopped turn must not reopen its live view.
@@ -369,32 +370,13 @@ _CONTEXT_MAX = {}
 def _locate(session_id='', turn_id=''):
     """(adapter, room, target) of the exact in-flight BotSesh turn this hook belongs to, else None.
 
-    Bound to the native turn identity (`hook_turn`) recorded at pre_llm_call; falls back to the
-    session's own platform/chat scope only when that room has exactly one in-flight turn."""
-    try:
-        from .tool_policy import _scope
-        platform, room_id, _message = _scope()
-    except Exception:
-        platform, room_id, _message = '', '', ''
-    if platform and platform != 'botsesh':
-        return None
-    from .adapter import _ADAPTERS, _HOOK_LOCK, _native_bound
-    with _HOOK_LOCK:
-        if session_id and turn_id:
-            for adapter in list(_ADAPTERS):
-                for rid, current in list(adapter._current.items()):
-                    if current.get('hook_turn') == (session_id, turn_id) and not current.get('hook_terminal'):
-                        return adapter, rid, current['target']
-        if platform == 'botsesh' and room_id:
-            found = [(adapter, adapter._current[room_id]) for adapter in list(_ADAPTERS) if room_id in adapter._current]
-            if len(found) == 1 and not found[0][1].get('hook_terminal'):
-                current = found[0][1]
-                # 0.10.4 r2: chat scope alone never attaches a compact (headerless) row: draft text and tool steps would be shown
-                # as the working turn of an input no hook bound.  It needs its positive native record AND this hook's own input.
-                if current.get('bare') and not (_native_bound(current) and _message == str(current['target'])):
-                    return None
-                return found[0][0], room_id, current['target']
-    return None
+    0.10.4 r3: `bind_turn` is the only way a frame is attributed.  The hook's own explicit (session, turn) ids must equal the ids the
+    pre_llm_call hook paired to the row, and the gateway's room/input of the running turn, when present, must agree with that
+    row.  Missing, empty or different ids, a conflicting room/input or another platform bind nothing: there is no chat-scope
+    fallback (a draft or tool preview is the working turn's own content, never a room's)."""
+    from .adapter import bind_turn
+    bound = bind_turn(hook=(session_id, turn_id), ambient='optional')
+    return (bound.adapter, bound.room_id, bound.current['target']) if bound else None
 
 
 def stream_start_hook(session_id='', turn_id='', **_kwargs):

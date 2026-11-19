@@ -140,7 +140,9 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         processed_turn(platform='botsesh',user_message='[Owner] '+prompt,session_id='s',turn_id='t')
         self.assertEqual(self.adapter._current['a']['hook_turn'],('s','t'))
         ended_turn(platform='botsesh',session_id='s',turn_id='t',completed=False,failed=True,interrupted=False)
-        sent=await self.adapter.send('a','HTTP 402: credits exhausted (private vendor detail)',metadata={'notify':True})
+        # 0.10.4 r3: the failure text is attributed to this turn only through its EVENT-BOUND final (a bare chat-level `send` classifies nothing)
+        event=Mock(source=Mock(chat_id='a'),message_id='3',metadata={})
+        sent,_=await self.adapter.send_final_ledgered(event,'key','HTTP 402: credits exhausted (private vendor detail)',{},reply_to=None)
         self.assertTrue(sent.success)
         self.assertEqual(self.posts,{})
         failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
@@ -166,7 +168,8 @@ class SolidTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter._notify_turn_error(Mock(source=Mock(chat_id='a'),message_id='3'),RuntimeError('tool detail'))
         self.assertEqual(self.posts,{})
         failures=[a for _,op,a in self.calls if op=='delivery' and a.get('state')=='failed']
-        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'provider_budget'}])
+        # 0.10.4 r3: the status diagnostic named a chat, not this input; it is no longer the label of whatever fails next
+        self.assertEqual(failures,[{'target':3,'state':'failed','failure_code':'runtime_error'}])
     async def test_exact_unicode_chunk_replay_and_only_last_chunk_attests(self):
         text='α🙂\n'*2200
         payload={'text':text,'client_id':str(uuid.uuid4()),'receipt_id':'frozen','processed':True,'reply_to':3}

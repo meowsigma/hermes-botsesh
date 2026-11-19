@@ -59,18 +59,13 @@ def flush_failure(client, room_id, target):
 
 
 def cant_do(reason, partial_notes=None):
-    from gateway.session_context import get_session_env
-    from .adapter import _ADAPTERS, _HOOK_LOCK
-    room_id = get_session_env('HERMES_SESSION_CHAT_ID', '')
-    message_id = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
-    if get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh' or not room_id or not message_id:
-        raise BotSeshError('addressed_botsesh_turn_required')
+    from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
-        candidates = [(a, a._current[room_id]) for a in list(_ADAPTERS) if room_id in a._current
-                      and str(a._current[room_id]['target']) == message_id]
-        if len(candidates) != 1:
+        # 0.10.4 r3: the addressed turn is named only through `bind_turn` (the gateway's own room and input of this running turn).
+        bound = bind_turn(ambient='required', need='settle')
+        if not bound:
             raise BotSeshError('addressed_botsesh_turn_required')
-        adapter, current = candidates[0]
+        adapter, room_id, current = bound
         target = current['target']
         row = adapter.client.store.room(room_id).get('processing_receipts', {}).get(str(target), {})
         saved = row.get('explicit_failure')
@@ -117,20 +112,16 @@ def settle_takeover(client, room_id, target):
 
 def claim_takeover(reason, processed=False):
     """Model acknowledgment only after full native context delivery; never an auto-read."""
-    from gateway.session_context import get_session_env
-    from .adapter import _ADAPTERS, _HOOK_LOCK
-    room_id = get_session_env('HERMES_SESSION_CHAT_ID', '')
-    message_id = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
-    if (get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh' or not room_id or not message_id
-            or processed is not True or not isinstance(reason, str) or not reason.strip()
+    from .adapter import _HOOK_LOCK, bind_turn
+    if (processed is not True or not isinstance(reason, str) or not reason.strip()
             or len(reason.encode('utf-16-le')) // 2 > 180 or any(unicodedata.category(c) in ('Cc', 'Cf') for c in reason)):
         raise BotSeshError('processed_takeover_turn_required')
     with _HOOK_LOCK:
-        candidates = [(a, a._current[room_id]) for a in list(_ADAPTERS) if room_id in a._current
-                      and str(a._current[room_id]['target']) == message_id]
-        if len(candidates) != 1:
+        bound = bind_turn(ambient='required', need='settle')
+        if not bound:
             raise BotSeshError('processed_takeover_turn_required')
-        adapter, current = candidates[0]
+        adapter, room_id, current = bound
+        message_id = str(current['target'])
         row = adapter.client.store.room(room_id).get('processing_receipts', {}).get(message_id, {})
         offer = row.get('takeover_offer')
         if not offer or row.get('explicit_failure') or current.get('delivered'):

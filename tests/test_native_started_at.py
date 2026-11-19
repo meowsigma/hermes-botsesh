@@ -164,14 +164,15 @@ class NativeStartedAt(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(self.hooks['pre_llm_call'], **self.kwargs)
         running = self.inspect()
         self.hooks['on_session_end'](platform='botsesh', session_id='scripted-session', turn_id='scripted-turn', completed=False, failed=True, interrupted=False)
-        self.adapter._current[self.room]['provider_hint'] = 'provider_error'
         self.adapter._native_state = AsyncMock(return_value=({'status': 'terminal', 'outcome': 'failed'}, {'failed': True}))
         await self.adapter._reconcile_native(self.room)
         after = self.inspect()
         delivery = self.delivery(after)
         self.record(running=running, after=after)
         self.assertIsNotNone(delivery['failed_at'])
-        self.assertEqual(delivery['failure_code'], 'provider_error')
+        # 0.10.4 r3: no chat-only diagnostic labels a failure (the old `provider_hint` poke is gone); a native failure with nothing
+        # attributable to this turn is the plain runtime_error
+        self.assertEqual(delivery['failure_code'], 'runtime_error')
         self.assertIsNone(delivery['answered_at'])
         self.assertIsNone(delivery['completed_at'])
         self.assertEqual((after['checkpoint'], after['attestations']), (0, 0))

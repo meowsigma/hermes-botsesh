@@ -121,6 +121,35 @@ class HostTools(unittest.IsolatedAsyncioTestCase):
             c['tool_policy']=self.make_policy(owner=True,allowed=True)
             self.assertIsNone(restrict_request(request=original,session_id='s',turn_id='t'))
 
+    def test_r3_tool_authority_needs_the_hooks_own_explicit_ids_and_a_conflicting_scope_refuses(self):
+        from hermes_botsesh_test.tool_policy import restrict_request
+        from hermes_botsesh_test.tools import SCHEMAS
+        env=dict(HERMES_SESSION_PLATFORM='botsesh',HERMES_SESSION_CHAT_ID='room',HERMES_SESSION_MESSAGE_ID='3')
+        owner=self.make_policy(owner=True,allowed=True)
+        c=self.current();c['tool_policy']=owner;c['hook_turn']=('s','t')
+        self.client.enrolled=Mock(return_value=owner)
+        original={'model':'local','messages':[],'tools':[{'type':'function','function':{'name':'terminal'}}]+[{'type':'function','function':s} for s in SCHEMAS]}
+        room_only={'botsesh_read','botsesh_post','botsesh_pass','botsesh_agree'}
+        with patch('gateway.session_context.get_session_env',side_effect=lambda k, default='':env.get(k,default)):
+            self.assertIsNone(restrict_request(request=original,session_id='s',turn_id='t'),'its own ids: the owner keeps the configured tools')
+            self.assertIsNone(tool_policy.enforce_tools(tool_name='terminal',session_id='s',turn_id='t'))
+            # same room, same input, but ids that disagree with the ones the pre_llm_call hook paired, or none at all
+            for ids in (dict(session_id='s',turn_id='other'),dict(session_id='other',turn_id='t'),dict(session_id='',turn_id=''),dict(session_id='s',turn_id='')):
+                with self.subTest(ids):
+                    names={x['function']['name'] for x in restrict_request(request=original,**ids)['request']['tools']}
+                    self.assertEqual(names,room_only,'no host-tool authority without the hook\'s own explicit ids')
+                    self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',**ids)['action'],'block')
+        # right ids, but the gateway says another input (or room, or platform) is running: a conflicting scope binds nothing
+        for label,change in (('another input',dict(HERMES_SESSION_MESSAGE_ID='4')),('another room',dict(HERMES_SESSION_CHAT_ID='elsewhere')),
+                             ('another platform',dict(HERMES_SESSION_PLATFORM='telegram'))):
+            with self.subTest(label),patch('gateway.session_context.get_session_env',side_effect=lambda k, default='',change=change:{**env,**change}.get(k,default)):
+                result=restrict_request(request=original,session_id='s',turn_id='t')
+                if label=='another platform':
+                    self.assertIsNone(result,'not a BotSesh turn: the request is not ours to restrict')
+                else:
+                    self.assertEqual({x['function']['name'] for x in result['request']['tools']},room_only)
+                    self.assertEqual(tool_policy.enforce_tools(tool_name='terminal',session_id='s',turn_id='t')['action'],'block')
+
 if __name__=='__main__':
     import unittest
     unittest.main()

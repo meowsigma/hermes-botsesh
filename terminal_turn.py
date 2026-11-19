@@ -10,13 +10,6 @@ import json
 def settled_turn(*, tool_name='', args=None, result='', **kwargs):
     if tool_name not in ('botsesh_cant_do', 'botsesh_pass'):
         return
-    from gateway.session_context import get_session_env
-    if get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh':
-        return
-    room = get_session_env('HERMES_SESSION_CHAT_ID', '')
-    target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
-    if not room or not target:
-        return
     try:
         envelope = json.loads(result)
     except (TypeError, ValueError):
@@ -26,11 +19,14 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
     outcome = envelope.get('result')
     if not isinstance(outcome, dict):
         return
-    from .adapter import _ADAPTERS, _HOOK_LOCK
+    from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
-        rows = [adapter.client.store.room(room).get('processing_receipts', {}).get(target, {})
-                for adapter in list(_ADAPTERS) if room in adapter._current
-                and str(adapter._current[room]['target']) == target]
+        # 0.10.4 r3: the settled turn is named only through `bind_turn` (the gateway's own room and input of this running turn).
+        bound = bind_turn(ambient='required', need='settle')
+        if not bound:
+            return
+        room, target = bound.room_id, str(bound.current['target'])
+        rows = [bound.adapter.client.store.room(room).get('processing_receipts', {}).get(target, {})]
         if tool_name == 'botsesh_cant_do':
             settled = [row for row in rows if row.get('failure_code') == 'cant_do'
                        and row.get('explicit_failure', {}).get('result') == outcome

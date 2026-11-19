@@ -381,6 +381,8 @@ class LeanDmTests(SolidTests):
         }
         def recover(text=event.text, room='a', message=5, tag=''):
             with turn_env(room, message):
+                # 0.10.4 r3: a hook turn is attributed only through its pairing, which `started_turn` always performs first
+                processed_turn(user_message=text, platform='botsesh', session_id='s9', turn_id='t-' + tag)
                 return adapter_module._dm_catchup_context('s9', 't-' + tag, True, text)
         for name, mutate in cases.items():
             with self.subTest(name):
@@ -1514,23 +1516,34 @@ class LeanDmTests(SolidTests):
         self.assertEqual(await self.presence_route('typing'), (1, 1), 'a bound row whose receipt shows the start is refreshed')
 
     def test_a_compact_row_is_bound_only_by_the_positive_record_of_the_turn_its_hooks_bound(self):
-        bound = adapter_module._native_bound
+        record = adapter_module.native_record
         good = dict(bare=True, native_turn=('s', 't'), hook_turn=('s', 't'), hermes_session_id='s')
-        self.assertTrue(bound(good))
-        self.assertTrue(bound({'target': 5}), 'a receipt-framed row keeps its own header')
-        self.assertTrue(bound({'target': 5, 'bare': False}))
+        self.assertTrue(record(good))
         without = lambda key: {k: v for k, v in good.items() if k != key}
-        for name, row in (('no record', without('native_turn')), ('record is not a tuple', {**good, 'native_turn': ['s', 't']}),
-                          ('short record', {**good, 'native_turn': ('s',)}), ('long record', {**good, 'native_turn': ('s', 't', 'x')}),
-                          ('empty session', {**good, 'native_turn': ('', 't'), 'hook_turn': ('', 't'), 'hermes_session_id': ''}),
-                          ('empty turn', {**good, 'native_turn': ('s', ''), 'hook_turn': ('s', '')}),
-                          ('no session at all', {**good, 'native_turn': (None, 't'), 'hook_turn': (None, 't'), 'hermes_session_id': None}),
-                          ('another hook turn', {**good, 'hook_turn': ('s', 'other')}), ('no hook turn', without('hook_turn')),
-                          ('another session reported', {**good, 'hermes_session_id': 'other'}), ('no session reported', without('hermes_session_id'))):
+        negatives = (('no record', without('native_turn')), ('record is not a tuple', {**good, 'native_turn': ['s', 't']}),
+                     ('short record', {**good, 'native_turn': ('s',)}), ('long record', {**good, 'native_turn': ('s', 't', 'x')}),
+                     ('empty session', {**good, 'native_turn': ('', 't'), 'hook_turn': ('', 't'), 'hermes_session_id': ''}),
+                     ('empty turn', {**good, 'native_turn': ('s', ''), 'hook_turn': ('s', '')}),
+                     ('no session at all', {**good, 'native_turn': (None, 't'), 'hook_turn': (None, 't'), 'hermes_session_id': None}),
+                     ('another hook turn', {**good, 'hook_turn': ('s', 'other')}), ('no hook turn', without('hook_turn')),
+                     ('another session reported', {**good, 'hermes_session_id': 'other'}), ('no session reported', without('hermes_session_id')))
+        for name, row in negatives:
             with self.subTest(name):
-                self.assertFalse(bound(row), name)
+                self.assertFalse(record(row), name)
+        # `bind_turn` applies it to every claim that attributes LIVE activity (need='native'); a receipt-framed row keeps its own header
+        owner = self.make_adapter()
+        for label, row, native_ok in (('compact, recorded', good, True), ('compact, not recorded', {'bare': True}, False),
+                                      ('receipt-framed', {}, True), ('receipt-framed, bare False', {'bare': False}, True)):
+            owner._current['r'] = {'target': 5, 'event_id': '5', 'receipt_id': 'x', **row}
+            with self.subTest('bind_turn: ' + label):
+                self.assertEqual(bool(adapter_module.bind_turn(adapter=owner, room_id='r')), native_ok)
+                self.assertTrue(adapter_module.bind_turn(adapter=owner, room_id='r', need='settle'), 'settling an admitted event needs no record')
+        for name, row in negatives:
+            owner._current['r'] = {'target': 5, 'event_id': '5', 'receipt_id': 'x', 'bare': True, **row}
+            with self.subTest('bind_turn refuses: ' + name):
+                self.assertFalse(adapter_module.bind_turn(adapter=owner, room_id='r'))
 
-    async def test_a_live_frame_hook_never_attaches_to_an_unbound_compact_row_by_chat_scope_alone(self):
+    async def test_a_live_frame_hook_binds_only_by_its_explicit_turn_ids_and_never_by_chat_scope(self):
         from hermes_botsesh_test.live import _locate
         event = await self.lean_five()
         a = self.adapter._current['a']
@@ -1541,10 +1554,96 @@ class LeanDmTests(SolidTests):
         self.assertEqual(a['native_turn'], ('s1', 't1'))
         with turn_env('a', 5):
             self.assertEqual(_locate('s1', 't1')[1:], ('a', 5), 'its own hook ids')
-            self.assertEqual(_locate('', '')[1:], ('a', 5), 'its own native input once bound')
-        with turn_env('a', 7):
-            self.assertIsNone(_locate('', ''), 'another input of the same room is not this row')
-            self.assertIsNone(_locate('s1', 'other-turn'))
+            # r3 (the decisive cases): explicit ids that disagree, or are missing, never bind, even with this very row's room and input
+            self.assertIsNone(_locate('s1', 'other-turn'), 'same room, same input, different turn')
+            self.assertIsNone(_locate('other-session', 't1'), 'same room, same input, different session')
+            self.assertIsNone(_locate('', ''), 'no ids: the gateway scope alone is not a binding')
+            self.assertIsNone(_locate('s1', ''))
+            self.assertIsNone(_locate('', 't1'))
+        for label, scope in (('another input of the same room', ('a', 7)), ('another room, same input number', ('b', 5))):
+            with self.subTest(label), turn_env(*scope):
+                self.assertIsNone(_locate('s1', 't1'), 'right ids, but the gateway says another event runs: conflicting scope')
+                self.assertIsNone(_locate('s1', 'other-turn'))
+        tokens = set_session_vars(platform='telegram', chat_id='a', message_id='5')
+        try:
+            self.assertIsNone(_locate('s1', 't1'), 'another platform')
+        finally:
+            clear_session_vars(tokens)
+        self.assertEqual(_locate('s1', 't1')[1:], ('a', 5), 'ids alone bind when the gateway named nothing')
+        with turn_env('a', 5):
+            ended_turn(platform='botsesh', session_id='s1', turn_id='t1', completed=True, failed=False, interrupted=False)
+            self.assertIsNone(_locate('s1', 't1'), 'an ended turn shows no further frames')
+
+    async def test_every_live_frame_hook_refuses_disagreeing_or_missing_ids_for_a_compact_and_a_receipt_framed_row(self):
+        from hermes_botsesh_test import live as live_module
+        relay = self.adapter.live
+        calls = []
+        for name in ('stream_start', 'stream_delta', 'tool_started', 'tool_finished'):
+            setattr(relay, name, lambda *args, _name=name: calls.append(_name))
+        fire = {'stream_start': lambda ids: live_module.stream_start_hook(**ids),
+                'stream_delta': lambda ids: live_module.stream_delta_hook(delta='x', kind='text', **ids),
+                'tool_started': lambda ids: live_module.tool_started_hook(tool_name='t', args={}, tool_call_id='c', **ids),
+                'tool_finished': lambda ids: live_module.tool_finished_hook(tool_name='t', tool_call_id='c', status='ok', **ids)}
+        event = await self.lean_five()
+        foreign = await self.foreign_full_frame_event('group room')
+        rows = (('compact', 'a', 5, event.text, 's1', 't1'), ('receipt-framed', 'b', 3, foreign.text, 'sf', 'tf'))
+        for kind, room, target, text, session, turn in rows:
+            with turn_env(room, target):
+                processed_turn(user_message=text, platform='botsesh', session_id=session, turn_id=turn)
+            self.assertEqual(self.adapter._current[room]['hook_turn'], (session, turn), kind)
+        for kind, room, target, text, session, turn in rows:
+            for label, ids, bound in (('its own ids', {'session_id': session, 'turn_id': turn}, True),
+                                      ('same input, other turn', {'session_id': session, 'turn_id': 'other'}, False),
+                                      ('same input, other session', {'session_id': 'other', 'turn_id': turn}, False),
+                                      ('no ids', {}, False), ('empty ids', {'session_id': '', 'turn_id': ''}, False)):
+                for hook, call in fire.items():
+                    with self.subTest('%s, %s, %s' % (kind, label, hook)), turn_env(room, target):
+                        del calls[:]
+                        call(ids)
+                        self.assertEqual(calls, [hook] if bound else [])
+
+    def test_the_binding_refuses_a_claim_that_names_nothing_or_whose_identities_disagree(self):
+        owner = self.make_adapter()
+        row = {'target': 5, 'event_id': '5', 'receipt_id': 'rx', 'hook_turn': ('s', 't')}
+        owner._current['r'] = row
+        bind = lambda **claim: adapter_module.bind_turn(adapter=owner, **claim)
+        self.assertTrue(bind(room_id='r', target=5, event_id='5', receipt_id='rx', hook=('s', 't')), 'every identity agrees')
+        for label, claim in (('nothing named', {}), ('another room', {'room_id': 'x'}), ('another input', {'room_id': 'r', 'target': 6}),
+                             ('another event', {'room_id': 'r', 'event_id': 'takeover:z'}), ('another receipt', {'room_id': 'r', 'receipt_id': 'ry'}),
+                             ('another turn', {'room_id': 'r', 'hook': ('s', 'other')}), ('missing turn id', {'room_id': 'r', 'hook': ('s', '')}),
+                             ('missing session id', {'room_id': 'r', 'hook': ('', 't')}), ('one id of a pair', {'room_id': 'r', 'hook': ('s',)}),
+                             ('all agree but one', {'room_id': 'r', 'target': 5, 'event_id': '5', 'receipt_id': 'rx', 'hook': ('s', 'other')})):
+            with self.subTest(label):
+                self.assertFalse(bind(**claim), label)
+        with self.subTest('ended'):
+            row['hook_terminal'] = True
+            self.assertFalse(bind(room_id='r', hook=('s', 't')))
+            self.assertTrue(bind(room_id='r', hook=('s', 't'), ended=True))
+            self.assertTrue(bind(room_id='r', need='settle'))
+        with self.subTest('two adapters claim the same input: ambiguous, so neither'):
+            row.pop('hook_terminal')
+            twin = self.make_adapter()
+            twin._current['r'] = dict(row)
+            with patch.object(adapter_module, '_ADAPTERS', {owner, twin}):
+                self.assertFalse(adapter_module.bind_turn(room_id='r', need='settle'), 'several rows and no hook ids: ambiguous')
+                self.assertFalse(adapter_module.bind_turn(target=5))
+                shared = adapter_module.bind_turn(target=5, hook=('s', 't'))
+                self.assertEqual(len(shared.rows), 2, 'the hook\'s explicit ids name that one turn on both adapter objects')
+            self.assertTrue(adapter_module.bind_turn(adapter=owner, room_id='r', target=5), 'a callback names its own adapter')
+        with self.subTest('ambient'):
+            with turn_env('r', 5):
+                self.assertTrue(bind(ambient='required', hook=('s', 't')))
+            for scope in (('r', 6), ('x', 5)):
+                with turn_env(*scope):
+                    self.assertFalse(bind(ambient='required'), scope)
+                    self.assertFalse(bind(ambient='optional', hook=('s', 't')), scope)
+            self.assertFalse(bind(ambient='required'), 'no gateway variables: a scope-only claim binds nothing')
+            self.assertTrue(bind(ambient='optional', room_id='r', hook=('s', 't')), 'optional: absent variables do not conflict')
+            tokens = set_session_vars(platform='telegram', chat_id='r', message_id='5')
+            try:
+                self.assertFalse(bind(ambient='optional', room_id='r'))
+            finally:
+                clear_session_vars(tokens)
 
     async def test_two_adapters_claiming_the_same_compact_input_is_ambiguous_and_binds_neither(self):
         event = await self.lean_five()

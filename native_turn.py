@@ -95,7 +95,7 @@ class NativeTurnMixin:
                 return
         outcome = row.get('outcome')
         code = ('cancelled' if outcome == 'cancelled' else 'interrupted' if outcome == 'interrupted'
-                else 'empty_response' if current.get('model_processed') else current.get('provider_hint') or 'runtime_error')
+                else 'empty_response' if current.get('model_processed') else current.get('final_failure_code') or 'runtime_error')
         if current.get('interrupt_requested') and not current.get('model_processed') and code != 'cancelled':
             # The DM owner stopped this turn (Stop, /new, or a busy-mode interrupt). Its status
             # chatter is not a provider verdict: report the honest interruption.

@@ -50,12 +50,12 @@ def pin_operator_binding(binding, context):
 
 
 def owner_dm_client(chat_id):
-    from gateway.session_context import get_session_env
-    from .adapter import _ADAPTERS, _HOOK_LOCK
-    target = get_session_env('HERMES_SESSION_MESSAGE_ID', '')
-    if (get_session_env('HERMES_SESSION_PLATFORM', '') != 'botsesh'
-            or not chat_id or get_session_env('HERMES_SESSION_CHAT_ID', '') != chat_id or not target):
+    from .adapter import _HOOK_LOCK, bind_turn
+    # 0.10.4 r3: the native input of this running turn is named only through `bind_turn` (the gateway's own room and input).
+    first = bind_turn(room_id=chat_id, ambient='required', need='settle') if chat_id else None
+    if not first:
         raise BotSeshError('owner_dm_operator_required')
+    target = str(first.current['target'])
 
     def source(adapter, current):
         binding = adapter.client.store.room(chat_id)
@@ -82,11 +82,10 @@ def owner_dm_client(chat_id):
         return dict(pin), current['receipt_id'], human
 
     with _HOOK_LOCK:
-        candidates = [(a, a._current[chat_id]) for a in list(_ADAPTERS)
-                      if chat_id in a._current and str(a._current[chat_id].get('target')) == target]
-        if len(candidates) != 1:
+        bound = bind_turn(room_id=chat_id, target=target, ambient='required', need='settle')
+        if not bound:
             raise BotSeshError('owner_dm_operator_required')
-        adapter, current = candidates[0]
+        adapter, _room, current = bound
         before = source(adapter, current)
     # Fresh authenticated server projection on EVERY invocation. No cached DM
     # menu context or old frozen payload is proof of current grant ownership.
@@ -99,6 +98,7 @@ def owner_dm_client(chat_id):
             or live.get('access_state') != 'authorized' or live.get('human_owns_grant') is not True):
         raise BotSeshError('owner_dm_operator_required')
     with _HOOK_LOCK:
-        if adapter._current.get(chat_id) is not current or source(adapter, current) != before:
+        if (bind_turn(adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current
+                or source(adapter, current) != before):
             raise BotSeshError('owner_dm_operator_required')
     return adapter.client

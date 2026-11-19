@@ -248,9 +248,10 @@ class CommandTransportMixin(DmControlsMixin):
                 if command in ('new', 'reset', 'stop'):
                     self._dm_contexts[chat_id]['generation'] = str(uuid.uuid4())
                     await self._control_invalidate(chat_id)
-                    current = getattr(self, '_current', {}).get(chat_id)
-                    if current is not None:
-                        current['interrupt_requested'] = True  # Owner-stopped, not a provider failure.
+                    from .adapter import bind_turn
+                    bound = bind_turn(adapter=self, room_id=chat_id, need='settle')
+                    if bound:
+                        bound.current['interrupt_requested'] = True  # Owner-stopped, not a provider failure.
                     if live is not None:
                         # The live draft/steps of an interrupted turn end now; the durable
                         # outcome (cancelled notice or final) still settles that turn.
