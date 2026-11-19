@@ -142,9 +142,13 @@ mutant('O1 owner-DM authority ignores the gateway scope (all three bindings)', '
        "bound = bind_turn(require=('room', 'input'), room_id=chat_id, target=target, need='settle')",
        "if (bind_turn(require=('room', 'input'), adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current",
        "if (bind_turn(require=('room', 'input'), adapter=adapter, room_id=chat_id, target=target, need='settle').current is not current")
-mutant('O2 owner-DM authority completes a missing room from the gateway\'s variables', 'owner_operator.py',
+mutant('O2 owner-DM authority completes a missing room from the gateway\'s variables (all three bindings)', 'owner_operator.py',
        "first = bind_turn(require=('room',), room_id=chat_id, ambient='required', need='settle')",
-       "first = bind_turn(require=(), room_id=chat_id, ambient='required', need='settle')")
+       "first = bind_turn(require=(), room_id=chat_id, ambient='required', need='settle')",
+       "bound = bind_turn(require=('room', 'input'), room_id=chat_id, target=target, ambient='required', need='settle')",
+       "bound = bind_turn(require=('input',), room_id=chat_id, target=target, ambient='required', need='settle')",
+       "if (bind_turn(require=('room', 'input'), adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current",
+       "if (bind_turn(require=('input',), adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current")
 # --- r4: every gateway callback states its event id as required ------------------------------------------------------------------
 mutant('E1 the processing-start callback does not require its event id', 'adapter.py',
        "bound = bind_turn(require=('room', 'event'), adapter=self, room_id=room_id, event_id=event.message_id)\n        if bound:",
