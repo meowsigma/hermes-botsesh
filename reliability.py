@@ -69,8 +69,29 @@ def receipt(store, room_id, target, **fields):
             del rows[old]
     return store.update(save)['rooms'][room_id]['processing_receipts'][str(target)]
 
+HEALTH_VOLATILE = ('last_check', 'last_event', 'last_received_event', 'backlog', 'last_status')  # display-only liveness values (ops_status calls 90 s stale)
+HEALTH_VOLATILE_SECONDS = 15
+_VOLATILE_WRITTEN = {}
+
+
 def health(store, room_id, **fields):
-    store.update(lambda data: data['rooms'][room_id].setdefault('health', {}).update(fields))
+    """Record local status. 0.10.4: the display-only liveness values (poll stamp, backlog, last status) reach the registry at most
+    once per HEALTH_VOLATILE_SECONDS: a poll cycle has no business paying two fsyncs on the event loop every second. State, error,
+    stream and received-event stamps are written at once, as before."""
+    now = time.time()
+    keep = {}
+    stamped = []
+    for key, value in fields.items():
+        if key in HEALTH_VOLATILE:
+            mark = (str(store.path), room_id, key)
+            if 0 <= now - _VOLATILE_WRITTEN.get(mark, -1e9) < HEALTH_VOLATILE_SECONDS:
+                continue
+            stamped.append(mark)
+        keep[key] = value
+    if keep:
+        store.update(lambda data: data['rooms'][room_id].setdefault('health', {}).update(keep))
+        for mark in stamped:
+            _VOLATILE_WRITTEN[mark] = now
 
 def failure_code(text):
     lower = str(text).lower()

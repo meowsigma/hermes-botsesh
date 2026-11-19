@@ -73,7 +73,13 @@ class Store:
     def update(self, fn):
         with self.locked():
             data = self._load()
+            # 0.10.4: an update that changes nothing writes nothing. Every client operation journals its outcome through here,
+            # most of them with no change to record, and each real write is two fsyncs (about 12 ms) on the event loop's
+            # critical path: that was most of the delay between an owner's message and the model request.
+            unchanged = self.path.exists() and json.dumps(data, ensure_ascii=False)
             fn(data)
+            if unchanged and json.dumps(data, ensure_ascii=False) == unchanged:
+                return data
             fd, name = tempfile.mkstemp(dir=self.root, prefix='.rooms-', suffix='.tmp')
             try:
                 with os.fdopen(fd, 'w', encoding='utf-8') as stream:

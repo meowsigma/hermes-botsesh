@@ -15,6 +15,7 @@ from .native_turn import NativeTurnMixin
 
 _ADAPTERS = weakref.WeakSet()
 logger = logging.getLogger(__name__)
+CURSOR_FLUSH_SECONDS = 5  # 0.10.4: how often the live SSE event cursor is written to the registry (see BotSeshAdapter._stream)
 
 # Compatibility hints for Hermes's ledger wire text, NOT new room-message content.
 # The regression invokes the installed core dispatcher with its own exact markers.
@@ -58,8 +59,21 @@ def processed_turn(*, user_message='', platform='', session_id=None, turn_id=Non
         return
     identity = _native_turn_identity()
     with _HOOK_LOCK:
+        # 0.10.4: a compact owner-DM text carries no receipt header. With the gateway's own session variables it binds only the
+        # event of THIS room and input; without them (an older core) only when exactly one running event carries this text,
+        # so two rooms with the same short text bind nothing rather than each other.
+        texted = [(adapter, room_id, current) for adapter in list(_ADAPTERS) for room_id, current in list(adapter._current.items())
+                  if current.get('bare') and not current.get('hook_terminal') and isinstance(user_message, str)
+                  and current.get('text') and current['text'] in user_message]
+        bound = [c for _, room_id, c in texted if identity == (room_id, str(c.get('target')))] if identity else (
+            [c for _, _, c in texted] if len(texted) == 1 else [])
         for adapter in list(_ADAPTERS):
             for room_id, current in list(adapter._current.items()):
+                if current.get('bare'):
+                    if any(current is c for c in bound):
+                        current['hook_turn'] = (session_id, turn_id)
+                        current['hermes_session_id'] = session_id
+                    continue
                 if identity and current.get('lean_session') and identity != (room_id, str(current.get('target'))):
                     continue  # 0.10.3: identical lean texts in two rooms: bind only the event the gateway says this turn runs
                 # Core may prefix sender context. Bind to both frozen receipt
@@ -349,9 +363,15 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
     async def _stream(self, room_id, changed):
         if self.client.store.room(room_id).get('transport') in ('oauth', 'invitation'):
             attempt = 0
+            # 0.10.4: the live event cursor is kept here and reaches the registry at most every CURSOR_FLUSH_SECONDS. Each event
+            # used to cost two fsyncs on the event loop in front of the very turn it announced. A restart (or a cancelled stream)
+            # that resumes from a slightly older cursor only wakes the room loop once more: the durable inbox is the source of truth.
+            live_cursor, flushed_at, dirty = None, float('-inf'), False
             while self._running:
                 try:
-                    cursor = self.client.store.room(room_id).get('event_cursor', {})
+                    if live_cursor is None:
+                        live_cursor = dict(self.client.store.room(room_id).get('event_cursor', {}))
+                    cursor = live_cursor
                     # Native gateway lifecycle, independent of read/model turns.
                     # Old-server failure leaves inbox polling active, not green.
                     if self.client.store.room(room_id).get('transport') == 'oauth':
@@ -366,12 +386,21 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     if (result['next_after'] > cursor.get('after', -1)
                             or cursor.get('since') and result['since'] != cursor['since']):
                         health(self.client.store, room_id, last_received_event=time.time())
-                    self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor={'after': result['next_after'], 'since': result['since']}))
+                    live_cursor = {'after': result['next_after'], 'since': result['since']}
+                    dirty = True
+                    if time.monotonic() - flushed_at >= CURSOR_FLUSH_SECONDS:
+                        saved_cursor = dict(live_cursor)
+                        self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor=saved_cursor))
+                        flushed_at, dirty = time.monotonic(), False
                     changed.set()
                     attempt = 0
                 except BotSeshError as error:
                     health(self.client.store, room_id, stream='stopped' if error.terminal else 'reconnecting', error=error.code)
                     if error.terminal:
+                        if dirty and live_cursor is not None:
+                            saved_cursor = dict(live_cursor)
+                            with contextlib.suppress(Exception):
+                                self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor=saved_cursor))
                         changed.set()
                         return
                     attempt += 1
@@ -381,6 +410,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                         # long-poll is cheap and costs no inference, so come back within 10 s.
                         delay = min(delay, 10)
                     await asyncio.sleep(delay)
+            if dirty and live_cursor is not None:
+                saved_cursor = dict(live_cursor)
+                with contextlib.suppress(Exception):
+                    self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor=saved_cursor))
             return
         attempt = 0
         while self._running:
@@ -515,6 +548,17 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         if history is None or not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
             return None  # an unreadable session transcript cannot prove the session still holds the conversation
         return lean_dm.plan(binding, session_id, batch['messages'], pending, human, brief=lean_dm.brief_digest(result), history=history)
+
+    def _first_plan(self, binding, result, batch_targets, human):
+        """0.10.4: None (send the full catch-up) or {'earlier'} for a COMPLETE compact first delivery of an owner DM: the
+        whole frozen read as plain lines in front of the new input(s). Only the inputs' own sender may be the verified owner."""
+        from . import lean_dm
+        batch = result['batch']
+        pending = set(batch_targets)
+        rows = [m for m in batch['messages'] if m.get('number') in pending]
+        if not rows or any(m.get('senderParticipantId') != human or m.get('isOwn') for m in rows):
+            return None
+        return lean_dm.first_plan(binding, batch['messages'], pending, human, result)
 
     @staticmethod
     def _delivery_proves_read(current):
@@ -848,12 +892,16 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             owner_dm = bool(chat_type == 'dm' and binding.get('transport') == 'oauth' and owner_context and not service_policy
                             and not (saved and saved.get('takeover_offer')) and target not in takeover_targets)
             lean = None
+            first = None
             if owner_dm:
                 hermes_session = self._hermes_session_id(source)
                 # What Hermes actually holds for that session now: an id that still matches the ledger proves nothing about a
                 # transcript that was emptied or rewound under it (blocking read, off the event loop).
                 history = await asyncio.to_thread(self._session_history, hermes_session) if hermes_session else None
                 lean = self._lean_plan(room_id, binding, result, batch_targets, hermes_session, author, history)
+                if lean is None:
+                    # No usable continuity: the whole read as plain lines when it fits, else the full catch-up below.
+                    first = self._first_plan(binding, result, batch_targets, author)
             if chat_type == 'dm' and binding.get('transport') == 'oauth':
                 text += '\n\n' + DM_MEDIA_HINT  # DM P2 runtime guidance, before the actual inputs
             # Put the actual new input last. A cheap model otherwise can answer an
@@ -905,17 +953,18 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 dm=chat_type == 'dm')
             receipt(self.client.store, room_id, target, state='admitting', instance=self._instance, client_id=client_id)
             from .receipt_handles import project
-            if lean is not None:
+            bare = lean is not None or first is not None  # 0.10.4: a compact text with no receipt header (bound by native identity)
+            if bare:
                 from .tool_policy import host_tools_allowed
                 from . import lean_dm
-                handle = project(self.client, room_id, result, str(target))['receipt_id']
-                # Host tools allowed for the verified owner: the header says all that is needed. A tools-off owner turn keeps
-                # the full runtime-policy statement.
+                project(self.client, room_id, result, str(target))  # registers the model-visible receipt handle, as the full text did
+                # Host tools allowed for the verified owner: nothing more is needed. A tools-off owner turn keeps the full
+                # runtime-policy statement.
                 runtime_policy = None if host_tools_allowed(policy, self._guest_tools_override) else turn_context(
                     policy, self._guest_tools_override, agree=agreement.exposed_for(self.client.store, room_id), dm=True)
-                text = lean_dm.render(label=handle, target=target, batch_targets=batch_targets,
-                                      name=participant.get('name'), inputs=[m for m in batch['messages'] if m.get('number') in batch_targets],
-                                      missed=lean['missed'], recent_room='\n'.join(owner_context.split('\n')[1:]) or None,
+                text = lean_dm.render(inputs=[m for m in batch['messages'] if m.get('number') in batch_targets],
+                                      missed=lean['missed'] if lean else (), earlier=first['earlier'] if first else '',
+                                      recent_room=owner_context if first is not None else ('\n'.join(owner_context.split('\n')[1:]) or None),
                                       media=media, runtime_policy=runtime_policy)
             else:
                 view = result
@@ -932,27 +981,29 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 self._queue_failure(room_id, target, 'context_limit')
                 await self._flush_failures(room_id)
                 continue
-            receipt(self.client.store, room_id, target, text=text)
-            receipt(self.client.store, room_id, target, tool_policy=policy)
             # Everything up to the newest pending input is now in this Hermes session (delivered as an input, its own earlier
             # replies, control cards, or listed as missed); anything newer is not claimed.
             dm_through = max(batch_targets) if chat_type == 'dm' and batch_targets else None
+            frozen_fields = {'text': text, 'tool_policy': policy}
             if dm_through is not None:
                 from . import lean_dm
                 dm_brief = lean_dm.brief_digest(result)
-                receipt(self.client.store, room_id, target, dm_through=dm_through, dm_brief=dm_brief, lean_session=lean['session_id'] if lean else None)
+                frozen_fields.update(dm_through=dm_through, dm_brief=dm_brief, lean_session=lean['session_id'] if lean else None,
+                                     bare=bare, dm_prompt=owner_dm)
             else:
                 dm_brief = None
             if media:
-                receipt(self.client.store, room_id, target, media={k: media[k] for k in ('media_urls', 'media_types', 'message_type')})
+                frozen_fields['media'] = {k: media[k] for k in ('media_urls', 'media_types', 'message_type')}
             from .owner_operator import pin_operator_binding
             operator_binding = pin_operator_binding(binding, getattr(self, '_dm_contexts', {}).get(room_id))
             # Hermes producer ingress dedupes event.message_id. Keep the source
             # number for native tool scope/reply anchors, but not ingress identity.
             event_id = 'takeover:' + saved['takeover_offer']['event_id'] if saved and saved.get('takeover_offer') else str(target)
-            receipt(self.client.store, room_id, target, event_id=event_id)
+            # 0.10.4: one durable write for what was five (each one is two fsyncs on the way to the model request).
+            receipt(self.client.store, room_id, target, event_id=event_id, **frozen_fields)
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
-                                      'dm_through': dm_through, 'dm_brief': dm_brief, 'lean_session': lean['session_id'] if lean else None}
+                                      'dm_through': dm_through, 'dm_brief': dm_brief, 'lean_session': lean['session_id'] if lean else None,
+                                      'bare': bare, 'dm_prompt': owner_dm}
             self.live.begin_turn(room_id, target)
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.

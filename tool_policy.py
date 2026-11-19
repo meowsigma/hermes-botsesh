@@ -152,6 +152,19 @@ def _room_call_schema(specs):
     }
 
 
+def _owner_dm_request(request):
+    """0.10.4: the verified owner-DM prompt (see lean_dm.owner_dm_request). Any failure keeps the request unchanged, i.e. the
+    unchanged group-chat framing and the unchanged tool catalog."""
+    try:
+        from . import agreement, lean_dm
+        from .adapter import HINT
+        # The agreement rewrite (a server without agreement marks) also rewrites this hint's sentences: match both forms.
+        return lean_dm.owner_dm_request(request, (HINT, agreement.without_agreement(HINT)))
+    except Exception as error:
+        logger.warning('BotSesh owner DM prompt not applied (%s).', type(error).__name__)
+        return request
+
+
 def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_completions', **kwargs):
     """Replace schemas per request; never mutate a cached agent or global tools.
 
@@ -167,12 +180,18 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
         override = getattr(adapter, '_guest_tools_override', 'server')
         unrestricted = bool(current and current.get('hook_turn') == (session_id, turn_id)
                 and not current.get('hook_terminal') and host_tools_allowed(current.get('tool_policy'), override))
+        # 0.10.4: only a verified owner-DM turn (admission's owner_dm gate), bound to this exact native turn.
+        owner_dm = bool(current and current.get('dm_prompt') is True and current.get('hook_turn') == (session_id, turn_id)
+                        and not current.get('hook_terminal'))
     from . import agreement
     # Cached from this room's own reads; absent proof keeps the unchanged tools.
     agree = agreement.exposed_for(adapter.client.store, room_id) if adapter else True
+    original = request
+    if owner_dm:
+        request = _owner_dm_request(request)
     if unrestricted:
         if agree:
-            return None
+            return {'request': request, 'source': 'botsesh', 'reason': 'owner DM prompt'} if request is not original else None
         return {'request': agreement.without_agreement(request), 'source': 'botsesh', 'reason': 'server has no agreement marks'}
     from .tools import SCHEMAS
     # Inspect only this request's native declarations. Never make an absent
