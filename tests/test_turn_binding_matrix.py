@@ -10,16 +10,23 @@ production callback or hook with every combination of
 for each identity that boundary can carry (chat, input, event, hook session, hook turn, gateway platform), on a receipt-framed row and on
 a native-bound compact row, and asserts that the boundary acts exactly when every REQUIRED identity matches and every PRESENT one agrees
 (and never otherwise).  A new boundary or identity has to be added to the table; a boundary that attributes on less fails here.
+
+0.10.5 r5 (group rows): the same table also runs against the three kinds of group-room row of the lean group deliveries (`lean_group.py`):
+`group_first` (the complete compact first delivery, proven only by its native record), `group_lean` (a steady lean text, proven only by the
+hook's `lean_proof`) and `group_packet` (the full packet), through the same callbacks and hooks, plus the three boundaries only a group row
+has: the compact first delivery's proof by its pairing, the session pointer a settled proven turn credits, and the short group system prompt.
 """
 import copy
 import itertools
 import os
+import sys
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from test_lean_dm import LeanDmTests, turn_env
+from test_lean_group import LeanGroupTests, FULL_MARK, person
 from hermes_botsesh_test import live as live_module, tool_policy
 from hermes_botsesh_test.adapter import _dm_catchup_context, ended_turn, processed_turn, started_turn
 from gateway import session_context
@@ -47,6 +54,9 @@ def gateway_env(platform, chat, message):
         session_context.clear_session_vars(tokens)
 
 
+FRAMED_KINDS = ('framed', 'group_packet')   # rows whose text carries its receipt header: they name their own event; every other kind is compact
+
+
 def acts(kind, required, state):
     """Does one identity in `state` allow the boundary to act?  kind: 'arg' (an explicit argument of the callback or hook),
     'ambient' (a gateway session variable: never set and empty are the same, 'not present') or 'fresh' (a hook id that pairs a turn for
@@ -63,8 +73,8 @@ def acts(kind, required, state):
 
 
 class Boundary:
-    """One row of the table.  `fields`: name -> (kind, required for 'compact', required for 'framed').  `fire(t, case, values)` calls the
-    production boundary with the identity values; `effect(t, case)` reads whether the row was attributed (a bool)."""
+    """One row of the table.  `fields`: name -> (kind, required for a compact row, required for a receipt-framed row).  `fire(t, case,
+    values)` calls the production boundary with the identity values; `effect(t, case)` reads whether the row was attributed (a bool)."""
 
     def __init__(self, name, kinds, stage, fields, fire, effect):
         self.name, self.kinds, self.stage, self.fields, self.fire, self.effect = name, kinds, stage, fields, fire, effect
@@ -157,6 +167,26 @@ async def fire_send_failure(t, case, v):
     await t.adapter.send(v['chat'], 'Model failed.', metadata={'notify': True})
 
 
+async def fire_event_success(t, case, v):
+    await t.adapter.on_processing_complete(event_of(v['chat'], v['event'], case), ProcessingOutcome.SUCCESS)
+
+
+async def fire_group_prompt(t, case, v):
+    t.prompt = await fire_hook(case, v, lambda s, n: tool_policy.restrict_request(request=t.group_request(), session_id=s, turn_id=n,
+                                                                                   api_mode='chat_completions'))
+
+
+def credited(t, case):
+    """The room ledger's pointer for the Hermes session of the turn reached this turn's input (the session was credited with its read; a
+    steady turn's session already held the earlier messages, so only a pointer AT the input counts)."""
+    return ((t.client.store.room(case.room).get('group_sessions') or {}).get(SESSION) or {}).get('through') == case.target
+
+
+def short_group_prompt(t, case):
+    sent = (t.prompt or {}).get('request') if isinstance(t.prompt, dict) else None
+    return bool(sent and 'BOTSESH GROUP ROOM:' in sent['messages'][0]['content'])
+
+
 def started(t, case):
     return any(n == 'hermes_delivery' and a.get('number') == case.target and a.get('state') == 'started' for _, n, a in t.requests)
 
@@ -172,34 +202,46 @@ def progressed(t, case):
     return bool(t.progress)
 
 
+DM_KINDS = ('compact', 'framed')
+ALL_KINDS = DM_KINDS + ('group_first', 'group_lean', 'group_packet')
 BOUNDARIES = [
     # the pairing that precedes everything: a compact row pairs only by the gateway's own room AND input (and its platform)
-    Boundary('read proof: the hook pairs its turn to a row', ('compact', 'framed'), 'admitted', hook_fields((True, False), fresh=True), fire_pair,
+    Boundary('read proof: the hook pairs its turn to a row', ALL_KINDS, 'admitted', hook_fields((True, False), fresh=True), fire_pair,
              lambda t, c: c.row.get('hook_turn') is not None),
-    Boundary('start: the pre-model hook reports the start', ('compact', 'framed'), 'paired', hook_fields(), fire_start_hook,
+    Boundary('start: the pre-model hook reports the start', ALL_KINDS, 'paired', hook_fields(), fire_start_hook,
              lambda t, c: started(t, c) and bool(c.row.get('start_reported'))),
-    Boundary('progress: draft text and tool frames', ('compact', 'framed'), 'paired', hook_fields(), fire_progress, progressed),
-    Boundary('completion: the end hook settles the turn', ('compact', 'framed'), 'paired', hook_fields(), fire_end,
+    Boundary('progress: draft text and tool frames', ALL_KINDS, 'paired', hook_fields(), fire_progress, progressed),
+    Boundary('completion: the end hook settles the turn', ALL_KINDS, 'paired', hook_fields(), fire_end,
              lambda t, c: bool(c.row.get('hook_terminal'))),
-    Boundary('read proof: the catch-up hook proves a lean turn', ('lean',), 'paired', hook_fields((True, True)), fire_proof,
+    Boundary('read proof: the catch-up hook proves a lean turn', ('lean', 'group_lean'), 'paired', hook_fields((True, True)), fire_proof,
              lambda t, c: bool(t.adapter._delivery_proves_read(c.row))),
-    Boundary('tool authority: the pre-tool execution veto', ('compact', 'framed'), 'paired', tool_fields(), fire_tool,
+    Boundary('read proof: the pairing proves a complete compact first group delivery', ('group_first',), 'admitted', hook_fields((True, False), fresh=True),
+             fire_pair, lambda t, c: bool(t.adapter._delivery_proves_read(c.row))),
+    Boundary('tool authority: the pre-tool execution veto', ALL_KINDS, 'paired', tool_fields(), fire_tool,
              lambda t, c: t.tool_verdict is None),
-    Boundary('start: the gateway start callback', ('compact', 'framed'), 'paired', EVENT_FIELDS, fire_event_start,
+    Boundary('system prompt: the short group prompt of a bound lean group turn', ('group_first', 'group_lean'), 'paired', tool_fields(), fire_group_prompt,
+             short_group_prompt),
+    Boundary('start: the gateway start callback', ALL_KINDS, 'paired', EVENT_FIELDS, fire_event_start,
              lambda t, c: started(t, c)),
-    Boundary('completion: the gateway completion callback settles a failure', ('compact', 'framed'), 'paired', EVENT_FIELDS, fire_event_complete,
+    Boundary('completion: the gateway completion callback settles a failure', ALL_KINDS, 'paired', EVENT_FIELDS, fire_event_complete,
              lambda t, c: failed(t, c)),
-    Boundary('failure: the event-bound final labels its own failure', ('compact', 'framed'), 'paired', EVENT_FIELDS, fire_event_final,
+    Boundary('completion: the gateway completion callback credits a proven group turn to its session', ('group_first', 'group_lean'), 'proven',
+             EVENT_FIELDS, fire_event_success, credited),
+    Boundary('failure: the event-bound final labels its own failure', ALL_KINDS, 'paired', EVENT_FIELDS, fire_event_final,
              lambda t, c: c.row.get('final_failure_code') == 'provider_budget'),
-    Boundary('failure: the late error notice queues a typed failure', ('compact', 'framed'), 'paired', EVENT_FIELDS, fire_notify_error,
+    Boundary('failure: the late error notice queues a typed failure', ALL_KINDS, 'paired', EVENT_FIELDS, fire_notify_error,
              lambda t, c: failed(t, c)),
-    Boundary('typing: the gateway typing callback', ('compact', 'framed'), 'started', CHAT_FIELDS, fire_typing, lambda t, c: started(t, c)),
-    Boundary('status: the gateway status callback', ('compact', 'framed'), 'started', CHAT_FIELDS, fire_status, lambda t, c: started(t, c)),
-    Boundary('failure: a chat-level failure notice', ('compact', 'framed'), 'started', CHAT_FIELDS, fire_send_failure, lambda t, c: failed(t, c)),
+    Boundary('typing: the gateway typing callback', ALL_KINDS, 'started', CHAT_FIELDS, fire_typing, lambda t, c: started(t, c)),
+    Boundary('status: the gateway status callback', ALL_KINDS, 'started', CHAT_FIELDS, fire_status, lambda t, c: started(t, c)),
+    Boundary('failure: a chat-level failure notice', ALL_KINDS, 'started', CHAT_FIELDS, fire_send_failure, lambda t, c: failed(t, c)),
 ]
 
 
-class TurnBindingMatrix(LeanDmTests):
+class MatrixCore:
+    """The table runner, shared by the DM fixture (`TurnBindingMatrix`) and the group fixture (`TurnBindingMatrixGroups`).  A subclass names
+    its `KINDS` and builds one in-flight row of a kind (`build`)."""
+    KINDS = ()
+
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.progress = []
@@ -207,20 +249,17 @@ class TurnBindingMatrix(LeanDmTests):
         fsync.start()
         self.addCleanup(fsync.stop)
 
+    async def build(self, kind):
+        raise NotImplementedError
+
     async def stage(self, kind, stage):
-        """A fresh world with one in-flight row of `kind`, brought to `stage`: 'admitted' (delivered), 'paired' (its hooks bound it) or
-        'started' (and its start reported)."""
+        """A fresh world with one in-flight row of `kind`, brought to `stage`: 'admitted' (delivered), 'paired' (its hooks bound it),
+        'started' (and its start reported) or 'proven' (a whole native turn that completed in its session, its answer delivered)."""
         if getattr(self, '_worlds', 0):
             await super().asyncSetUp()  # a new store, adapter and fake server; the old ones are discarded
         self._worlds = getattr(self, '_worlds', 0) + 1
         self.real_wire(confirm_starts=True)
-        if kind == 'framed':
-            event = await self.foreign_full_frame_event('group room')
-            room, target, other_room = 'b', 3, 'a'
-        else:
-            event = await self.lean_five()
-            room, target, other_room = 'a', 5, 'b'
-            self.assertEqual(bool(self.adapter._current['a']['lean_session']), True)
+        event, room, target, other_room = await self.build(kind)
         row = self.adapter._current[room]
         case = SimpleNamespace(kind=kind, room=room, target=target, other_room=other_room, text=event.text, row=row)
         if stage in ('paired', 'started'):
@@ -231,6 +270,12 @@ class TurnBindingMatrix(LeanDmTests):
             with turn_env(room, target):
                 started_turn(user_message=event.text, platform='botsesh', session_id=SESSION, turn_id=TURN, is_first_turn=False)
             self.assertTrue(row.get('start_reported'), 'the fixture row is started')
+        if stage == 'proven':
+            with turn_env(room, target):
+                started_turn(user_message=event.text, platform='botsesh', session_id=SESSION, turn_id=TURN, is_first_turn=False)
+                ended_turn(platform='botsesh', session_id=SESSION, turn_id=TURN, completed=True, failed=False, interrupted=False)
+            row['delivered'] = True
+            self.assertTrue(self.adapter._delivery_proves_read(row), 'the fixture turn is proven')
         case.snapshot = SimpleNamespace(rows=copy.deepcopy(self.adapter._current), data=copy.deepcopy(self.client.store.read()))
         return case
 
@@ -244,6 +289,7 @@ class TurnBindingMatrix(LeanDmTests):
         adapter._typing_at.clear()
         adapter.__dict__.setdefault('_working_at', {}).clear()
         del self.requests[:], self.calls[:], self.progress[:]
+        self.prompt = self.tool_verdict = None
 
     @staticmethod
     def values(case, names, states):
@@ -264,13 +310,16 @@ class TurnBindingMatrix(LeanDmTests):
                 continue
             names = list(boundary.fields)
             for kind in boundary.kinds:
+                if kind not in self.KINDS:
+                    continue
                 case = await self.stage(kind, boundary.stage)
                 outcomes = {}
                 combos = list(itertools.product(STATES, repeat=len(names)))
                 for states in combos + [combos[0]]:  # the all-matching combination again at the end: no state leaked between combinations
                     self.restore(case)
                     values = self.values(case, names, states)
-                    expected = all(acts(boundary.fields[n][0], boundary.fields[n][1 if kind != 'framed' else 2], s) for n, s in zip(names, states))
+                    expected = all(acts(boundary.fields[n][0], boundary.fields[n][2 if kind in FRAMED_KINDS else 1], s)
+                                   for n, s in zip(names, states))
                     label = '%s | %s | %s' % (boundary.name, kind, dict(zip(names, states)))
                     with self.subTest(label):
                         try:
@@ -284,16 +333,57 @@ class TurnBindingMatrix(LeanDmTests):
                     bound += outcomes.get(states, False)
                 self.assertTrue(outcomes.get(combos[0]), '%s | %s: the all-matching claim must act (the table is not vacuous)' % (boundary.name, kind))
         if not only:
-            self.assertGreater(ran, 2000, 'the table runs every combination of every boundary')
+            self.assertGreater(ran, self.MINIMUM_RUNS, 'the table runs every combination of every boundary')
             self.assertGreater(bound, 0)
+            print('turn-binding matrix [%s]: %d runs, %d of them attributed' % (type(self).__name__, ran, bound), file=sys.stderr)
+
+
+class TurnBindingMatrix(MatrixCore, LeanDmTests):
+    """The DM fixture: a compact lean DM row and a receipt-framed group row of the DM suite."""
+    KINDS = DM_KINDS + ('lean',)
+    MINIMUM_RUNS = 2000
+
+    async def build(self, kind):
+        if kind == 'framed':
+            event = await self.foreign_full_frame_event('group room')
+            return event, 'b', 3, 'a'
+        event = await self.lean_five()
+        self.assertEqual(bool(self.adapter._current['a']['lean_session']), True)
+        return event, 'a', 5, 'b'
+
+
+class TurnBindingMatrixGroups(MatrixCore, LeanGroupTests):
+    """The group fixture (0.10.5): the three kinds of row a group-room delivery can create."""
+    KINDS = ('group_first', 'group_lean', 'group_packet')
+    MINIMUM_RUNS = 4000
+
+    async def build(self, kind):
+        row = lambda: self.adapter._current['a']
+        if kind == 'group_packet':
+            self.context = {**self.context, 'revision': 1, 'markdown': '# plan'}   # a Brief with text: only the full packet can carry it
+            event = await self.deliver(4, complete=False)
+            self.assertIn(FULL_MARK, event.text)
+            self.assertFalse(row().get('bare') or row().get('lean_group'), 'a full-packet row names its own receipt and event')
+            return event, 'a', 4, 'b'
+        if kind == 'group_first':
+            event = await self.deliver(4, complete=False)
+            self.assertEqual((row()['bare'], row()['lean_group'], row()['lean_session']), (True, True, None))
+            self.assertNotIn(FULL_MARK, event.text)
+            return event, 'a', 4, 'b'
+        await self.deliver(4)   # the session now holds the room through #4
+        self.thread += [person(5, 'Yoo wsp big dawg', isMentionToMe=True)]
+        event = await self.deliver(5, complete=False)
+        self.assertEqual((row()['bare'], row()['lean_group'], row()['lean_session']), (True, True, 's1'))
+        return event, 'a', 5, 'b'
 
 
 def load_tests(loader, tests, pattern):
-    """Only this file's case (the LeanDmTests fixture's own cases are covered by test_lean_dm)."""
+    """Only this file's case (the fixtures' own cases are covered by test_lean_dm and test_lean_group)."""
     suite = unittest.TestSuite()
-    for name in loader.getTestCaseNames(TurnBindingMatrix):
-        if name in TurnBindingMatrix.__dict__:
-            suite.addTest(TurnBindingMatrix(name))
+    for cls in (TurnBindingMatrix, TurnBindingMatrixGroups):
+        for name in loader.getTestCaseNames(cls):
+            if name in MatrixCore.__dict__:
+                suite.addTest(cls(name))
     return suite
 
 
