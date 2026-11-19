@@ -41,6 +41,16 @@ CURRENT = {'adapter.py': OWN_LOOP,
 # their adapter there)
 ADAPTERS = {'adapter.py': {'', 'BotSeshAdapter.__init__', 'bind_turn'}}
 
+# r4: the explicit identity arguments of `bind_turn` and the name each is required under
+IDENTITY_ARGS = {'room_id': 'room', 'target': 'input', 'event_id': 'event', 'receipt_id': 'receipt', 'hook': 'hook'}
+
+# r4: the two attribution paths that are NOT live-row bindings.  They key a persisted receipt, not an in-flight row, and are documented as
+# exceptions in `bind_turn`'s docstring (the guard below fails if either stops being documented or a third one appears).
+DURABLE_RECEIPT_EXCEPTIONS = {
+    'tools.py': 'handlers key the persisted receipt of the running native input by the gateway variables, behind tool_policy._enforce_tools',
+    '_notify_turn_error': 'matches the callback event id against the persisted receipt of that event (needs a nonempty id)',
+}
+
 
 def occurrences():
     found = []
@@ -69,6 +79,15 @@ def occurrences():
     return found
 
 
+def bind_calls():
+    calls = []
+    for path in sorted(ROOT.glob('*.py')):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'bind_turn':
+                calls.append((path.name, node.lineno, node))
+    return calls
+
+
 class TurnBindingSources(unittest.TestCase):
     def test_every_turn_attribution_key_is_touched_only_where_it_is_listed(self):
         allowed = {**{name: files for name, files in KEYS.items()}, 'session variable': SESSION_VARIABLES, '_current': CURRENT,
@@ -84,6 +103,39 @@ class TurnBindingSources(unittest.TestCase):
                         and node.slice.value in ('hook_turn', 'native_turn', 'hermes_session_id')):
                     writes.append((path.name, node.slice.value))
         self.assertEqual(sorted(writes), [('adapter.py', 'hermes_session_id'), ('adapter.py', 'hook_turn'), ('adapter.py', 'native_turn')])
+
+    def test_every_bind_turn_call_states_exactly_the_identities_it_requires(self):
+        """r4: strict by construction.  `require` is a mandatory literal; each explicit identity a caller passes is one it requires (a
+        value that may arrive as None or empty is then unbound, never silently 'not supplied'), and it requires nothing it does not pass."""
+        calls = bind_calls()
+        self.assertGreater(len(calls), 30, 'the scan finds the production call sites')
+        problems = []
+        for rel, line, node in calls:
+            keywords = {k.arg: k.value for k in node.keywords}
+            where = '%s:%d' % (rel, line)
+            require = keywords.get('require')
+            if not isinstance(require, (ast.Tuple, ast.List)) or not all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in require.elts):
+                problems.append((where, 'require must be a literal tuple of names'))
+                continue
+            stated = {e.value for e in require.elts}
+            passed = {name for arg, name in IDENTITY_ARGS.items() if arg in keywords}
+            if stated != passed:
+                problems.append((where, 'requires %s but passes %s' % (sorted(stated), sorted(passed))))
+            if node.args:
+                problems.append((where, 'positional arguments'))
+        self.assertEqual(problems, [])
+
+    def test_the_durable_receipt_exceptions_are_documented_and_are_the_only_ones(self):
+        from_doc = None
+        for node in ast.walk(ast.parse((ROOT / 'adapter.py').read_text())):
+            if isinstance(node, ast.FunctionDef) and node.name == 'bind_turn':
+                from_doc = ast.get_docstring(node)
+        self.assertTrue(from_doc and 'durable receipts' in from_doc)
+        for where in DURABLE_RECEIPT_EXCEPTIONS:
+            self.assertIn(where, from_doc, where + ' is documented as a durable-receipt exception of bind_turn')
+        # tools.py handlers are the only code besides `_ambient` that reads the gateway's variables (checked key by key above), and
+        # `_notify_turn_error` reads none: it takes the callback's event
+        self.assertEqual(sorted(SESSION_VARIABLES), ['adapter.py', 'tools.py'])
 
 
 if __name__ == '__main__':

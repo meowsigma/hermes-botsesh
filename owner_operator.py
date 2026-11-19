@@ -52,7 +52,7 @@ def pin_operator_binding(binding, context):
 def owner_dm_client(chat_id):
     from .adapter import _HOOK_LOCK, bind_turn
     # 0.10.4 r3: the native input of this running turn is named only through `bind_turn` (the gateway's own room and input).
-    first = bind_turn(room_id=chat_id, ambient='required', need='settle') if chat_id else None
+    first = bind_turn(require=('room',), room_id=chat_id, ambient='required', need='settle')
     if not first:
         raise BotSeshError('owner_dm_operator_required')
     target = str(first.current['target'])
@@ -82,7 +82,7 @@ def owner_dm_client(chat_id):
         return dict(pin), current['receipt_id'], human
 
     with _HOOK_LOCK:
-        bound = bind_turn(room_id=chat_id, target=target, ambient='required', need='settle')
+        bound = bind_turn(require=('room', 'input'), room_id=chat_id, target=target, ambient='required', need='settle')
         if not bound:
             raise BotSeshError('owner_dm_operator_required')
         adapter, _room, current = bound
@@ -98,7 +98,7 @@ def owner_dm_client(chat_id):
             or live.get('access_state') != 'authorized' or live.get('human_owns_grant') is not True):
         raise BotSeshError('owner_dm_operator_required')
     with _HOOK_LOCK:
-        if (bind_turn(adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current
+        if (bind_turn(require=('room', 'input'), adapter=adapter, room_id=chat_id, target=target, ambient='required', need='settle').current is not current
                 or source(adapter, current) != before):
             raise BotSeshError('owner_dm_operator_required')
     return adapter.client

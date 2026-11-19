@@ -161,7 +161,7 @@ class LiveRelay:
             return False
         from .adapter import bind_turn
         return (room.get('transport') == 'oauth' and room.get('active') is True
-                and bool(bind_turn(adapter=self.adapter, room_id=room_id, target=target, need='settle')))
+                and bool(bind_turn(require=('room', 'input'), adapter=self.adapter, room_id=room_id, target=target, need='settle')))
 
     def _on_stream_start(self, room_id, target):
         turn = self._turn(room_id, target)
@@ -320,7 +320,7 @@ class LiveRelay:
         """Stop / interrupt / new session: end the live view without waiting for the final."""
         turn = self._drop(room_id)
         from .adapter import bind_turn
-        current = bind_turn(adapter=self.adapter, room_id=room_id, need='settle').current
+        current = bind_turn(require=('room',), adapter=self.adapter, room_id=room_id, need='settle').current
         target = turn.target if turn is not None else (current or {}).get('target')
         if target is not None:
             # Late deltas/tool events of the stopped turn must not reopen its live view.
@@ -375,7 +375,7 @@ def _locate(session_id='', turn_id=''):
     row.  Missing, empty or different ids, a conflicting room/input or another platform bind nothing: there is no chat-scope
     fallback (a draft or tool preview is the working turn's own content, never a room's)."""
     from .adapter import bind_turn
-    bound = bind_turn(hook=(session_id, turn_id), ambient='optional')
+    bound = bind_turn(require=('hook',), hook=(session_id, turn_id), ambient='optional')
     return (bound.adapter, bound.room_id, bound.current['target']) if bound else None
 
 

@@ -22,7 +22,7 @@ def settled_turn(*, tool_name='', args=None, result='', **kwargs):
     from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
         # 0.10.4 r3: the settled turn is named only through `bind_turn` (the gateway's own room and input of this running turn).
-        bound = bind_turn(ambient='required', need='settle')
+        bound = bind_turn(require=(), ambient='required', need='settle')
         if not bound:
             return
         room, target = bound.room_id, str(bound.current['target'])

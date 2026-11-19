@@ -194,10 +194,10 @@ def restrict_request(*, request, session_id='', turn_id='', api_mode='chat_compl
     from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
         # The row of this native input may only NARROW the allowlist (a scheduled service input is narrower than a guest turn).
-        scoped = bind_turn(ambient='required', need='settle')
+        scoped = bind_turn(require=(), ambient='required', need='settle')
         adapter, current = scoped.adapter, scoped.current
         # Authority (host tools, the owner-DM prompt) needs the hook's own explicit ids on top of that input: one binding for both.
-        granted = bind_turn(hook=(session_id, turn_id), ambient='required')
+        granted = bind_turn(require=('hook',), hook=(session_id, turn_id), ambient='required')
         granted = granted.current if granted and granted.current is current else None
         override = getattr(adapter, '_guest_tools_override', 'server')
         unrestricted = bool(granted and host_tools_allowed(granted.get('tool_policy'), override))
@@ -259,7 +259,7 @@ def enforce_tools(**kwargs):
             from . import agreement
             from .adapter import _HOOK_LOCK, bind_turn
             with _HOOK_LOCK:
-                scoped = bind_turn(ambient='required', need='settle')
+                scoped = bind_turn(require=(), ambient='required', need='settle')
             adapter, room_id = scoped.adapter, scoped.room_id
             if adapter is not None and not agreement.exposed_for(adapter.client.store, room_id):
                 result = {**result, 'message': result['message'].replace('read, post, pass and agree', 'read, post and pass')}
@@ -282,14 +282,14 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
         return dict(UPDATE_NEEDS_RESTART if runtime.swap_blocked() else UPDATING)
     try:
         with _HOOK_LOCK:
-            scoped = bind_turn(ambient='required', need='settle')  # the row of this native input, only to say WHY a call is refused
+            scoped = bind_turn(require=(), ambient='required', need='settle')  # the row of this native input, only to say WHY a call is refused
             adapter, current = scoped.adapter, scoped.current
             if not current:
                 return dict(NOT_A_TURN)
             room_id = scoped.room_id  # the room the binding proved, not a second read of the gateway's variables
             if current.get('hook_terminal'):
                 return dict(ENDED)
-            bound = bind_turn(hook=(session_id, turn_id), ambient='required')
+            bound = bind_turn(require=('hook',), hook=(session_id, turn_id), ambient='required')
             if not bound or bound.current is not current:
                 logger.warning('BotSesh tool %s refused: tool call is not bound to the live turn (hook mismatch).', tool_name)
                 return dict(UNVERIFIED)
@@ -325,7 +325,7 @@ def _enforce_tools(*, tool_name='', session_id='', turn_id='', **kwargs):
             adapter.client.enrolled(room_id, 'verify')
             live = None
         with _HOOK_LOCK:
-            if bind_turn(adapter=adapter, hook=(session_id, turn_id), ambient='required').current is not current:
+            if bind_turn(require=('hook',), adapter=adapter, hook=(session_id, turn_id), ambient='required').current is not current:
                 return dict(ENDED)
             if (current.get('lean_group') is True and not adapter._delivery_proves_read(current)
                     and _claims_read(tool_name, kwargs.get('args'))):

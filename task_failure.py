@@ -62,7 +62,7 @@ def cant_do(reason, partial_notes=None):
     from .adapter import _HOOK_LOCK, bind_turn
     with _HOOK_LOCK:
         # 0.10.4 r3: the addressed turn is named only through `bind_turn` (the gateway's own room and input of this running turn).
-        bound = bind_turn(ambient='required', need='settle')
+        bound = bind_turn(require=(), ambient='required', need='settle')
         if not bound:
             raise BotSeshError('addressed_botsesh_turn_required')
         adapter, room_id, current = bound
@@ -117,7 +117,7 @@ def claim_takeover(reason, processed=False):
             or len(reason.encode('utf-16-le')) // 2 > 180 or any(unicodedata.category(c) in ('Cc', 'Cf') for c in reason)):
         raise BotSeshError('processed_takeover_turn_required')
     with _HOOK_LOCK:
-        bound = bind_turn(ambient='required', need='settle')
+        bound = bind_turn(require=(), ambient='required', need='settle')
         if not bound:
             raise BotSeshError('processed_takeover_turn_required')
         adapter, room_id, current = bound
