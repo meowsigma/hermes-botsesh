@@ -130,6 +130,77 @@ class BatchAnswerTarget(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('error', result)
         self.assertEqual([s['reply_to'] for s in self.sends()], [5])
 
+    # ---- N1b: an input that arrives between the inbox check and the frozen read ---------------------------------------
+
+    async def test_a_message_posted_between_the_inbox_check_and_the_read_is_an_input_of_the_turn(self):
+        # The inbox listed only 4 (the other seat's reply that started this pass); our question, 5, landed right after it and
+        # inside the read. The server settles the whole frozen batch with this turn, so 5 must be an input of it too.
+        self.targets['a'] = [4]
+        self.batch = [message(4), message(5, me=True)]
+        adapter, event = await self.answered()
+        current = adapter._current['a']
+        self.assertEqual((current['target'], current['batch_targets'], current['answer_to']), (4, [4, 5], 5))
+        self.assertEqual([a['number'] for r, n, a in self.requests if r == 'a' and n == 'hermes_delivery' and a['state'] == 'received'], [4, 5])
+        inputs = current['text'].split('CURRENT BOTSESH INPUTS')[1]
+        self.assertIn('Message 4', inputs)
+        self.assertIn('Message 5', inputs, 'the late question is a current input, not only replayed history')
+        self.assertEqual([s['reply_to'] for s in self.sends()], [5])
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['4']['batch_targets'], [4, 5])
+        self.assertEqual(self.client.store.room('a')['handled'], [4, 5])
+
+    async def test_a_late_message_the_server_never_targeted_at_this_seat_stays_history(self):
+        self.targets['a'] = [4]
+        self.batch = [message(4), message(5, me=True)]
+        stock = OAuthClient.rpc
+
+        def rpc(client, binding, name, args=None, **kwargs):
+            if name == 'hermes_delivery' and args.get('number') == 5:
+                raise BotSeshError('not_addressed', 404)
+            return stock(client, binding, name, args, **kwargs)
+        with patch.object(OAuthClient, 'rpc', rpc):
+            adapter, event = await self.begin()
+        current = adapter._current['a']
+        self.assertEqual(current['batch_targets'], [4])
+        self.assertNotIn('answer_to', current)
+        self.assertEqual(self.client.store.room('a')['processing_receipts']['4']['batch_targets'], [4])
+        self.assertNotEqual(self.client.store.room('a')['processing_receipts']['4']['state'], 'failed')
+
+    async def test_only_new_peer_messages_inside_the_read_join(self):
+        self.targets['a'] = [4]
+        own = message(5, sender='bot-a')                          # our own earlier reply: never an input
+        self.batch = [message(3), message(4), own, message(6, me=True), message(7), message(8)]
+        self.client.store.update(lambda d: d['rooms']['a'].update(handled=[7]))   # 7: already settled locally; 8: past the read
+        stock = OAuthClient.rpc
+
+        def rpc(client, binding, name, args=None, **kwargs):
+            value = stock(client, binding, name, args, **kwargs)
+            if name == 'catchup':
+                value = {**value, 'next_checkpoint': 7}
+            return value
+        with patch.object(OAuthClient, 'rpc', rpc):
+            adapter, event = await self.begin()
+        self.assertEqual(adapter._current['a']['batch_targets'], [4, 6])
+        self.assertEqual(adapter._current['a']['answer_to'], 6)
+
+    async def test_a_late_message_that_is_already_skipped_or_settled_is_not_taken_again(self):
+        self.targets['a'] = [4]
+        self.batch = [message(4), message(5, me=True), message(6)]
+        adapter = self.adapters['a']
+        adapter._skipped_targets.add(('a', 5))
+        self.client.store.update(lambda d: d['rooms']['a'].update(processing_receipts={'6': {'target': 6, 'state': 'replied', 'received_at': 1}}))
+        adapter, event = await self.begin()
+        self.assertEqual(adapter._current['a']['batch_targets'], [4])
+
+    def test_the_late_input_rule_only_reports_what_the_check_could_not_have_listed(self):
+        adapter = self.adapters['a']
+        batch = {'messages': [message(2), message(4), message(5), message(6, sender='bot-a'), message(7)], 'nextCheckpoint': 7}
+        flagged = {**batch, 'messages': [{**m, 'isOwn': m['senderParticipantId'] == 'bot-a'} for m in batch['messages']]}
+        self.assertEqual(adapter._late_inputs('a', flagged, [4], [4], []), [5, 7])
+        self.assertEqual(adapter._late_inputs('a', flagged, [], [], []), [], 'nothing was checked, nothing is late')
+        self.assertEqual(adapter._late_inputs('a', {**flagged, 'nextCheckpoint': 5}, [4], [4], []), [5])
+        self.assertEqual(adapter._late_inputs('a', flagged, [4], [4, 5], []), [7], 'already inputs of this turn')
+
     def tool_post(self, adapter):
         import json
         current = adapter._current['a']
