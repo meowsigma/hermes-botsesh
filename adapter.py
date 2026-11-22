@@ -386,6 +386,8 @@ DM_MEDIA_HINT = (
 class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4000
     supports_code_blocks = True
+    # B13 (N3): how long a room may wait for Hermes to publish its platforms before it says so (the wait itself is unbounded).
+    RUNNER_WAIT_WARN_SECONDS = 60.0
 
     def __init__(self, config, *, poll_seconds=15, guest_tools_override='server'):
         super().__init__(config, Platform('botsesh'))
@@ -769,6 +771,27 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             current['final_attests'] = saved[0].get('processed') is True if saved else self._delivery_proves_read(current)
         return current['final_attests']
 
+    @staticmethod
+    def _answer_target(messages, batch_targets, target, *, dm=False, exact=False):
+        """B13 (N1): the pending input a turn's single reply is threaded to.
+
+        A turn is keyed to its LOWEST pending input (frozen read, admission, receipts), but one pass can cover several: the
+        room delivers every message to every connected seat, so the other seat's own reply, or chatter that was not meant for
+        this agent, is often pending next to the question that was.  Threading the answer to the keyed input then hangs it under
+        somebody else's message and leaves the actual question closed as ``completed`` ("Processed") with no answer attributed.
+        The reply therefore goes to the NEWEST pending input of this batch that addresses this seat (a mention of it, or a reply
+        to one of its messages), the same "reply to the latest input" shape the server's batch settlement already expects; the
+        keyed input and every other covered input still settle through the turn's own completion.  Nothing moves when no
+        pending input addresses the seat, for an owner DM, or for a takeover/check-in turn (those answer their exact source).
+        Only numbers of pending, non-own inputs of this frozen read are candidates."""
+        if dm or exact:
+            return target
+        pending = set(batch_targets)
+        addressed = [m['number'] for m in messages
+                     if type(m.get('number')) is int and m['number'] in pending and not m.get('isOwn')
+                     and (m.get('isMentionToMe') or m.get('isDirectMentionToMe') or m.get('isReplyToMe'))]
+        return max(addressed) if addressed and target in pending else target
+
     def _final_options(self, chat_id, current):
         """The send fields of this turn's final reply (transport payload and journal are built from this one place).
 
@@ -777,9 +800,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
         answers (`reply_to`) and claims nothing about the rest of the batch (no receipt, no `processed`).  The immutable receipt is
         untouched, the next turn gets a full catch-up, and an over-attestation is never recorded."""
         extras = self._final_draft_binding(chat_id, current)
+        # B13: the input this turn's reply is threaded to (the keyed input unless a later pending one addressed this seat).
+        answer = current.get('answer_to', current['target'])
         if self._final_attests(chat_id, current):
-            return {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': current['target'], 'client_id': current['client_id'], **extras}
-        return {'reply_to': current['target'], 'client_id': current['client_id'], **{k: v for k, v in extras.items() if k == 'allow_stale'}}
+            return {'receipt_id': current['receipt_id'], 'processed': True, 'reply_to': answer, 'client_id': current['client_id'], **extras}
+        return {'reply_to': answer, 'client_id': current['client_id'], **{k: v for k, v in extras.items() if k == 'allow_stale'}}
 
     def _mark_unread_reply(self, room_id, target):
         """The answer to this input went out as an authored reply that claimed no read: locally complete, no read checkpoint advances
@@ -932,15 +957,32 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             return True  # An unreadable runner must not wedge the room; admission itself still decides.
 
     async def _wait_for_runner(self, room_id):
-        """Hold this room's delivery pass until the runner can authorize its senders. False only when the channel stopped."""
-        waited = 0.0
+        """Hold this room's delivery pass until the runner can authorize its senders. False only when the channel stopped.
+
+        The wait has no bound (a late registration must still answer), but it is never silent: after
+        ``RUNNER_WAIT_WARN_SECONDS`` one WARNING names the likely cause and the room's health says it is waiting, until the
+        runner publishes this adapter (B13 / N3)."""
+        started = time.monotonic()
+        announced = warned = False
         while not self._registered_with_runner():
             if not self._running:
                 return False
-            if waited == 0.0:
+            if not announced:
+                announced = True
                 logger.info('BotSesh room %s waits for Hermes to finish starting its platforms before reading messages.', room_id)
+            if not warned and time.monotonic() - started >= self.RUNNER_WAIT_WARN_SECONDS:
+                warned = True
+                logger.warning('BotSesh room %s has waited %.0f s for Hermes to publish its platforms and is still waiting; '
+                               'questions in it are not read until then. A platform that cannot finish connecting '
+                               '(for example Telegram) holds every platform back: check the gateway log for it.',
+                               room_id, time.monotonic() - started)
+                with contextlib.suppress(Exception):
+                    health(self.client.store, room_id, state='waiting_for_runner', error='runner_not_ready')
             await asyncio.sleep(0.2)
-            waited += 0.2
+        if warned:
+            logger.info('BotSesh room %s: Hermes published its platforms after %.0f s; reading messages again.', room_id, time.monotonic() - started)
+            with contextlib.suppress(Exception):
+                health(self.client.store, room_id, state='connected', error=None)
         return True
 
     def _stop_notice(self, room_id, code):
@@ -1287,6 +1329,12 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             # replies, control cards, or listed as missed); anything newer is not claimed.
             dm_through = max(batch_targets) if chat_type == 'dm' and batch_targets else None
             frozen_fields = {'text': text, 'tool_policy': policy}
+            # B13 (N1): one reply per pass; it threads to the newest pending input that addressed this seat. The turn itself (frozen
+            # read, admission, receipts, tool scope) stays keyed to `target`, and the whole batch still settles through its completion.
+            answer_to = self._answer_target(batch['messages'], batch_targets, target, dm=chat_type == 'dm',
+                                            exact=bool(service_policy or (saved and saved.get('takeover_offer')) or target in takeover_targets))
+            if answer_to != target:
+                frozen_fields['answer_to'] = answer_to
             if dm_through is not None:
                 from . import lean_dm
                 dm_brief = lean_dm.brief_digest(result)
@@ -1314,7 +1362,8 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
             self._current[room_id] = {'receipt_id': result['receipt_id'], 'target': target, 'event_id': event_id, 'batch_targets': batch_targets, 'client_id': client_id, 'delivered': False, 'model_processed': False, 'text': text, 'operator_binding': operator_binding, 'tool_policy': policy,
                                       'dm_through': dm_through, 'dm_brief': dm_brief,
                                       'lean_session': lean['session_id'] if lean else (group_lean['session_id'] if group_lean and not group_lean['first'] else None),
-                                      'bare': bare, 'dm_prompt': owner_dm, 'lean_group': group_lean is not None, 'group_ledger': group_ledger}
+                                      'bare': bare, 'dm_prompt': owner_dm, 'lean_group': group_lean is not None, 'group_ledger': group_ledger,
+                                      **({'answer_to': answer_to} if answer_to != target else {})}
             self.live.begin_turn(room_id, target)
             # Ordinary group wakes may pass. Stock core otherwise converts
             # NO_REPLY into a notice, which itself wakes every peer again.
@@ -1663,6 +1712,7 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                      and post['exact'].get('processed') is True
                      and ('output' not in post['exact'] or 'reply' in post['exact']['output'])
                      and (post['exact'].get('reply_to') == target
+                          or post['exact'].get('reply_to') is not None and post['exact'].get('reply_to') == row.get('answer_to')
                           or post['exact'].get('reply_to') is None and row.get('receipt_id') == receipt_id)]
             # A committed reply owns the outcome; otherwise resolve the original
             # uncertain tool send before considering a different final payload.

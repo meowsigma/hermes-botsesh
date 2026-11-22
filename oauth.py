@@ -761,7 +761,7 @@ class OAuthClient:
                 # a reply target on replay, even after the active turn changes.
                 room = data['rooms'][room_id]
                 numbers = room.get('oauth_receipts', {}).get(exact.get('receipt_id'), {}).get('numbers', [])
-                targets = [row['target'] for row in room.get('processing_receipts', {}).values()
+                targets = [row.get('answer_to', row['target']) for row in room.get('processing_receipts', {}).values()
                            if row.get('receipt_id') == exact.get('receipt_id')
                            and row.get('state') in ('admitting', 'admitted', 'started')
                            and is_number(row.get('target')) and row['target'] in numbers]

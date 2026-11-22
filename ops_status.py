@@ -126,6 +126,8 @@ def status_report(client, config, *, runtime=None):
         state = h.get('state', 'not_observed')
         if not alive or runtime.get('channel') != 'up':
             state = 'down'
+        elif state == 'waiting_for_runner':
+            pass  # B13: Hermes has not published BotSesh yet; say so instead of calling the (blocked) room stale
         elif not h.get('last_check') or time.time() - h['last_check'] > 90:
             state = 'stale_or_offline'
         elif runtime.get('since') and h['last_check'] < runtime['since']:

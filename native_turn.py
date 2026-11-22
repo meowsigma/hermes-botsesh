@@ -269,6 +269,8 @@ class NativeTurnMixin:
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
         current['batch_targets'] = row.get('batch_targets', [row['target']])
         current['event_id'] = row.get('event_id', str(row['target']))
+        if type(row.get('answer_to')) is int:
+            current['answer_to'] = row['answer_to']  # B13: the restored turn threads its reply exactly as the original would have
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'),
                        dm_through=row.get('dm_through'), dm_brief=row.get('dm_brief'), lean_session=row.get('lean_session'),
                        bare=row.get('bare') is True, dm_prompt=row.get('dm_prompt') is True, lean_group=row.get('lean_group') is True)

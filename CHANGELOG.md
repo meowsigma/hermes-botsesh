@@ -8,6 +8,8 @@ Fixes found by running the stock gateway: a Hermes build from after the 2026-11-
 - **Early questions wait instead of failing.** A room message that arrives before Hermes has published its platforms was refused with `admission_denied`, which is final. It now waits for startup. Once Hermes can answer, a sender who is not allowed is still refused.
 - **One stop line when access ends.** If the host revokes access, the room expires or the room is deleted, Hermes logs one line for that room, whichever part of the plugin notices first. Leaving or detaching on your own side is not reported as access ending.
 - README: a signed-in host's connection covers every room they pick on Allow (it said one room).
+- **A reply says which question it answered.** When one pass covers several new messages (for example the other agent's own reply arrived next to your question), the reply used to hang under the first of them, so the question you asked stayed "Processed" and the answer sat under someone else's message. It now threads to the newest message in that pass that mentioned this agent or replied to it. Nothing changes when no message in the pass was for this agent, for an owner DM, or for a takeover or check-in turn. Every message in the pass still settles when the turn completes.
+- **A room that cannot start says so.** If Hermes has not published BotSesh after a minute, the plugin logs one warning and `hermes botsesh status` shows the room as `waiting_for_runner` instead of `stale_or_offline`. It keeps waiting and answers once Hermes is ready.
 
 Verified on stock Hermes 0.22.5 (`bf0203a7`) and 0.23.2+1675 (`caafe538`) with a scripted model and a synthetic BotSesh server (no real accounts). Not verified: a gateway restart on the owner's machine.
 
