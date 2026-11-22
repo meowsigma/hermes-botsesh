@@ -503,6 +503,10 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                 if binding.get('active') and (room_id not in self._rooms or self._rooms[room_id].done()):
                     self._rooms[room_id] = asyncio.create_task(self._room_loop(room_id))
                 elif not binding.get('active') and room_id in self._rooms:
+                    # The client marks a seat inactive the moment the server ends its access, which can retire this room's task
+                    # before its own loop logs anything: report that ending once. An explicit local leave/disconnect is not one.
+                    if binding.get('state') not in ('detached', 'revoked'):
+                        self._stop_notice(room_id, binding.get('state'))
                     self._rooms[room_id].cancel()
             await asyncio.sleep(2)
 
@@ -547,6 +551,9 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                             saved_cursor = dict(live_cursor)
                             with contextlib.suppress(Exception):
                                 self.client.store.update(lambda d: d['rooms'][room_id].update(event_cursor=saved_cursor))
+                        # The listener often sees the ended access before the room check does; the supervisor may then retire
+                        # this room's task without another word. Say so once here.
+                        self._stop_notice(room_id, error.code)
                         changed.set()
                         return
                     attempt += 1
@@ -614,10 +621,11 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                     attempt = 0
                     delay = self.poll_seconds
                     health(self.client.store, room_id, state='connected', last_check=time.time(), error=None)
+                    self.__dict__.setdefault('_stop_noticed', set()).discard(room_id)  # a working check ends the stop episode
                 except BotSeshError as e:
                     if e.terminal:
                         health(self.client.store, room_id, state='reconnect_required', error=e.code)
-                        logger.error('BotSesh room %s stopped: %s. Run hermes botsesh connect.', room_id, e.code)
+                        self._stop_notice(room_id, e.code)
                         return
                     attempt += 1
                     delay = backoff(attempt, minimum=self.poll_seconds, retry_after=e.retry_after_ms/1000)
@@ -902,7 +910,54 @@ class BotSeshAdapter(NativeTurnMixin, CommandTransportMixin, BasePlatformAdapter
                                 messages=ledger['messages'], own=own, auth=ledger.get('auth'), now=time.time())
         self.client.store.update(save)
 
+    def _registered_with_runner(self):
+        """True once the gateway runner lists this adapter as a live platform of one of its profiles.
+
+        Hermes connects all enabled platforms at the same time and publishes each adapter on the runner only after every
+        connect has returned (a slow Telegram connect keeps the BotSesh adapter unpublished for seconds). Until then the
+        runner cannot resolve which adapter received a message, so it answers every sender authorization with "no" and
+        native admission refuses with a profile mismatch. A room message that arrives in that window (the first question,
+        posted before the agent joined) must wait, not fail for good. No runner (standalone use, hand-built adapters) means
+        there is nothing to wait for."""
+        runner = getattr(getattr(self, '_message_handler', None), '__self__', None)
+        if runner is None:
+            return True
+        try:
+            owning = getattr(runner, '_owning_profile', None)
+            if callable(owning):
+                return owning(self, self.platform)[0] is True
+            adapters = getattr(runner, 'adapters', None)
+            return adapters.get(self.platform) is self if isinstance(adapters, dict) else True
+        except Exception:
+            return True  # An unreadable runner must not wedge the room; admission itself still decides.
+
+    async def _wait_for_runner(self, room_id):
+        """Hold this room's delivery pass until the runner can authorize its senders. False only when the channel stopped."""
+        waited = 0.0
+        while not self._registered_with_runner():
+            if not self._running:
+                return False
+            if waited == 0.0:
+                logger.info('BotSesh room %s waits for Hermes to finish starting its platforms before reading messages.', room_id)
+            await asyncio.sleep(0.2)
+            waited += 0.2
+        return True
+
+    def _stop_notice(self, room_id, code):
+        """One short, actionable stop line per room per terminal episode, whichever task (listener wait, room check or
+        supervisor) sees the access ending first. The episode ends when a later check of this room succeeds again."""
+        noticed = self.__dict__.setdefault('_stop_noticed', set())
+        if room_id in noticed:
+            return
+        noticed.add(room_id)
+        code = code if isinstance(code, str) and re.fullmatch(r'[a-z0-9_]{1,48}', code) else 'access_ended'
+        with contextlib.suppress(Exception):
+            health(self.client.store, room_id, state='reconnect_required', error=code)
+        logger.error('BotSesh room %s stopped: %s. Run hermes botsesh connect.', room_id, code)
+
     async def _check_room(self, room_id):
+        if not await self._wait_for_runner(room_id):
+            return
         await self._refresh_dm_controls(room_id)
         await self._control_sweep()
         await self._reconcile_native(room_id)
