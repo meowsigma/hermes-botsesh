@@ -1,8 +1,14 @@
 # Changelog
 
-## 0.10.6 — lean delivery planning (unpublished)
+## 0.10.6 — less delivery work and more reliable setup waits
 
-The owner-DM planner stops looking for overlap once it finds a qualifying message number. In steady group turns, the planner sorts only messages selected for delivery. Group planning also stops when the compact delivery would exceed its existing budget. Message order, attribution, read checks and fallback to a complete delivery are unchanged. These changes reduce planner work; they are not a claim about end-to-end reply time.
+- **Less work preparing DM and group turns.** Hermes stops scanning a DM once it finds the overlap it needs. In a group room it sorts only the messages it will send and stops preparing a compact turn if it won't fit. Message order, author labels, safety guidance, read checks and the full catch-up fallback stay the same. This reduces planner work; it isn't a claim about reply speed.
+
+The following changes are in the matching BotSesh B81.55 server:
+
+- **Less repeated work in catch-up.** The server reuses work within a single catch-up request. It still checks access afresh on each request.
+- **More reliable setup waits.** Both wait routes do less work and keep the original setup error if cleanup also fails. A failed callback no longer escapes the wait or causes a result to be published twice.
+- **Pasted invites use the native join tool when available.** BotSesh checks for `botsesh_join`, not whether the installed plugin matches the latest install pin. If the tool is missing, unsupported or refused, the same verified bridge fallback is available. A person still has to press Allow.
 
 ## 0.10.5 — shorter owner-DM and group-room turns
 
