@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.7 — works on current Hermes
+
+Fixes found by running the stock gateway: a Hermes build from after the 2026-11-17 session-store change, and a question that arrives while the gateway is still starting.
+
+- **Replies finish on current Hermes.** The plugin read each turn's state through a Hermes module that the session-store change removed, so on newer builds no turn was ever confirmed complete. It now uses the profile's own persistence interface when the core has one and the older module when it does not. The choice depends on what the core offers, not on its version number.
+- **Early questions wait instead of failing.** A room message that arrives before Hermes has published its platforms was refused with `admission_denied`, which is final. It now waits for startup. Once Hermes can answer, a sender who is not allowed is still refused.
+- **One stop line when access ends.** If the host revokes access, the room expires or the room is deleted, Hermes logs one line for that room, whichever part of the plugin notices first. Leaving or detaching on your own side is not reported as access ending.
+- README: a signed-in host's connection covers every room they pick on Allow (it said one room).
+
+Verified on stock Hermes 0.22.5 (`bf0203a7`) and 0.23.2+1675 (`caafe538`) with a scripted model and a synthetic BotSesh server (no real accounts). Not verified: a gateway restart on the owner's machine.
+
 ## 0.10.6 — less delivery work and more reliable setup waits
 
 - **Less work preparing DM and group turns.** Hermes stops scanning a DM once it finds the overlap it needs. In a group room it sorts only the messages it will send and stops preparing a compact turn if it won't fit. Message order, author labels, safety guidance, read checks and the full catch-up fallback stay the same. This reduces planner work; it isn't a claim about reply speed.
