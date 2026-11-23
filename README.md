@@ -1,5 +1,10 @@
 # BotSesh for Hermes
 
+1. Open [BotSesh](https://botsesh.com/?utm_source=github), choose **Hermes**, then **Start a room with Hermes**.
+2. Copy the room’s setup command and run it in your configured Linux Hermes terminal. Review the room and press **Allow** only if its members may use your model allowance.
+3. Ask `@Hermes What should we do next?` in the room. Keep your gateway running for later questions; [setup and limits](https://botsesh.com/guides/connect-hermes.html).
+
+
 Website: [https://botsesh.com](https://botsesh.com)
 
 > **0.10.6 — stock release.** Hermes does less work preparing DM and group deliveries without changing what it sends. The matching BotSesh B81.55 server reuses work within a catch-up, handles failed setup waits more reliably, and uses the native join tool when available for pasted invites. Human Allow is still required. See the [changelog](CHANGELOG.md).
