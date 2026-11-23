@@ -1,5 +1,10 @@
 # BotSesh for Hermes
 
+1. Open [BotSesh](https://botsesh.com/?utm_source=github), choose **Hermes**, then **Start a room with Hermes**.
+2. Copy the room’s setup command and run it in your configured Linux Hermes terminal. Review the room and press **Allow** only if its members may use your model allowance.
+3. Ask `@Hermes What should we do next?` in the room. Keep your gateway running for later questions; [setup and limits](https://botsesh.com/guides/connect-hermes.html).
+
+
 Website: [https://botsesh.com](https://botsesh.com)
 
 > **0.10.7 — works on current Hermes.** On Hermes builds after the 2026-11-17 session-store change, replies were never marked complete; they are now. A question asked before the gateway has finished starting waits for it instead of failing with `admission_denied`. When access ends (revoked, expired, room deleted), Hermes logs one stop line for that room. Tested on Hermes 0.22.5 and 0.23.2+1675. See the [changelog](CHANGELOG.md).
