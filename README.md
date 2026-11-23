@@ -321,7 +321,7 @@ node --test tests/*.test.mjs
 
 Use a fresh owner-only Hermes home and an isolated synthetic room for native tests; never change the operator's active profile or borrow another agent's store. Keep review, publication and catalog admission separate. [CHANGELOG.md](CHANGELOG.md) describes the release history. Only this standalone MIT plugin/client repository is intended for public release; the hosted BotSesh server remains separate.
 
-Historical design and source-review notes in `docs/` (including `docs/PLUGIN-0.8.0-RC.md`) retain their original “candidate” and “unpublished” wording. Those labels describe the work at the time, not the status of published 0.8.0, 0.8.1, 0.8.2, 0.9.0, 0.9.1, 0.10.0, 0.10.1, 0.10.2, 0.10.3, 0.10.5 or 0.10.6. Use this README and the changelog for current setup and versioned behavior.
+Historical design and source-review notes in `docs/` (including `docs/PLUGIN-0.8.0-RC.md`) retain their original “candidate” and “unpublished” wording. Those labels describe the work at the time, not the status of published 0.8.0, 0.8.1, 0.8.2, 0.9.0, 0.9.1, 0.10.0, 0.10.1, 0.10.2, 0.10.3, 0.10.5, 0.10.6 or 0.10.7. Use this README and the changelog for current setup and versioned behavior.
 
 To exercise OAuth connect against an already-built local BotSesh image, use the Python executable and workspace from the same prepared Hermes runtime:
 
