@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import test_plugin
-from hermes_botsesh_test import cli, ops_status
+from hermes_botsesh_test import cli, hot_start, ops_status
 
 
 class NativeLifecycleTests(unittest.TestCase):
@@ -31,15 +31,27 @@ class NativeLifecycleTests(unittest.TestCase):
         with patch.object(ops_status, 'gateway_snapshot', return_value={'running': True, 'channel': 'down'}), \
              patch.object(cli.shutil, 'which', return_value='/fixture/hermes'), \
              patch.object(cli.subprocess, 'run', return_value=Mock(returncode=0)) as run, \
+             patch.object(hot_start, 'nudge_running_gateway', return_value=False) as nudge, \
+             patch.object(hot_start, 'graceful_restart_when_idle', return_value=False) as fallback, \
+             patch('time.monotonic', side_effect=[0, 45]), \
              contextlib.redirect_stdout(out):
             cli.connect_runtime('night')
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], ['/fixture/hermes', '-p', 'night', 'gateway', 'ensure', '--json', '--timeout', '30'])
-        self.assertEqual(len(out.getvalue().splitlines()), 1)
-        self.assertIn('channel not ready', out.getvalue())
-        self.assertIn('hermes -p night gateway restart --detach', out.getvalue())
-        self.assertIn('hermes -p night botsesh status', out.getvalue())
+        nudge.assert_called_once_with()
+        fallback.assert_called_once_with('night')
+        self.assertEqual(out.getvalue(),
+                         'Room connected; BotSesh channel not ready. '
+                         'Run `hermes -p night gateway restart --detach` once Hermes is idle.\n')
         self.assertNotIn('--yes', out.getvalue())
+
+        # Status remains a separate selected-profile command, not a second restart instruction.
+        parser = argparse.ArgumentParser(prog='hermes -p night botsesh')
+        cli.setup(parser)
+        with contextlib.redirect_stdout(io.StringIO()) as help_out, self.assertRaises(SystemExit) as error:
+            parser.parse_args(['status', '--help'])
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn('hermes -p night botsesh status', help_out.getvalue())
 
     def test_successful_start_is_confirmed_from_channel_not_exit_code(self):
         with patch.object(ops_status, 'gateway_snapshot', side_effect=[

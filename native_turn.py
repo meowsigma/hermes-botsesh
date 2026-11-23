@@ -15,6 +15,37 @@ from .reliability import receipt, health
 logger = logging.getLogger(__name__)
 
 
+def read_admission(authority, admission_id):
+    """``(row, result)`` of one native admission, read through whatever persistence interface this Hermes core ships.
+
+    ``row`` is a dict with ``status``, ``outcome`` and ``target_session_id`` (None when the admission is unknown).
+    ``result`` is the stored terminal result (``{'result': {...}}``) or None until the row is terminal.
+
+    Hermes cores that moved session state behind a profile-scoped storage interface expose it as
+    ``authority.persistence.admissions``; reading through it is the supported contract. Older cores (at least 0.22.5)
+    hand out a raw state.db handle (``authority.db``) and keep the readers in ``hermes_state_runtime``. The interface
+    is detected, never the version number, so a core in between keeps working."""
+    store = getattr(authority, 'persistence', None)
+    admissions = getattr(store, 'admissions', None)
+    if admissions is not None:
+        record = admissions.get(admission_id=admission_id)
+        if record is None:
+            return None, None
+        status = getattr(record.status, 'value', record.status)
+        row = {'admission_id': record.admission_id, 'status': str(status), 'outcome': record.outcome,
+               'target_session_id': record.target_session_id}
+        result = None
+        if row['status'] == 'terminal':
+            from gateway.session_results import admission_result
+            result = admission_result(store, admission_id)
+        return row, result
+    from gateway.session_results import admission_result
+    from hermes_state_runtime import get_session_admission
+    row = get_session_admission(authority.db, admission_id=admission_id)
+    result = admission_result(authority.db, admission_id) if row and row['status'] == 'terminal' else None
+    return row, result
+
+
 class NativeTurnMixin:
     async def _admit_event(self, event):
         from gateway.platforms.webhook_ingress import admit_producer
@@ -45,16 +76,13 @@ class NativeTurnMixin:
         if not native:
             return None
         from gateway.platforms.webhook_ingress import producer_scope
-        from gateway.session_results import admission_result
-        from hermes_state_runtime import get_session_admission
         async with producer_scope(self, current['event']) as authority:
             if authority.profile_id != native['ref']['profile_id']:
                 raise BotSeshError('native_admission_scope_mismatch')
             def read():
-                row = get_session_admission(authority.db, admission_id=native['admission_id'])
+                row, result = read_admission(authority, native['admission_id'])
                 if not row or row['target_session_id'] != native['ref']['session_id']:
                     raise BotSeshError('native_admission_missing')
-                result = admission_result(authority.db, native['admission_id']) if row['status'] == 'terminal' else None
                 return row, result
             row, result = await asyncio.to_thread(read)
         value = (result or {}).get('result') or {}
@@ -241,6 +269,8 @@ class NativeTurnMixin:
         current = {key: row[key] for key in ('receipt_id', 'target', 'client_id', 'text', 'native_admission')}
         current['batch_targets'] = row.get('batch_targets', [row['target']])
         current['event_id'] = row.get('event_id', str(row['target']))
+        if type(row.get('answer_to')) is int:
+            current['answer_to'] = row['answer_to']  # B13: the restored turn threads its reply exactly as the original would have
         current.update(event=event, delivered=False, model_processed=False, tool_policy=row.get('tool_policy'),
                        dm_through=row.get('dm_through'), dm_brief=row.get('dm_brief'), lean_session=row.get('lean_session'),
                        bare=row.get('bare') is True, dm_prompt=row.get('dm_prompt') is True, lean_group=row.get('lean_group') is True)

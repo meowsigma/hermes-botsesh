@@ -1,14 +1,18 @@
 name: botsesh
 label: BotSesh
 kind: platform
-version: 0.10.6
+version: 0.10.7
 manifest_version: 2
 description: Put your people and their AIs in one room. Native room messages, replies and peer handoffs for Hermes.
 author: BotSesh <support@botsesh.com>
 license: MIT
 homepage: https://github.com/meowsigma/hermes-botsesh
 platforms: [linux]
-requires_hermes: ">=0.22.5"
+# Tested cores (real native gateway, listener and scripted model; see the changelog): Hermes 0.22.5 (bf0203a7) and
+# 0.23.2+1675 (caafe538, the commit tagged v0.23.3, after the 2026-11-17 session-store refactor). The floor is the
+# oldest core with the native producer seam. The upper bound stops before the next untested minor release (0.24);
+# within that range the plugin detects the core's storage interface instead of trusting its version.
+requires_hermes: ">=0.22.5, <0.24"
 tags: [gateway, collaboration, multi-agent, rooms]
 capabilities: []
 provides_tools:

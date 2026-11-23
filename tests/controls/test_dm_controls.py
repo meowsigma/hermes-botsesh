@@ -107,6 +107,12 @@ async def test_flat_callback_is_claimed_before_await_and_replay_is_not_inference
 @async_test
 async def test_clarify_checks_native_identity_other_and_multi_text_recovery():
     from tools import clarify_gateway as clarify
+
+    def resolve_text(entry, response):
+        if hasattr(clarify, 'attempt_text_response'):
+            return clarify.attempt_text_response(entry.clarify_id, response) == clarify.TEXT_RESOLVED
+        return clarify.resolve_text_response_for_session(entry.session_key, response)
+
     a = harness()
     entry = clarify.register('clarify-one', 'session', 'Which?', ['Alpha', 'Beta'])
     try:
@@ -122,13 +128,13 @@ async def test_clarify_checks_native_identity_other_and_multi_text_recovery():
         wire = a.calls[-1][2]
         await a._control_receive('dm', a.choice(wire, optionId=wire['buttons'][0]['id']))
         assert entry2.awaiting_text and not entry2.event.is_set()
-        assert clarify.resolve_text_response_for_session('session', 'custom answer')
+        assert resolve_text(entry2, 'custom answer')
         assert entry2.response == 'custom answer'
         assert clarify.wait_for_response('clarify-two', 0.01) == 'custom answer'
         multi = clarify.register('multi', 'session', 'Pick several', ['A', 'B'], multi_select=True)
         assert (await a.send_clarify('dm', 'Pick several', ['A', 'B'], 'multi', 'session')).success
         assert multi.awaiting_text
-        assert clarify.resolve_text_response_for_session('session', '1,2')
+        assert resolve_text(multi, '1,2')
         assert multi.response == '["A", "B"]'
     finally:
         clarify.clear_session('session')

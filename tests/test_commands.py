@@ -412,7 +412,17 @@ class NativeCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(override.get('model'), 'offline-b', self.transport.posts)
         self.assertEqual(override.get('provider'), 'offline')
         entry = self.runner.session_store.get_or_create_session(self.source)
-        self.assertEqual(self.runner.session_store._db.get_session(entry.session_id)['model'], 'offline-b')
+        # Read the same session from this profile's durable store, not the gateway's optional DB pin.
+        try:
+            from persistence_assembly import open_persistence_reader
+        except ImportError:
+            from hermes_state import SessionDB
+            with SessionDB(self.home / 'state.db', read_only=True) as db:
+                saved_model = db.get_session(entry.session_id)['model']
+        else:
+            with open_persistence_reader(self.home) as reader:
+                saved_model = reader.sessions.get(entry.session_id).model
+        self.assertEqual(saved_model, 'offline-b')
         self.assertNotIn('native-dm', self.adapter._current)
         posts = deepcopy(self.transport.posts)
         await self.adapter._check_room('native-dm')

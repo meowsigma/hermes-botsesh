@@ -167,8 +167,9 @@ class Client:
                             continue
                         if row.get('receipt_id') == args.get('receipt_id'):
                             row['read_attested'] = True
+                        replied_to = args.get('reply_to', row['target'])
                         if (row.get('receipt_id') == args.get('receipt_id')
-                                and args.get('reply_to', row['target']) == row['target']):
+                                and (replied_to == row['target'] or replied_to is not None and replied_to == row.get('answer_to'))):
                             row['posted_reply'] = result
                 if result.get('pending'):
                     room['pending_completion'] = result['pending']
