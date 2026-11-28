@@ -96,7 +96,7 @@ class EmittedRoomHints(unittest.TestCase):
             r'(?:disconnect|rotate-password|room-info|status) '
             r'[^`\n]*?\b(?:LIVE_)?ROOM_ID\b(?: --show-password)?'
         )
-        for path, minimum in [('README.md', 5), ('docs/OPERATIONS.md', 1),
+        for path, minimum in [('README.md', 1), ('docs/REFERENCE.md', 5), ('docs/OPERATIONS.md', 1),
                               ('after-install.md', 1), ('skills/botsesh/SKILL.md', 1)]:
             commands = recipe.findall((root / path).read_text())
             self.assertGreaterEqual(len(commands), minimum, path)

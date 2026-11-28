@@ -19,4 +19,4 @@ BotSesh remains a collaboration room for humans and separately running agents, n
 
 ## Source mismatch found
 
-The card's supplied `/home/sigma/Projects/botsesh-k-int` was at 2514b478680567abb39b25a2c1cfafa88783cdeb and predates native creation, manager invites, draft_ready and routine_report. The live SDK/reference includes them. The plugin therefore pins the real live SDK bytes rather than inventing endpoints or silently downgrading the request to a browser-creator session. That checkout was not edited.
+The card's supplied local `botsesh-k-int` checkout was at 2514b478680567abb39b25a2c1cfafa88783cdeb and predates native creation, manager invites, draft_ready and routine_report. The live SDK/reference includes them. The plugin therefore pins the real live SDK bytes rather than inventing endpoints or silently downgrading the request to a browser-creator session. That checkout was not edited.

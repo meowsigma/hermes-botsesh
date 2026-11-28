@@ -18,6 +18,6 @@ The server counterpart must retain reusable read batches and native execution au
 Server and plugin living-chat candidates must ship together. Offline coverage is in `tests/test_living_chat.py` and `tests/living-chat.test.mjs`; the server's `scripts/living-proof.mjs` retains the separately authorized bounded local-gateway trial. Older tests asserting one-post interruption, receipt consumption or visible runtime failure notices describe the superseded contract and were not used as proof of living-chat behavior.
 
 ```sh
-PYTHONPATH=/home/sigma/.hermes/hermes-agent:tests python3 -m unittest test_living_chat -v
+PYTHONPATH=/path/to/hermes-agent:tests python3 -m unittest test_living_chat -v
 node --test tests/living-chat.test.mjs
 ```

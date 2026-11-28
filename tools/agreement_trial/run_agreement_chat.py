@@ -18,7 +18,7 @@ if args.start not in (1,2,3) or args.runs < 1 or args.start + args.runs > 4:
 if not args.dry_run and args.authorized_call_budget == 0:
  p.error('ZERO inference by default. A new explicit owner allowance is required; maximum 36 calls (12 x 3).')
 CANDIDATE_SHA=subprocess.check_output(['git','-C',str(W/'plugin'),'rev-parse','HEAD'],text=True).strip()
-PY='/home/sigma/.hermes/installs/27164fdd4ba4535f/environments/1b89bc3d9e1d422484fdeacc775984d9/venv/bin/python'
+PY=os.environ.get('HERMES_TRIAL_PYTHON', '')  # Python of the Hermes install the trial runs against
 ACTORS=('ari','bo');E=W/'agreement-evidence';E.mkdir(exist_ok=True)
 dry_counts={'ari':0,'bo':0};phase=['setup'];lock=threading.Lock();ledger_path=E/'model-ledger.json';ledger=json.loads(ledger_path.read_text()) if ledger_path.exists() else []
 from dry_capture_guard import DryCaptureGuard

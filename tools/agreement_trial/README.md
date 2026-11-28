@@ -5,6 +5,10 @@ published plugin feature and **has no inference authorization by default**.
 Do not run a paid sample until the owner grants a new allowance and independent
 source review accepts the exact plugin/core commits. No deployment is needed.
 
+The live scripts read machine paths from the environment: `HERMES_TRIAL_PYTHON`
+(the Hermes install's venv Python, required), `HERMES_CORE` (defaults to
+`~/.hermes/hermes-agent`) and `CODEX_BIN` (defaults to `codex` on `PATH`).
+
 ## Offline checks
 
 Use an existing prepared Hermes interpreter; never a paid provider:
